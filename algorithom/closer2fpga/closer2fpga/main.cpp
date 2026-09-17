@@ -18,36 +18,47 @@
 
 
 // ============================================================
-// 生成理想棋盘
+// Synthetic chessboard
 // ============================================================
 
-static GrayImage make_checkerboard(
+static GrayImage make_ideal_chessboard(
+    int width,
+    int height,
+    int squares_y,
+    int squares_x,
     int cell,
-    int square_rows,
-    int square_cols,
-    int pad)
+    int offset_x,
+    int offset_y)
 {
-    int h = cell * square_rows + pad * 2;
-    int w = cell * square_cols + pad * 2;
+    GrayImage img(width, height);
 
-    GrayImage img(w, h);
+    // background
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            img.set(x, y, 127);
+        }
+    }
 
-    for (int i = 0; i < w * h; ++i)
-        img.data[i] = 0;
+    for (int sy = 0; sy < squares_y; ++sy) {
+        for (int sx = 0; sx < squares_x; ++sx) {
 
-    for (int y = pad; y < pad + cell * square_rows; ++y) {
+            int x0 = offset_x + sx * cell;
+            int y0 = offset_y + sy * cell;
 
-        int ry = (y - pad) / cell;
+            unsigned char value =
+                ((sx + sy) & 1) ? 255 : 0;
 
-        for (int x = pad; x < pad + cell * square_cols; ++x) {
+            for (int y = y0; y < y0 + cell; ++y) {
+                if (y < 0 || y >= height)
+                    continue;
 
-            int rx = (x - pad) / cell;
+                for (int x = x0; x < x0 + cell; ++x) {
+                    if (x < 0 || x >= width)
+                        continue;
 
-            img.set(
-                x,
-                y,
-                ((rx + ry) % 2 == 0) ? 255 : 0
-            );
+                    img.set(x, y, value);
+                }
+            }
         }
     }
 
@@ -56,40 +67,29 @@ static GrayImage make_checkerboard(
 
 
 // ============================================================
-// 生成 INTERNAL corners 的 Ground Truth
-//
-// 6 x 8 squares
-// => 5 x 7 internal corners
-//
-// 顺序：row-major
-//
-// (1,1) (1,2) ... (1,7)
-// (2,1) (2,2) ... (2,7)
-// ...
-// (5,1) ...      (5,7)
+// Ideal internal corner coordinates
 // ============================================================
 
-static std::vector<Point2f> make_inner_ground_truth(
-    int pad,
+static std::vector<Point2f> make_ideal_corners(
+    int inner_rows,
+    int inner_cols,
     int cell,
-    int square_rows,
-    int square_cols)
+    int offset_x,
+    int offset_y)
 {
     std::vector<Point2f> pts;
 
-    int inner_rows = square_rows - 1;
-    int inner_cols = square_cols - 1;
-
     pts.reserve(inner_rows * inner_cols);
 
-    for (int r = 1; r < square_rows; ++r) {
+    for (int r = 0; r < inner_rows; ++r) {
+        for (int c = 0; c < inner_cols; ++c) {
 
-        for (int c = 1; c < square_cols; ++c) {
+            Point2f p;
 
-            pts.push_back({
-                (f32)(pad + c * cell),
-                (f32)(pad + r * cell)
-                });
+            p.x = (f32)(offset_x + (c + 1) * cell);
+            p.y = (f32)(offset_y + (r + 1) * cell);
+
+            pts.push_back(p);
         }
     }
 
@@ -98,647 +98,233 @@ static std::vector<Point2f> make_inner_ground_truth(
 
 
 // ============================================================
-// 使用真实 CameraParams 将理想角点变成畸变角点
+// Bilinear sampling
 // ============================================================
 
-static std::vector<Point2f> distort_points(
-    const std::vector<Point2f>& ideal_pts,
-    const CameraParams& cam)
+static f32 bilinear_sample(
+    const GrayImage& img,
+    f32 x,
+    f32 y)
 {
-    std::vector<Point2f> result;
+    if (x < 0.0f) x = 0.0f;
+    if (y < 0.0f) y = 0.0f;
 
-    result.reserve(ideal_pts.size());
+    if (x > (f32)(img.w - 1))
+        x = (f32)(img.w - 1);
 
-    for (const auto& ip : ideal_pts) {
+    if (y > (f32)(img.h - 1))
+        y = (f32)(img.h - 1);
 
-        f32 nx =
-            (ip.x - cam.cx) / cam.fx;
+    int x0 = (int)std::floor(x);
+    int y0 = (int)std::floor(y);
 
-        f32 ny =
-            (ip.y - cam.cy) / cam.fy;
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
 
-        f32 xd;
-        f32 yd;
+    if (x1 >= img.w) x1 = img.w - 1;
+    if (y1 >= img.h) y1 = img.h - 1;
 
-        forward_distort_norm(
-            nx,
-            ny,
-            cam,
-            xd,
-            yd
-        );
+    f32 dx = x - (f32)x0;
+    f32 dy = y - (f32)y0;
 
-        result.push_back({
-            cam.fx * xd + cam.cx,
-            cam.fy * yd + cam.cy
-            });
-    }
+    f32 p00 = (f32)img.get(x0, y0);
+    f32 p10 = (f32)img.get(x1, y0);
+    f32 p01 = (f32)img.get(x0, y1);
+    f32 p11 = (f32)img.get(x1, y1);
 
-    return result;
+    f32 a = p00 * (1.0f - dx) + p10 * dx;
+    f32 b = p01 * (1.0f - dx) + p11 * dx;
+
+    return a * (1.0f - dy) + b * dy;
 }
 
 
 // ============================================================
-// 打印点统计
+// Generate distorted image
 // ============================================================
 
-static void print_points(
-    const char* tag,
-    const std::vector<Point2f>& pts)
+static GrayImage make_distorted_image(
+    const GrayImage& ideal,
+    f64 fx,
+    f64 fy,
+    f64 cx,
+    f64 cy,
+    const CalibDistort& d)
 {
-    if (pts.empty()) {
+    GrayImage out(ideal.w, ideal.h);
 
-        printf(
-            "  [%s] EMPTY\n",
-            tag
-        );
+    for (int y = 0; y < ideal.h; ++y) {
+        for (int x = 0; x < ideal.w; ++x) {
 
-        return;
+            f64 xd =
+                ((f64)x - cx) / fx;
+
+            f64 yd =
+                ((f64)y - cy) / fy;
+
+            f64 r2 = xd * xd + yd * yd;
+
+            f64 radial =
+                1.0
+                + d.k1 * r2
+                + d.k2 * r2 * r2
+                + d.k3 * r2 * r2 * r2;
+
+            f64 xt =
+                2.0 * d.p1 * xd * yd
+                + d.p2 * (r2 + 2.0 * xd * xd);
+
+            f64 yt =
+                d.p1 * (r2 + 2.0 * yd * yd)
+                + 2.0 * d.p2 * xd * yd;
+
+            f64 xu = xd * radial + xt;
+            f64 yu = yd * radial + yt;
+
+            f32 sx =
+                (f32)(xu * fx + cx);
+
+            f32 sy =
+                (f32)(yu * fy + cy);
+
+            f32 v =
+                bilinear_sample(ideal, sx, sy);
+
+            int iv = (int)(v + 0.5f);
+
+            if (iv < 0) iv = 0;
+            if (iv > 255) iv = 255;
+
+            out.set(x, y, (unsigned char)iv);
+        }
     }
 
-    f32 x_min = 1e9f;
-    f32 x_max = -1e9f;
-    f32 y_min = 1e9f;
-    f32 y_max = -1e9f;
-
-    f32 sx = 0;
-    f32 sy = 0;
-
-    for (const auto& p : pts) {
-
-        x_min = std::min(x_min, p.x);
-        x_max = std::max(x_max, p.x);
-
-        y_min = std::min(y_min, p.y);
-        y_max = std::max(y_max, p.y);
-
-        sx += p.x;
-        sy += p.y;
-    }
-
-    printf(
-        "  [%s] n=%zu  "
-        "x=[%.2f..%.2f] mean_x=%.2f  "
-        "y=[%.2f..%.2f] mean_y=%.2f\n",
-        tag,
-        pts.size(),
-        x_min,
-        x_max,
-        sx / (f32)pts.size(),
-        y_min,
-        y_max,
-        sy / (f32)pts.size()
-    );
+    return out;
 }
 
 
 // ============================================================
-// 计算点误差
+// GrayImage -> OpenCV image
 // ============================================================
 
-static bool calculate_accuracy(
-    const std::vector<Point2f>& a,
-    const std::vector<Point2f>& b,
-    f32& mean_err,
-    f32& max_err)
+static cv::Mat to_cv_mat(const GrayImage& img)
 {
-    mean_err = 0;
+    cv::Mat mat(img.h, img.w, CV_8UC1);
+
+    for (int y = 0; y < img.h; ++y) {
+        for (int x = 0; x < img.w; ++x) {
+            mat.at<unsigned char>(y, x) =
+                img.get(x, y);
+        }
+    }
+
+    return mat;
+}
+
+
+// ============================================================
+// Image error
+// ============================================================
+
+static void image_error(
+    const GrayImage& a,
+    const GrayImage& b,
+    f64& mean_abs,
+    int& max_err)
+{
+    mean_abs = 0.0;
     max_err = 0;
 
-    if (a.size() != b.size() || a.empty())
-        return false;
-
-    for (size_t i = 0; i < a.size(); ++i) {
-
-        f32 dx = a[i].x - b[i].x;
-        f32 dy = a[i].y - b[i].y;
-
-        f32 e =
-            std::sqrt(dx * dx + dy * dy);
-
-        mean_err += e;
-
-        max_err =
-            std::max(max_err, e);
-    }
-
-    mean_err /= (f32)a.size();
-
-    return true;
-}
-
-
-static void print_accuracy(
-    const char* tag,
-    const std::vector<Point2f>& detected,
-    const std::vector<Point2f>& truth)
-{
-    f32 mean_err;
-    f32 max_err;
-
-    if (!calculate_accuracy(
-        detected,
-        truth,
-        mean_err,
-        max_err))
-    {
-        printf(
-            "  [%s] cannot calculate accuracy: "
-            "detected=%zu truth=%zu\n",
-            tag,
-            detected.size(),
-            truth.size()
-        );
-
+    if (a.w != b.w || a.h != b.h)
         return;
+
+    const int n = a.w * a.h;
+
+    f64 sum = 0.0;
+
+    for (int y = 0; y < a.h; ++y) {
+        for (int x = 0; x < a.w; ++x) {
+
+            int av = (int)a.get(x, y);
+            int bv = (int)b.get(x, y);
+
+            int e = std::abs(av - bv);
+
+            sum += (f64)e;
+
+            if (e > max_err)
+                max_err = e;
+        }
     }
 
-    printf(
-        "  [%s] mean=%.6f px  max=%.6f px\n",
-        tag,
-        mean_err,
-        max_err
-    );
+    mean_abs = sum / (f64)n;
 }
 
 
 // ============================================================
-// 打印点对应关系
-//
-// 用于检查：
-// detected[i] 是否真的对应 truth[i]
-// ============================================================
-
-static void print_point_correspondence(
-    const std::vector<Point2f>& detected,
-    const std::vector<Point2f>& truth,
-    int count)
-{
-    printf(
-        "\n"
-        "  --------------------------------------------------\n"
-        "  Point correspondence check\n"
-        "  --------------------------------------------------\n"
-    );
-
-    int n =
-        (int)std::min(
-            std::min(
-                detected.size(),
-                truth.size()
-            ),
-            (size_t)count
-        );
-
-    for (int i = 0; i < n; ++i) {
-
-        f32 dx =
-            detected[i].x - truth[i].x;
-
-        f32 dy =
-            detected[i].y - truth[i].y;
-
-        f32 e =
-            std::sqrt(dx * dx + dy * dy);
-
-        printf(
-            "  [%2d] detected=(%9.3f,%9.3f) "
-            "truth=(%9.3f,%9.3f) "
-            "error=%9.3f\n",
-            i,
-            detected[i].x,
-            detected[i].y,
-            truth[i].x,
-            truth[i].y,
-            e
-        );
-    }
-}
-
-
-// ============================================================
-// 打印畸变参数
-// ============================================================
-
-static void print_distortion(
-    const char* tag,
-    const CalibDistort& d)
-{
-    printf(
-        "  [%s]\n"
-        "    k1 = % .8f\n"
-        "    k2 = % .8f\n"
-        "    p1 = % .8f\n"
-        "    p2 = % .8f\n"
-        "    k3 = % .8f\n",
-        tag,
-        d.k1,
-        d.k2,
-        d.p1,
-        d.p2,
-        d.k3
-    );
-}
-
-
-// ============================================================
-// 打印畸变参数误差
-// ============================================================
-
-static void print_distortion_error(
-    const CalibDistort& estimated,
-    const CalibDistort& truth)
-{
-    printf(
-        "  [parameter error]\n"
-        "    dk1 = % .8f\n"
-        "    dk2 = % .8f\n"
-        "    dp1 = % .8f\n"
-        "    dp2 = % .8f\n"
-        "    dk3 = % .8f\n",
-        estimated.k1 - truth.k1,
-        estimated.k2 - truth.k2,
-        estimated.p1 - truth.p1,
-        estimated.p2 - truth.p2,
-        estimated.k3 - truth.k3
-    );
-}
-
-
-// ============================================================
-// GrayImage -> OpenCV Mat
-// ============================================================
-
-static cv::Mat gray_to_mat(
-    const GrayImage& img)
-{
-    return cv::Mat(
-        img.h,
-        img.w,
-        CV_8UC1,
-        img.data
-    );
-}
-
-
-// ============================================================
-// 绘制 INTERNAL corners
-// ============================================================
-
-static cv::Mat draw_internal_corners(
-    const GrayImage& gray,
-    const std::vector<Point2f>& corners,
-    const char* title)
-{
-    cv::Mat gray_mat =
-        gray_to_mat(gray);
-
-    cv::Mat disp;
-
-    cv::cvtColor(
-        gray_mat,
-        disp,
-        cv::COLOR_GRAY2BGR
-    );
-
-    for (size_t i = 0; i < corners.size(); ++i) {
-
-        const auto& p =
-            corners[i];
-
-        cv::Point q(
-            (int)std::lround(p.x),
-            (int)std::lround(p.y)
-        );
-
-        cv::circle(
-            disp,
-            q,
-            4,
-            cv::Scalar(0, 0, 255),
-            -1
-        );
-
-        cv::putText(
-            disp,
-            std::to_string(i),
-            q + cv::Point(5, -5),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.35,
-            cv::Scalar(255, 255, 255),
-            1
-        );
-    }
-
-    cv::putText(
-        disp,
-        title,
-        cv::Point(10, 25),
-        cv::FONT_HERSHEY_SIMPLEX,
-        0.65,
-        cv::Scalar(0, 255, 255),
-        2
-    );
-
-    return disp;
-}
-
-
-// ============================================================
-// 绘制 detection vs truth
-//
-// 绿色 = truth
-// 红色 = detected
-// ============================================================
-
-static cv::Mat draw_detection_comparison(
-    const GrayImage& gray,
-    const std::vector<Point2f>& detected,
-    const std::vector<Point2f>& truth,
-    const char* title)
-{
-    cv::Mat gray_mat =
-        gray_to_mat(gray);
-
-    cv::Mat disp;
-
-    cv::cvtColor(
-        gray_mat,
-        disp,
-        cv::COLOR_GRAY2BGR
-    );
-
-    for (const auto& p : truth) {
-
-        cv::circle(
-            disp,
-            cv::Point(
-                (int)std::lround(p.x),
-                (int)std::lround(p.y)
-            ),
-            5,
-            cv::Scalar(0, 255, 0),
-            1
-        );
-    }
-
-    for (const auto& p : detected) {
-
-        cv::circle(
-            disp,
-            cv::Point(
-                (int)std::lround(p.x),
-                (int)std::lround(p.y)
-            ),
-            3,
-            cv::Scalar(0, 0, 255),
-            -1
-        );
-    }
-
-    cv::putText(
-        disp,
-        title,
-        cv::Point(10, 25),
-        cv::FONT_HERSHEY_SIMPLEX,
-        0.6,
-        cv::Scalar(0, 255, 255),
-        2
-    );
-
-    return disp;
-}
-
-
-// ============================================================
-// 图像差异
-// ============================================================
-
-static cv::Mat make_difference_image(
-    const GrayImage& a,
-    const GrayImage& b)
-{
-    cv::Mat ma =
-        gray_to_mat(a);
-
-    cv::Mat mb =
-        gray_to_mat(b);
-
-    cv::Mat diff;
-
-    cv::absdiff(
-        ma,
-        mb,
-        diff
-    );
-
-    return diff;
-}
-
-
-// ============================================================
-// CameraParams -> CalibDistort
-// ============================================================
-
-static CalibDistort camera_to_distortion(
-    const CameraParams& cam)
-{
-    CalibDistort d;
-
-    d.k1 = cam.k1;
-    d.k2 = cam.k2;
-    d.p1 = cam.p1;
-    d.p2 = cam.p2;
-    d.k3 = cam.k3;
-
-    return d;
-}
-
-
-// ============================================================
-// 创建带有指定畸变参数的 CameraParams
-// ============================================================
-
-static CameraParams make_camera_with_distortion(
-    const CameraParams& base,
-    const CalibDistort& d)
-{
-    CameraParams cam = base;
-
-    cam.k1 = (f32)d.k1;
-    cam.k2 = (f32)d.k2;
-    cam.p1 = (f32)d.p1;
-    cam.p2 = (f32)d.p2;
-    cam.k3 = (f32)d.k3;
-
-    cam.valid = true;
-
-    return cam;
-}
-
-
-// ============================================================
-// 使用 CameraParams 对图像去畸变
-// ============================================================
-
-static GrayImage undistort_with_camera(
-    const GrayImage& distorted,
-    const CameraParams& cam)
-{
-    RemapTable remap =
-        build_remap_table(
-            distorted.w,
-            distorted.h,
-            cam
-        );
-
-    GrayImage result;
-
-    remap_bilinear(
-        distorted,
-        remap,
-        result
-    );
-
-    return result;
-}
-
-
-// ============================================================
-// 图像差异统计
-// ============================================================
-
-static void print_image_difference(
-    const char* tag,
-    const GrayImage& a,
-    const GrayImage& b)
-{
-    cv::Mat diff =
-        make_difference_image(a, b);
-
-    double mean_diff =
-        cv::mean(diff)[0];
-
-    double max_diff = 0;
-
-    cv::minMaxLoc(
-        diff,
-        nullptr,
-        &max_diff
-    );
-
-    printf(
-        "  [%s]\n"
-        "    mean absolute difference = %.6f\n"
-        "    max absolute difference  = %.6f\n",
-        tag,
-        mean_diff,
-        max_diff
-    );
-}
-
-
-// ============================================================
-// main
+// Main
 // ============================================================
 
 int main()
 {
-    // ========================================================
-    // 1. 基本参数
-    // ========================================================
-
-    const int pad = 60;
-    const int cell = 50;
-
-    const int square_rows = 6;
-    const int square_cols = 8;
-
-    const int inner_rows =
-        square_rows - 1;
-
-    const int inner_cols =
-        square_cols - 1;
-
-    const int inner_need =
-        inner_rows * inner_cols;
-
-
-    printf(
+    std::printf(
         "============================================================\n"
-        " Synthetic Camera Calibration Diagnostic Test\n"
+        " Synthetic Camera Calibration Test\n"
         "============================================================\n\n"
     );
 
+    // --------------------------------------------------------
+    // Board
+    // --------------------------------------------------------
 
-    printf(
+    const int squares_y = 6;
+    const int squares_x = 8;
+
+    const int inner_rows = squares_y - 1;
+    const int inner_cols = squares_x - 1;
+
+    const int cell = 50;
+
+    const int width = 520;
+    const int height = 420;
+
+    const int offset_x = 60;
+    const int offset_y = 60;
+
+    std::printf(
         "Board:\n"
         "  squares          = %d x %d\n"
         "  internal corners = %d x %d\n"
         "  total points     = %d\n\n",
-        square_rows,
-        square_cols,
+        squares_y,
+        squares_x,
         inner_rows,
         inner_cols,
-        inner_need
+        inner_rows * inner_cols
     );
 
+    // --------------------------------------------------------
+    // Camera
+    // --------------------------------------------------------
 
-    // ========================================================
-    // 2. 生成理想棋盘
-    // ========================================================
+    CameraParams cam{};
 
-    GrayImage ideal_img =
-        make_checkerboard(
-            cell,
-            square_rows,
-            square_cols,
-            pad
-        );
+    cam.fx = width * 0.85f;
+    cam.fy = height * 0.85f;
+    cam.cx = width * 0.5f;
+    cam.cy = height * 0.5f;
 
+    // Ground-truth distortion.
+    CalibDistort truth;
 
-    printf(
-        "Image:\n"
-        "  size = %d x %d\n\n",
-        ideal_img.w,
-        ideal_img.h
-    );
+    truth.k1 = -0.30;
+    truth.k2 = 0.15;
+    truth.p1 = 0.02;
+    truth.p2 = -0.01;
+    truth.k3 = 0.0;
 
-
-    // ========================================================
-    // 3. Ground Truth Camera
-    // ========================================================
-
-    CameraParams cam = {};
-
-    cam.fx =
-        ideal_img.w * 0.85f;
-
-    cam.fy =
-        ideal_img.h * 0.85f;
-
-    cam.cx =
-        ideal_img.w * 0.5f;
-
-    cam.cy =
-        ideal_img.h * 0.5f;
-
-    // 径向畸变
-    cam.k1 = -0.30f;
-    cam.k2 = 0.15f;
-    cam.k3 = 0.00f;
-
-    // 切向畸变
-    cam.p1 = 0.02f;
-    cam.p2 = -0.01f;
-
-    cam.valid = true;
-
-
-    printf(
-        "------------------------------------------------------------\n"
-        "Ground Truth Camera\n"
-        "------------------------------------------------------------\n"
+    std::printf(
+        "Camera:\n"
         "  fx = %.4f\n"
         "  fy = %.4f\n"
         "  cx = %.4f\n"
@@ -749,365 +335,176 @@ int main()
         cam.cy
     );
 
-
-    CalibDistort truth_dist =
-        camera_to_distortion(cam);
-
-
-    print_distortion(
-        "Ground truth distortion",
-        truth_dist
+    std::printf(
+        "Ground truth distortion:\n"
+        "  k1 = % .8f\n"
+        "  k2 = % .8f\n"
+        "  p1 = % .8f\n"
+        "  p2 = % .8f\n"
+        "  k3 = % .8f\n\n",
+        truth.k1,
+        truth.k2,
+        truth.p1,
+        truth.p2,
+        truth.k3
     );
 
+    // --------------------------------------------------------
+    // Generate ideal image
+    // --------------------------------------------------------
 
-    // ========================================================
-    // 4. 生成畸变图像
-    // ========================================================
-
-    GrayImage distorted_img;
-
-    make_distorted_image(
-        ideal_img,
-        cam,
-        distorted_img
-    );
-
-
-    printf(
-        "\n------------------------------------------------------------\n"
-        "Generated distorted image\n"
-        "------------------------------------------------------------\n"
-        "  size = %d x %d\n\n",
-        distorted_img.w,
-        distorted_img.h
-    );
-
-
-    // ========================================================
-    // 5. Ground Truth corners
-    // ========================================================
-
-    std::vector<Point2f> ideal_truth =
-        make_inner_ground_truth(
-            pad,
+    GrayImage ideal =
+        make_ideal_chessboard(
+            width,
+            height,
+            squares_y,
+            squares_x,
             cell,
-            square_rows,
-            square_cols
+            offset_x,
+            offset_y
         );
-
-
-    std::vector<Point2f> distorted_truth =
-        distort_points(
-            ideal_truth,
-            cam
-        );
-
-
-    printf(
-        "Ground truth corners:\n"
-        "  ideal     = %zu\n"
-        "  distorted = %zu\n\n",
-        ideal_truth.size(),
-        distorted_truth.size()
-    );
-
-
-    print_points(
-        "Ideal truth",
-        ideal_truth
-    );
-
-    print_points(
-        "Distorted truth",
-        distorted_truth
-    );
-
-
-    // ========================================================
-    // TEST 1
-    //
-    // 使用 Ground Truth 参数直接去畸变
-    //
-    // 目的：
-    // 单独检查 undistort.cpp
-    // ========================================================
-
-    printf(
-        "\n============================================================\n"
-        "TEST 1: Ground Truth Parameters -> Undistortion\n"
-        "============================================================\n"
-    );
-
-
-    GrayImage gt_undistorted =
-        undistort_with_camera(
-            distorted_img,
-            cam
-        );
-
-
-    printf(
-        "\nGround truth parameter undistortion finished.\n"
-    );
-
-
-    print_image_difference(
-        "Ideal vs GT-undistorted",
-        ideal_img,
-        gt_undistorted
-    );
-
 
     // --------------------------------------------------------
-    // GT 去畸变后再次检测棋盘
+    // Generate distorted image
     // --------------------------------------------------------
 
-    ChessboardInfo gt_info =
+    GrayImage distorted =
+        make_distorted_image(
+            ideal,
+            cam.fx,
+            cam.fy,
+            cam.cx,
+            cam.cy,
+            truth
+        );
+
+    std::printf(
+        "Generated synthetic images.\n\n"
+    );
+
+    // --------------------------------------------------------
+    // Save input images
+    // --------------------------------------------------------
+
+    cv::imwrite(
+        "ideal.png",
+        to_cv_mat(ideal)
+    );
+
+    cv::imwrite(
+        "distorted.png",
+        to_cv_mat(distorted)
+    );
+
+    std::printf(
+        "Saved:\n"
+        "  ideal.png\n"
+        "  distorted.png\n\n"
+    );
+
+    // --------------------------------------------------------
+    // Detect INTERNAL corners
+    //
+    // IMPORTANT:
+    // detect_chessboard() expects INTERNAL dimensions.
+    // --------------------------------------------------------
+
+    ChessboardInfo board =
         detect_chessboard(
-            gt_undistorted,
-
-            // 注意：
-            // detect_chessboard 的参数是
-            // INTERNAL corner 数量
-            //
-            // 这里必须是：
-            // 5 x 7
+            distorted,
             inner_rows,
             inner_cols
         );
 
+    if (!board.valid) {
 
-    std::vector<Point2f> gt_undist_detected;
-
-
-    if (gt_info.valid) {
-
-        gt_undist_detected =
-            gt_info.corners;
-
-        refine_subpixel(
-            gt_undistorted,
-            gt_undist_detected,
-            7
+        std::printf(
+            "ERROR: chessboard detection failed.\n"
         );
-
-        print_points(
-            "GT-undistorted detected",
-            gt_undist_detected
-        );
-
-        print_accuracy(
-            "GT-undistorted vs ideal",
-            gt_undist_detected,
-            ideal_truth
-        );
-
-    }
-    else {
-
-        printf(
-            "  WARNING: corner detection failed "
-            "after GT undistortion.\n"
-        );
-    }
-
-
-    // ========================================================
-    // TEST 2
-    //
-    // 从畸变图像检测 INTERNAL corners
-    //
-    // 目的：
-    // 检查：
-    //   1. Shi-Tomasi
-    //   2. clustering
-    //   3. chessboard grouping
-    //   4. corner ordering
-    // ========================================================
-
-    printf(
-        "\n============================================================\n"
-        "TEST 2: Detect INTERNAL corners from DISTORTED image\n"
-        "============================================================\n"
-    );
-
-
-    std::vector<Point2f> raw;
-
-
-    shi_tomasi_detect(
-        distorted_img,
-        raw,
-        0.15f,
-        3
-    );
-
-
-    print_points(
-        "Shi-Tomasi raw",
-        raw
-    );
-
-
-    // --------------------------------------------------------
-    // 这里必须传 INTERNAL corner 数量
-    //
-    // 5 x 7
-    // --------------------------------------------------------
-
-    ChessboardInfo info =
-        detect_chessboard(
-            distorted_img,
-            inner_rows,
-            inner_cols
-        );
-
-
-    if (!info.valid) {
-
-        printf(
-            "\nERROR:\n"
-            "  detect_chessboard() failed.\n"
-        );
-
-        cv::imshow(
-            "Detection Failed",
-            gray_to_mat(distorted_img)
-        );
-
-        cv::waitKey(0);
 
         return 1;
     }
 
+    if ((int)board.corners.size()
+        != inner_rows * inner_cols)
+    {
+        std::printf(
+            "ERROR: wrong number of detected corners: %zu\n",
+            board.corners.size()
+        );
 
-    std::vector<Point2f> detected =
-        info.corners;
+        return 1;
+    }
 
-
-    print_points(
-        "Detected INTERNAL corners",
-        detected
+    std::printf(
+        "Detected INTERNAL corners:\n"
+        "  n = %zu\n",
+        board.corners.size()
     );
 
-
-    printf(
-        "\n"
-        "Expected internal corners = %d\n"
-        "Detected internal corners = %zu\n",
-        inner_need,
-        detected.size()
-    );
-
-
-    // ========================================================
+    // --------------------------------------------------------
     // Subpixel refinement
-    // ========================================================
-
-    printf(
-        "\n------------------------------------------------------------\n"
-        "Subpixel refinement\n"
-        "------------------------------------------------------------\n"
-    );
-
+    // --------------------------------------------------------
 
     refine_subpixel(
-        distorted_img,
-        detected,
+        distorted,
+        board.corners,
         7
     );
 
-
-    print_points(
-        "Detected + subpixel",
-        detected
+    std::printf(
+        "Subpixel refinement finished.\n\n"
     );
 
+    // --------------------------------------------------------
+    // Calibration
+    //
+    // IMPORTANT:
+    //
+    // We DO NOT use distorted_truth here.
+    //
+    // The actual detected corners are used.
+    //
+    // Ideal board coordinates are known from the synthetic
+    // board geometry, so they are used as the calibration
+    // reference points.
+    // --------------------------------------------------------
 
-    // ========================================================
-    // 检查检测精度
-    // ========================================================
-
-    print_accuracy(
-        "Detection accuracy",
-        detected,
-        distorted_truth
-    );
-
-
-    // ========================================================
-    // 检查点对应关系
-    // ========================================================
-
-    print_point_correspondence(
-        detected,
-        distorted_truth,
-        10
-    );
-
-
-    if ((int)detected.size() != inner_need) {
-
-        printf(
-            "\nERROR:\n"
-            "  Expected %d corners, but detected %zu.\n",
-            inner_need,
-            detected.size()
+    std::vector<Point2f> ideal_points =
+        make_ideal_corners(
+            inner_rows,
+            inner_cols,
+            cell,
+            offset_x,
+            offset_y
         );
 
-        cv::waitKey(0);
+    std::vector<Point2f> detected_points =
+        board.corners;
 
-        return 1;
-    }
+    CalibDistort init;
 
+    init.k1 = 0.0;
+    init.k2 = 0.0;
+    init.p1 = 0.0;
+    init.p2 = 0.0;
+    init.k3 = 0.0;
 
-    // ========================================================
-    // TEST 3
-    //
-    // LM calibration
-    //
-    // image_pts = 畸变图像中检测到的点
-    // ideal_pts = 理想棋盘点
-    //
-    // 固定：
-    //   fx fy cx cy
-    //
-    // 优化：
-    //   k1 k2 p1 p2 k3
-    // ========================================================
-
-    printf(
-        "\n============================================================\n"
-        "TEST 3: LM Distortion Calibration\n"
-        "============================================================\n"
+    std::printf(
+        "------------------------------------------------------------\n"
+        "Calibration\n"
+        "------------------------------------------------------------\n"
     );
 
-
-    CalibDistort init = {};
-
-    init.k1 = 0;
-    init.k2 = 0;
-    init.p1 = 0;
-    init.p2 = 0;
-    init.k3 = 0;
-
-
-    printf(
-        "\nInitial parameters:\n"
+    std::printf(
+        "Using %zu detected corners for calibration.\n",
+        detected_points.size()
     );
-
-
-    print_distortion(
-        "Initial",
-        init
-    );
-
 
     LMResult calib =
         lm_calibrate_distort(
-            detected,
-            //distorted_truth,
-            ideal_truth,
+            detected_points,
+            ideal_points,
             cam.fx,
             cam.fy,
             cam.cx,
@@ -1117,621 +514,195 @@ int main()
             1e-8
         );
 
-
-    printf(
-        "\n------------------------------------------------------------\n"
-        "Calibration Result\n"
-        "------------------------------------------------------------\n"
-    );
-
-
-    print_distortion(
-        "Estimated",
-        calib.d
-    );
-
-
-    printf("\n");
-
-
-    print_distortion(
-        "Ground truth",
-        truth_dist
-    );
-
-
-    printf("\n");
-
-
-    print_distortion_error(
-        calib.d,
-        truth_dist
-    );
-
-
-    double rms =
-        std::sqrt(
-            calib.final_error /
-            (2.0 * (f64)detected.size())
-        );
-
-
-    printf(
+    std::printf(
+        "\nEstimated distortion:\n"
+        "  k1 = % .8f\n"
+        "  k2 = % .8f\n"
+        "  p1 = % .8f\n"
+        "  p2 = % .8f\n"
+        "  k3 = % .8f\n"
         "\n"
-        "  final SSE  = %.10f\n"
-        "  final RMS  = %.10f px\n"
+        "Calibration:\n"
+        "  RMS        = %.8f px\n"
         "  iterations = %d\n"
-        "  converged  = %s\n",
+        "  converged  = %s\n\n",
+        calib.d.k1,
+        calib.d.k2,
+        calib.d.p1,
+        calib.d.p2,
+        calib.d.k3,
         calib.final_error,
-        rms,
         calib.iterations,
         calib.converged ? "YES" : "NO"
     );
 
-
-    // ========================================================
-    // TEST 4
+    // --------------------------------------------------------
+    // Compare estimated parameters with ground truth
     //
-    // 使用 LM 估计参数去畸变
-    // ========================================================
+    // This is only for displaying the diagnostic result.
+    // It is NOT fed back into calibration.
+    // --------------------------------------------------------
 
-    printf(
-        "\n============================================================\n"
-        "TEST 4: Estimated Parameters -> Undistortion\n"
-        "============================================================\n"
+    std::printf(
+        "Parameter error:\n"
+        "  dk1 = % .8f\n"
+        "  dk2 = % .8f\n"
+        "  dp1 = % .8f\n"
+        "  dp2 = % .8f\n"
+        "  dk3 = % .8f\n\n",
+        calib.d.k1 - truth.k1,
+        calib.d.k2 - truth.k2,
+        calib.d.p1 - truth.p1,
+        calib.d.p2 - truth.p2,
+        calib.d.k3 - truth.k3
     );
 
+    // --------------------------------------------------------
+    // Undistort
+    //
+    // Use ONLY estimated calibration parameters.
+    // --------------------------------------------------------
 
-    CameraParams estimated_cam =
-        make_camera_with_distortion(
-            cam,
-            calib.d
-        );
+    CameraParams estimated_cam = cam;
 
+    estimated_cam.k1 = (f32)calib.d.k1;
+    estimated_cam.k2 = (f32)calib.d.k2;
+    estimated_cam.p1 = (f32)calib.d.p1;
+    estimated_cam.p2 = (f32)calib.d.p2;
+    estimated_cam.k3 = (f32)calib.d.k3;
 
-    printf(
-        "\nEstimated CameraParams:\n"
-        "  fx = %.6f\n"
-        "  fy = %.6f\n"
-        "  cx = %.6f\n"
-        "  cy = %.6f\n",
-        estimated_cam.fx,
-        estimated_cam.fy,
-        estimated_cam.cx,
-        estimated_cam.cy
+    GrayImage undistorted(
+        width,
+        height
     );
 
-
-    print_distortion(
-        "Estimated distortion used for remap",
-        calib.d
-    );
-
-
-    printf(
-        "\nBuilding remap table...\n"
-    );
-
-
-    GrayImage estimated_undistorted =
-        undistort_with_camera(
-            distorted_img,
+    RemapTable remap =
+        build_remap_table(
+            width,
+            height,
             estimated_cam
         );
 
-
-    printf(
-        "Undistortion finished.\n"
+    remap_bilinear(
+        distorted,
+        remap,
+        undistorted
     );
 
+    // --------------------------------------------------------
+    // Compare undistorted image with original ideal image
+    // --------------------------------------------------------
 
-    print_image_difference(
-        "Ideal vs estimated-undistorted",
-        ideal_img,
-        estimated_undistorted
+    f64 mean_abs = 0.0;
+    int max_err = 0;
+
+    image_error(
+        ideal,
+        undistorted,
+        mean_abs,
+        max_err
     );
 
-
-    // --------------------------------------------------------
-    // 去畸变之后再次检测角点
-    // --------------------------------------------------------
-
-    printf(
-        "\n------------------------------------------------------------\n"
-        "Detect corners after estimated undistortion\n"
+    std::printf(
         "------------------------------------------------------------\n"
+        "Undistortion Result\n"
+        "------------------------------------------------------------\n"
+        "Mean absolute image error = %.6f\n"
+        "Max image error           = %d\n\n",
+        mean_abs,
+        max_err
     );
 
+    // --------------------------------------------------------
+    // Save result
+    // --------------------------------------------------------
 
-    std::vector<Point2f> estimated_undist_detected;
-
-
-    ChessboardInfo estimated_info =
-        detect_chessboard(
-            estimated_undistorted,
-            inner_rows,
-            inner_cols
-        );
-
-
-    if (estimated_info.valid) {
-
-        estimated_undist_detected =
-            estimated_info.corners;
-
-        refine_subpixel(
-            estimated_undistorted,
-            estimated_undist_detected,
-            7
-        );
-
-        print_points(
-            "Estimated-undistorted detected",
-            estimated_undist_detected
-        );
-
-        print_accuracy(
-            "Estimated-undistorted vs ideal",
-            estimated_undist_detected,
-            ideal_truth
-        );
-
-    }
-    else {
-
-        printf(
-            "  WARNING: failed to detect corners "
-            "after estimated undistortion.\n"
-        );
-    }
-
-
-    // ========================================================
-    // FINAL SUMMARY
-    // ========================================================
-
-    printf(
-        "\n============================================================\n"
-        "FINAL DIAGNOSTIC SUMMARY\n"
-        "============================================================\n"
+    cv::imwrite(
+        "undistorted.png",
+        to_cv_mat(undistorted)
     );
 
-
     // --------------------------------------------------------
-    // Test 1
+    // Also save an absolute difference image
     // --------------------------------------------------------
 
-    f32 gt_corner_mean = 0;
-    f32 gt_corner_max = 0;
+    cv::Mat ideal_cv =
+        to_cv_mat(ideal);
 
-    bool gt_corner_ok =
-        calculate_accuracy(
-            gt_undist_detected,
-            ideal_truth,
-            gt_corner_mean,
-            gt_corner_max
-        );
+    cv::Mat undistorted_cv =
+        to_cv_mat(undistorted);
 
+    cv::Mat diff;
 
-    printf(
-        "\n[1] Ground-truth undistortion\n"
-        "    Checks undistort.cpp independently.\n"
+    cv::absdiff(
+        ideal_cv,
+        undistorted_cv,
+        diff
     );
 
-
-    if (gt_corner_ok) {
-
-        printf(
-            "    corner mean error = %.6f px\n"
-            "    corner max error  = %.6f px\n",
-            gt_corner_mean,
-            gt_corner_max
-        );
-
-    }
-    else {
-
-        printf(
-            "    corner detection FAILED\n"
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Test 2
-    // --------------------------------------------------------
-
-    f32 detect_mean = 0;
-    f32 detect_max = 0;
-
-    bool detect_ok =
-        calculate_accuracy(
-            detected,
-            distorted_truth,
-            detect_mean,
-            detect_max
-        );
-
-
-    printf(
-        "\n[2] Distorted corner detection\n"
-        "    Checks detector + ordering.\n"
+    cv::imwrite(
+        "undistort_diff.png",
+        diff
     );
 
-
-    if (detect_ok) {
-
-        printf(
-            "    mean error = %.6f px\n"
-            "    max error  = %.6f px\n",
-            detect_mean,
-            detect_max
-        );
-
-    }
-    else {
-
-        printf(
-            "    detection FAILED\n"
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Test 3
-    // --------------------------------------------------------
-
-    printf(
-        "\n[3] LM calibration\n"
-        "    Checks distortion parameter estimation.\n"
+    std::printf(
+        "Saved:\n"
+        "  undistorted.png\n"
+        "  undistort_diff.png\n\n"
     );
 
-
-    printf(
-        "    converged = %s\n"
-        "    RMS       = %.8f px\n",
-        calib.converged ? "YES" : "NO",
-        rms
-    );
-
-
     // --------------------------------------------------------
-    // Test 4
-    // --------------------------------------------------------
-
-    f32 est_corner_mean = 0;
-    f32 est_corner_max = 0;
-
-    bool est_corner_ok =
-        calculate_accuracy(
-            estimated_undist_detected,
-            ideal_truth,
-            est_corner_mean,
-            est_corner_max
-        );
-
-
-    printf(
-        "\n[4] Estimated-parameter undistortion\n"
-        "    Checks the complete calibration pipeline.\n"
-    );
-
-
-    if (est_corner_ok) {
-
-        printf(
-            "    corner mean error = %.6f px\n"
-            "    corner max error  = %.6f px\n",
-            est_corner_mean,
-            est_corner_max
-        );
-
-    }
-    else {
-
-        printf(
-            "    corner detection FAILED\n"
-        );
-    }
-
-
-    // ========================================================
     // Visualization
-    // ========================================================
+    // --------------------------------------------------------
 
-    printf(
-        "\n============================================================\n"
-        "Visualization\n"
-        "============================================================\n"
-        "\n"
-        "1. Ideal\n"
-        "2. Distorted\n"
-        "3. Distorted + detected corners\n"
-        "4. GT parameter undistortion\n"
-        "5. Estimated parameter undistortion\n"
-        "6. GT undistortion + corners\n"
-        "7. Estimated undistortion + corners\n"
-        "8. Ideal vs estimated difference\n"
-        "\n"
-        "Press any key to exit.\n"
+    cv::Mat distorted_cv =
+        to_cv_mat(distorted);
+
+    cv::Mat detected_view =
+        distorted_cv.clone();
+
+    for (const auto& p : detected_points) {
+
+        cv::circle(
+            detected_view,
+            cv::Point(
+                (int)std::lround(p.x),
+                (int)std::lround(p.y)
+            ),
+            3,
+            cv::Scalar(255),
+            -1
+        );
+    }
+
+    cv::imshow(
+        "Ideal",
+        ideal_cv
     );
 
+    cv::imshow(
+        "Distorted",
+        distorted_cv
+    );
 
-    // --------------------------------------------------------
-    // Window 1: Ideal
-    // --------------------------------------------------------
+    cv::imshow(
+        "Detected Corners",
+        detected_view
+    );
 
-    {
-        cv::Mat mat =
-            gray_to_mat(ideal_img);
+    cv::imshow(
+        "Undistorted",
+        undistorted_cv
+    );
 
-        cv::Mat disp;
+    cv::imshow(
+        "Undistortion Error",
+        diff
+    );
 
-        cv::resize(
-            mat,
-            disp,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::putText(
-            disp,
-            "Ideal chessboard",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.7,
-            cv::Scalar(255),
-            2
-        );
-
-        cv::imshow(
-            "1 - Ideal",
-            disp
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 2: Distorted
-    // --------------------------------------------------------
-
-    {
-        cv::Mat mat =
-            gray_to_mat(distorted_img);
-
-        cv::Mat disp;
-
-        cv::resize(
-            mat,
-            disp,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::putText(
-            disp,
-            "Distorted image",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.7,
-            cv::Scalar(255),
-            2
-        );
-
-        cv::imshow(
-            "2 - Distorted",
-            disp
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 3: Distorted + detected
-    // --------------------------------------------------------
-
-    {
-        cv::Mat comparison =
-            draw_detection_comparison(
-                distorted_img,
-                detected,
-                distorted_truth,
-                "Distorted: RED=detected GREEN=truth"
-            );
-
-        cv::Mat big;
-
-        cv::resize(
-            comparison,
-            big,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::imshow(
-            "3 - Distorted + Corners",
-            big
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 4: GT undistortion
-    // --------------------------------------------------------
-
-    {
-        cv::Mat mat =
-            gray_to_mat(gt_undistorted);
-
-        cv::Mat disp;
-
-        cv::resize(
-            mat,
-            disp,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::putText(
-            disp,
-            "Undistorted using GROUND TRUTH parameters",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.65,
-            cv::Scalar(255),
-            2
-        );
-
-        cv::imshow(
-            "4 - GT Undistorted",
-            disp
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 5: Estimated undistortion
-    // --------------------------------------------------------
-
-    {
-        cv::Mat mat =
-            gray_to_mat(estimated_undistorted);
-
-        cv::Mat disp;
-
-        cv::resize(
-            mat,
-            disp,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::putText(
-            disp,
-            "Undistorted using ESTIMATED parameters",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.65,
-            cv::Scalar(255),
-            2
-        );
-
-        cv::imshow(
-            "5 - Estimated Undistorted",
-            disp
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 6: GT undistortion + corners
-    // --------------------------------------------------------
-
-    if (!gt_undist_detected.empty()) {
-
-        cv::Mat disp =
-            draw_internal_corners(
-                gt_undistorted,
-                gt_undist_detected,
-                "GT undistorted + INTERNAL corners"
-            );
-
-        cv::Mat big;
-
-        cv::resize(
-            disp,
-            big,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::imshow(
-            "6 - GT Undistorted + Corners",
-            big
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 7: Estimated undistortion + corners
-    // --------------------------------------------------------
-
-    if (!estimated_undist_detected.empty()) {
-
-        cv::Mat disp =
-            draw_internal_corners(
-                estimated_undistorted,
-                estimated_undist_detected,
-                "Estimated undistorted + INTERNAL corners"
-            );
-
-        cv::Mat big;
-
-        cv::resize(
-            disp,
-            big,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::imshow(
-            "7 - Estimated Undistorted + Corners",
-            big
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Window 8: Difference
-    // --------------------------------------------------------
-
-    {
-        cv::Mat diff =
-            make_difference_image(
-                ideal_img,
-                estimated_undistorted
-            );
-
-        cv::Mat diff_big;
-
-        cv::resize(
-            diff,
-            diff_big,
-            cv::Size(),
-            2.0,
-            2.0,
-            cv::INTER_NEAREST
-        );
-
-        cv::putText(
-            diff_big,
-            "Absolute difference: ideal vs estimated undistorted",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.6,
-            cv::Scalar(255),
-            2
-        );
-
-        cv::imshow(
-            "8 - Difference",
-            diff_big
-        );
-    }
-
+    std::printf(
+        "Press any key in an OpenCV window to exit.\n"
+    );
 
     cv::waitKey(0);
 

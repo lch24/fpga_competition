@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="algo\calibrate.h" />
     <ClInclude Include="algo\chessboard.h" />
     <ClInclude Include="algo\grayscale.h" />
     <ClInclude Include="algo\integral_projection.h" />

@@ -45,6 +45,12 @@
     <ClInclude Include="algo\subpixel.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="common\matrix.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\calibrate.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="common\io.cpp">
@@ -72,6 +78,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="algo\subpixel.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\calibrate.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\matrix.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

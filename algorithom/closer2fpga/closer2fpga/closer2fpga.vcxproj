@@ -36,6 +36,7 @@
     <ClCompile Include="algo\undistort.cpp" />
     <ClCompile Include="common\matrix.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="synthetic_main.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>

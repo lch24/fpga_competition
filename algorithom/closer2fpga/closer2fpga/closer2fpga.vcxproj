@@ -21,27 +21,19 @@
   <ItemGroup>
     <ClInclude Include="algo\calibrate.h" />
     <ClInclude Include="algo\chessboard.h" />
-    <ClInclude Include="algo\grayscale.h" />
-    <ClInclude Include="algo\integral_projection.h" />
     <ClInclude Include="algo\shi_tomasi.h" />
     <ClInclude Include="algo\subpixel.h" />
-    <ClInclude Include="algo\threshold.h" />
     <ClInclude Include="algo\undistort.h" />
     <ClInclude Include="common\image.h" />
-    <ClInclude Include="common\io.h" />
     <ClInclude Include="common\matrix.h" />
     <ClInclude Include="common\types.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="algo\calibrate.cpp" />
     <ClCompile Include="algo\chessboard.cpp" />
-    <ClCompile Include="algo\grayscale.cpp" />
-    <ClCompile Include="algo\integral_projection.cpp" />
     <ClCompile Include="algo\shi_tomasi.cpp" />
     <ClCompile Include="algo\subpixel.cpp" />
-    <ClCompile Include="algo\threshold.cpp" />
     <ClCompile Include="algo\undistort.cpp" />
-    <ClCompile Include="common\io.cpp" />
     <ClCompile Include="common\matrix.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>

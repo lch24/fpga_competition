@@ -62,6 +62,9 @@
     <ClCompile Include="algo\calibrate.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="algo\camera_calibrate.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="common\matrix.cpp">
       <Filter>源文件</Filter>
     </ClCompile>

@@ -30,6 +30,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="algo\calibrate.cpp" />
+    <ClCompile Include="algo\camera_calibrate.cpp" />
     <ClCompile Include="algo\chessboard.cpp" />
     <ClCompile Include="algo\shi_tomasi.cpp" />
     <ClCompile Include="algo\subpixel.cpp" />

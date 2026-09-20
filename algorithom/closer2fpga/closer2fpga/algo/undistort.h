@@ -1,6 +1,7 @@
 #pragma once
 #include "../common/types.h"
 #include "../common/image.h"
+#include "../common/image_view.h"
 
 struct RemapTable {
     int w = 0, h = 0;
@@ -12,7 +13,13 @@ RemapTable build_remap_table(int w, int h, const CameraParams& cam);
 
 enum class RemapBorder { Replicate, ConstantBlack };
 
+// Borrowed buffers: map/destination dimensions match, map c=1, source/dest c=1 or 3.
+// Padding untouched; invalid samples become black. Destination must not overlap
+// source or either map. No allocation; buffers are CPU-visible, not bus addresses.
+void remap_bilinear(ImageView<const uint8_t> src, ImageView<const float> map_x, ImageView<const float> map_y,
+                    ImageView<uint8_t> dst, RemapBorder border = RemapBorder::Replicate);
+
 // Supports one-channel gray or three-channel interleaved color. Channel order
 // is preserved. Source and destination may refer to the same Image object.
 void remap_bilinear(const GrayImage& src, const RemapTable& table, GrayImage& dst,
-    RemapBorder border = RemapBorder::Replicate);
+                    RemapBorder border = RemapBorder::Replicate);

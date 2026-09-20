@@ -1,66 +1,52 @@
-﻿﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="源文件">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
-    </Filter>
-    <Filter Include="头文件">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
-    <Filter Include="资源文件">
-      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
-    </Filter>
+    <Filter Include="algo" />
+    <Filter Include="algo\calibration" />
+    <Filter Include="algo\chessboard" />
+    <Filter Include="common" />
+    <Filter Include="desktop" />
+    <Filter Include="kernels" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="common\image.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="common\types.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\undistort.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\chessboard.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\shi_tomasi.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\subpixel.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="common\matrix.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\calibrate.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="main.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\undistort.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\chessboard.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\shi_tomasi.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\subpixel.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\calibrate.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="common\matrix.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
+    <ClCompile Include="algo\calibrate.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\calibrate.h"><Filter>algo</Filter></ClInclude>
+    <ClCompile Include="algo\calibration\initialization.cpp"><Filter>algo\calibration</Filter></ClCompile>
+    <ClInclude Include="algo\calibration\internal.h"><Filter>algo\calibration</Filter></ClInclude>
+    <ClCompile Include="algo\calibration\lm.cpp"><Filter>algo\calibration</Filter></ClCompile>
+    <ClCompile Include="algo\calibration\pose_init.cpp"><Filter>algo\calibration</Filter></ClCompile>
+    <ClCompile Include="algo\calibration\report.cpp"><Filter>algo\calibration</Filter></ClCompile>
+    <ClCompile Include="algo\calibration\residuals.cpp"><Filter>algo\calibration</Filter></ClCompile>
+    <ClCompile Include="algo\chessboard.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\chessboard.h"><Filter>algo</Filter></ClInclude>
+    <ClCompile Include="algo\chessboard\candidates.cpp"><Filter>algo\chessboard</Filter></ClCompile>
+    <ClInclude Include="algo\chessboard\internal.h"><Filter>algo\chessboard</Filter></ClInclude>
+    <ClCompile Include="algo\chessboard\ordering.cpp"><Filter>algo\chessboard</Filter></ClCompile>
+    <ClCompile Include="algo\chessboard\validation.cpp"><Filter>algo\chessboard</Filter></ClCompile>
+    <ClCompile Include="algo\grayscale.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\grayscale.h"><Filter>algo</Filter></ClInclude>
+    <ClCompile Include="algo\remap_table.cpp"><Filter>algo</Filter></ClCompile>
+    <ClCompile Include="algo\shi_tomasi.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\shi_tomasi.h"><Filter>algo</Filter></ClInclude>
+    <ClCompile Include="algo\subpixel.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\subpixel.h"><Filter>algo</Filter></ClInclude>
+    <ClCompile Include="algo\undistort.cpp"><Filter>algo</Filter></ClCompile>
+    <ClInclude Include="algo\undistort.h"><Filter>algo</Filter></ClInclude>
+    <ClInclude Include="common\image.h"><Filter>common</Filter></ClInclude>
+    <ClInclude Include="common\image_view.h"><Filter>common</Filter></ClInclude>
+    <ClCompile Include="common\math3.cpp"><Filter>common</Filter></ClCompile>
+    <ClInclude Include="common\math3.h"><Filter>common</Filter></ClInclude>
+    <ClCompile Include="common\matrix.cpp"><Filter>common</Filter></ClCompile>
+    <ClInclude Include="common\matrix.h"><Filter>common</Filter></ClInclude>
+    <ClCompile Include="common\symmetric_eigen.cpp"><Filter>common</Filter></ClCompile>
+    <ClInclude Include="common\symmetric_eigen.h"><Filter>common</Filter></ClInclude>
+    <ClInclude Include="common\types.h"><Filter>common</Filter></ClInclude>
+    <ClCompile Include="desktop\display.cpp"><Filter>desktop</Filter></ClCompile>
+    <ClInclude Include="desktop\display.h"><Filter>desktop</Filter></ClInclude>
+    <ClInclude Include="kernels\color.h"><Filter>kernels</Filter></ClInclude>
+    <ClInclude Include="kernels\distortion.h"><Filter>kernels</Filter></ClInclude>
+    <ClInclude Include="kernels\gradient.h"><Filter>kernels</Filter></ClInclude>
+    <ClInclude Include="kernels\interpolation.h"><Filter>kernels</Filter></ClInclude>
+    <ClCompile Include="main.cpp"></ClCompile>
   </ItemGroup>
 </Project>

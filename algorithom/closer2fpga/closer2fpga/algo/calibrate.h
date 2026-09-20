@@ -30,7 +30,6 @@ struct CameraCalibrationResult {
     std::string message;
 };
 
-CameraCalibrationResult calibrate_camera(
-    const std::vector<std::vector<Point2f>>& image_points,
-    int width, int height, int rows, int cols, f64 square_size = 1.0,
-    const CameraCalibrationOptions& options = {});
+CameraCalibrationResult calibrate_camera(const std::vector<std::vector<Point2f>>& image_points, int width,
+                                         int height, int rows, int cols, f64 square_size = 1.0,
+                                         const CameraCalibrationOptions& options = {});

@@ -3,7 +3,9 @@
 using f32 = float;
 using f64 = double;
 
-struct Point2f  { f32 x, y; };
+struct Point2f {
+    f32 x, y;
+};
 
 struct CameraParams {
     f32 fx, fy;

@@ -1,8 +1,10 @@
-﻿# closer2fpga
+# closer2fpga
 
-纯 C++ 相机标定与去畸变原型，面向后续 FPGA 的 PS/PL 分工。
+纯 C++ 相机标定与去畸变参考实现，用于指导 FPGA Verilog 模块划分。处理边界为 DDR 输入图像到 DDR 输出图像。
 
 当前流程：读取三张图片 → 灰度化 → 内角点检测和亚像素定位 → 联合求解内参、姿态和畸变 → 生成一次映射表 → 彩色双线性去畸变。
+
+先阅读 [算法总览：从棋盘角点到相机标定与去畸变](docs/ALGORITHM_OVERVIEW.md)，了解每一步的输入输出、几何关系和参数含义；再阅读 [Verilog 模块与时序指南](docs/RTL_GUIDE.md) 查看实现划分。
 
 ## 运行
 
@@ -14,26 +16,38 @@
 - 控制台输出参数及重投影误差，标定失败时不应用校正。
 - 三视图默认固定 `k3=0`，其余四个畸变系数参与估计。
 
-OpenCV 用于桌面程序的读图、图像容器、绘制和显示。`algo/`、`common/` 的计算不依赖 OpenCV；回归测试单独使用 OpenCV 作为数值参考。
+OpenCV 用于桌面程序的读图、图像容器、绘制和显示。`algo/`、`common/`、`kernels/` 的计算不依赖 OpenCV；回归测试单独使用 OpenCV 作为数值参考。
 
 ## 代码结构
 
 ```text
 closer2fpga/
-  main.cpp                  三张图的读取、流程组织及显示
+  main.cpp                    三图流程与窗口事件循环
+  desktop/display.*           绘制与显示容器（OpenCV）
+  kernels/                    无状态运算核
+    color.h                   BGR 灰度化
+    gradient.h                Sobel、外积、2×2 张量运算
+    interpolation.h           共享双线性插值
+    distortion.h              共享 Brown 畸变模型
   algo/
-    chessboard.h/.cpp       候选点筛选、方向搜索、网格组织
-    shi_tomasi.h/.cpp       Sobel 和角点响应
-    subpixel.h/.cpp         迭代亚像素定位
-    calibrate.h/.cpp        完整相机标定（初始化、姿态、LM）
-    undistort.h/.cpp        映射表与灰度/彩色双线性插值
+    grayscale.*               带行跨度的灰度扫描
+    chessboard.*              多尺度检测调度
+    chessboard/               候选点、网格排序、网格验证
+    shi_tomasi.*              梯度/窗口响应/全图阈值/NMS
+    subpixel.*                亚像素迭代控制
+    calibrate.*               标定入口与多初值调度
+    calibration/              初始化、姿态、残差、LM、结果检查
+    remap_table.cpp           坐标表生成
+    undistort.*               借用缓冲区与拥有内存的 remap 接口
   common/
-    types.h                坐标、相机参数与数值类型
-    image.h                连续图像存储
-    matrix.h/.cpp          小矩阵存储与高斯消元
+    image.h / image_view.h    拥有内存的图像 / 借用的行跨度视图
+    types.h                   点与相机参数
+    math3.*                   三维运算与旋转转换
+    symmetric_eigen.*         对称特征分解与外积累加
+    matrix.*                  小矩阵与高斯消元
 ```
 
-每个算法只有一套正在使用的实现。旧版已知内参拟合器、停用的合成入口和早期导出图片已移除。
+运算核不访问图像内存，扫描/迭代控制留在算法层。格式由 `.clang-format` 统一；按职责拆文件，避免把所有标定或检测步骤放在一个长文件中。
 
 ## 验证
 
@@ -45,18 +59,15 @@ closer2fpga/
 & .\closer2fpga\tests\build_demo.cmd
 ```
 
-依次检查内角点、标定/去畸变及桌面程序构建。第二个脚本还编译并运行不链接 OpenCV 的独立核心程序。构建脚本默认使用 `E:\vs` 和其中的 vcpkg，可通过 `VS_ROOT`、`OPENCV_ROOT` 环境变量调整。
+依次检查内角点、标定/去畸变及桌面程序构建。第二个脚本还编译并运行不链接 OpenCV 的核心程序及缓冲区/运算核回归。构建脚本默认使用 `E:\vs` 和其中的 vcpkg，可通过 `VS_ROOT`、`OPENCV_ROOT` 环境变量调整。
 
 - [内角点测试记录](tests/README.md)
 - [标定参数、去畸变验证和适用限制](tests/CALIBRATION.md)
 
 测试产物位于 `tests/build`；Visual Studio 缓存和构建目录均由 `.gitignore` 排除。输入图片位于本项目之外，不属于测试输出。
 
-## 后续 FPGA 工作
+## Verilog 开发参考
 
-当前为浮点 C++ 软件原型，尚无 RTL、定点实现或实时视频采集接口。
+从 [模块、DDR 缓冲区与时序划分](docs/RTL_GUIDE.md) 开始阅读。其中逐模块区分无状态算术、窗口缓存、状态机和流水切点，并说明可共享运算单元及其吞吐取舍。
 
-- PS：网格组织、亚像素定位、相机标定及映射表生成。
-- PL 候选：灰度化、Sobel/角点响应、查表及双线性插值。
-- 移植前需用更多实拍数据检验鲁棒性，并量化定点误差、映射表容量和访存带宽。
-- 去畸变涉及非顺序源坐标访问，缓冲方案应根据实际映射范围设计，不能直接假定两行缓存足够。
+当前不固定 MCU/FPGA 分工，不实现 DDR 控制器、摄像头采集或显示链路。带行跨度的灰度化和 remap 接口已可借用调用方缓冲区；角点检测仍使用连续中间图。所有代码仍为浮点软件参考，定点位宽和逐周期验证留到后续 RTL 实现阶段。

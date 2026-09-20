@@ -12,8 +12,4 @@ struct ChessboardInfo {
     bool valid;
 };
 
-ChessboardInfo detect_chessboard(
-    const GrayImage& gray,
-    int inner_rows,
-    int inner_cols
-);
+ChessboardInfo detect_chessboard(const GrayImage& gray, int inner_rows, int inner_cols);

@@ -75,12 +75,15 @@ void shi_tomasi_response(const FloatMap& Ix, const FloatMap& Iy, FloatMap& resp,
 
 void shi_tomasi_detect(const GrayImage& src, std::vector<Point2f>& corners,
                        f32 threshold_ratio, int win_size) {
+    corners.clear();
+    if (!src.data || src.w < 5 || src.h < 5 || win_size < 3 || win_size % 2 == 0) return;
     FloatMap Ix, Iy, resp;
     sobel_xy(src, Ix, Iy);
     shi_tomasi_response(Ix, Iy, resp, win_size);
 
     f32 rmax = *std::max_element(resp.data, resp.data + resp.w * resp.h);
-    f32 thr = rmax * threshold_ratio;
+    if (!std::isfinite(rmax) || rmax <= 0) return;
+    f32 thr = rmax * std::clamp(threshold_ratio, 0.001f, 1.0f);
 
     int r = win_size / 2;
     int nms = 3;
@@ -89,7 +92,7 @@ void shi_tomasi_detect(const GrayImage& src, std::vector<Point2f>& corners,
     for (int y = nr + r; y < resp.h - nr - r; ++y) {
         for (int x = nr + r; x < resp.w - nr - r; ++x) {
             f32 v = resp.get(x, y);
-            if (v < thr) continue;
+            if (v <= 0 || v < thr) continue;
 
             bool is_max = true;
             for (int dy = -nr; dy <= nr && is_max; ++dy)

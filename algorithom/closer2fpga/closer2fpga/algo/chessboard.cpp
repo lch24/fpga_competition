@@ -1,415 +1,235 @@
-#define _CRT_SECURE_NO_WARNINGS
-#include "chessboard.h"
+﻿#include "chessboard.h"
 #include "shi_tomasi.h"
-
+#include "subpixel.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
+#include <limits>
+#include <numeric>
 #include <vector>
 
-// Merge multiple Shi-Tomasi responses that belong to the same physical corner.
-static void cluster_corners(std::vector<Point2f>& pts, f32 radius)
-{
-    if (pts.empty())
-        return;
-
-    std::vector<bool> used(pts.size(), false);
-    std::vector<Point2f> clustered;
-
-    const f32 r2 = radius * radius;
-
-    for (int i = 0; i < (int)pts.size(); ++i)
-    {
-        if (used[i])
-            continue;
-
-        f32 sx = pts[i].x;
-        f32 sy = pts[i].y;
-        int count = 1;
-        used[i] = true;
-
-        for (int j = i + 1; j < (int)pts.size(); ++j)
-        {
-            if (used[j])
-                continue;
-
-            f32 dx = pts[j].x - pts[i].x;
-            f32 dy = pts[j].y - pts[i].y;
-
-            if (dx * dx + dy * dy < r2)
-            {
-                sx += pts[j].x;
-                sy += pts[j].y;
-                ++count;
-                used[j] = true;
+namespace {
+constexpr float pi = 3.14159265358979323846f;
+float distance(Point2f a, Point2f b) { return std::hypot(a.x - b.x, a.y - b.y); }
+float median(std::vector<float> v) {
+    if (v.empty()) return 0;
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    return v[v.size() / 2];
+}
+void merge_duplicates(std::vector<Point2f>& points, float radius) {
+    std::vector<bool> used(points.size(), false);
+    std::vector<Point2f> out;
+    for (size_t i = 0; i < points.size(); ++i) {
+        if (used[i]) continue;
+        Point2f sum = points[i];
+        int n = 1;
+        for (size_t j = i + 1; j < points.size(); ++j) {
+            if (!used[j] && distance(points[i], points[j]) < radius) {
+                used[j] = true; sum.x += points[j].x; sum.y += points[j].y; ++n;
             }
         }
-
-        clustered.push_back(
-            Point2f(sx / (f32)count, sy / (f32)count)
-        );
+        out.push_back({sum.x / n, sum.y / n});
     }
-
-    pts = std::move(clustered);
+    points = std::move(out);
+}
+float nearest_distance(const std::vector<Point2f>& points, size_t i) {
+    float result = std::numeric_limits<float>::max();
+    for (size_t j = 0; j < points.size(); ++j)
+        if (i != j) result = std::min(result, distance(points[i], points[j]));
+    return result;
 }
 
-// Compute 3x3 Sobel gradient (Gx, Gy) at pixel (x,y).
-static void sobel3(
-    const GrayImage& gray, int x, int y,
-    f32& gx, f32& gy)
-{
-    int w = gray.w;
-    int h = gray.h;
-
-    if (x <= 0 || y <= 0 || x >= w - 1 || y >= h - 1)
-    {
-        gx = 0.0f;
-        gy = 0.0f;
-        return;
+// A ring around a four-cell junction has four brightness transitions.
+// Unlike image-axis quadrants, this test does not assume horizontal edges.
+// Smoothing and minimum sector lengths reject isolated texture/noise responses.
+bool alternating_ring(const GrayImage& img, Point2f p, float radius) {
+    if (p.x < radius + 1 || p.y < radius + 1 ||
+        p.x >= img.w - radius - 1 || p.y >= img.h - radius - 1) return false;
+    float values[32], smooth[32];
+    for (int k = 0; k < 32; ++k) {
+        float a = 2 * pi * k / 32;
+        values[k] = float(img.get(int(std::lround(p.x + radius * std::cos(a))),
+                                   int(std::lround(p.y + radius * std::sin(a)))));
     }
-
-    const uint8_t I[3][3] = {
-        {gray.get(x - 1, y - 1), gray.get(x, y - 1), gray.get(x + 1, y - 1)},
-        {gray.get(x - 1, y),     gray.get(x, y),     gray.get(x + 1, y)},
-        {gray.get(x - 1, y + 1), gray.get(x, y + 1), gray.get(x + 1, y + 1)},
-    };
-
-    gx =
-        -I[0][0] - 2.0f * I[0][1] - I[0][2]
-        + I[2][0] + 2.0f * I[2][1] + I[2][2];
-
-    gy =
-        -I[0][0] - 2.0f * I[1][0] - I[2][0]
-        + I[0][2] + 2.0f * I[1][2] + I[2][2];
-}
-
-// Keep only chessboard INTERIOR corners.
-//
-// An interior chessboard corner sits at the intersection of FOUR alternating
-// black/white cells.  Divide a small window around the candidate into four
-// quadrants (NE, NW, SW, SE) and check that opposite quadrants agree in
-// brightness while adjacent quadrants differ:
-//     QNE ~= QSW  (diagonal same color)
-//     QNW ~= QSE  (diagonal same color)
-//     |QNE - QNW| is large (adjacent different color)
-//
-// This directly validates the "4-cell junction" geometry and is immune
-// to lens distortion, perspective skew, and background clutter.
-static std::vector<Point2f> filter_inner_corners(
-    const GrayImage& gray,
-    const std::vector<Point2f>& pts)
-{
-    std::vector<Point2f> kept;
-
-    const int win_r = 10;
-
-    for (const auto& p : pts)
-    {
-        int cx = (int)(p.x + 0.5f);
-        int cy = (int)(p.y + 0.5f);
-
-        if (cx <= win_r || cy <= win_r ||
-            cx >= gray.w - win_r || cy >= gray.h - win_r)
-            continue;
-
-        f64 sumNE = 0.0, sumNW = 0.0, sumSW = 0.0, sumSE = 0.0;
-        int cntNE = 0, cntNW = 0, cntSW = 0, cntSE = 0;
-
-        for (int dy = -win_r; dy <= win_r; ++dy)
-        {
-            for (int dx = -win_r; dx <= win_r; ++dx)
-            {
-                if (dx == 0 && dy == 0)
-                    continue;
-
-                uint8_t v = gray.get(cx + dx, cy + dy);
-
-                if (dx > 0 && dy < 0)      { sumNE += v; cntNE++; }
-                else if (dx < 0 && dy < 0) { sumNW += v; cntNW++; }
-                else if (dx < 0 && dy > 0) { sumSW += v; cntSW++; }
-                else if (dx > 0 && dy > 0) { sumSE += v; cntSE++; }
-            }
-        }
-
-        if (cntNE == 0 || cntNW == 0 || cntSW == 0 || cntSE == 0)
-            continue;
-
-        f64 mNE = sumNE / cntNE;
-        f64 mNW = sumNW / cntNW;
-        f64 mSW = sumSW / cntSW;
-        f64 mSE = sumSE / cntSE;
-
-        f64 bright = std::max({mNE, mNW, mSW, mSE});
-        f64 dark   = std::min({mNE, mNW, mSW, mSE});
-
-        if (bright - dark < 40.0)
-            continue;
-
-        f64 diag1_diff = std::fabs(mNE - mSW);
-        f64 diag2_diff = std::fabs(mNW - mSE);
-        f64 adj_diff_a = std::fabs(mNE - mNW);
-        f64 adj_diff_b = std::fabs(mNE - mSE);
-
-        if (diag1_diff > (bright - dark) * 0.45)
-            continue;
-        if (diag2_diff > (bright - dark) * 0.45)
-            continue;
-
-        if (adj_diff_a < (bright - dark) * 0.30)
-            continue;
-        if (adj_diff_b < (bright - dark) * 0.30)
-            continue;
-
-        kept.push_back(p);
+    float lo = 255, hi = 0;
+    for (int k = 0; k < 32; ++k) {
+        smooth[k] = (values[(k + 31) % 32] + 2 * values[k] + values[(k + 1) % 32]) / 4;
+        lo = std::min(lo, smooth[k]); hi = std::max(hi, smooth[k]);
     }
-
-    return kept;
-}
-
-// Use RANSAC to repeatedly fit rows as straight lines.  Perspective skew
-// means rows are not horizontal (constant y), but they remain roughly
-// colinear.  We extract row_count lines one by one.
-static bool group_rows_by_y(
-    const std::vector<Point2f>& pts,
-    int row_count,
-    int col_count,
-    std::vector<std::vector<Point2f>>& rows)
-{
-    rows.clear();
-
-    if ((int)pts.size() < row_count * (col_count - 1))
-        return false;
-
-    std::vector<Point2f> remaining = pts;
-
-    for (int r = 0; r < row_count; ++r)
-    {
-        if ((int)remaining.size() < col_count - 1)
-            return false;
-
-        std::vector<Point2f> best_inliers;
-        f32 best_err = 1e9f;
-
-        for (int trial = 0; trial < 400; ++trial)
-        {
-            if ((int)remaining.size() < 2) break;
-
-            int i = rand() % remaining.size();
-            int j = rand() % remaining.size();
-            if (i == j) continue;
-
-            Point2f a = remaining[i];
-            Point2f b = remaining[j];
-            f32 dx = b.x - a.x;
-            f32 dy = b.y - a.y;
-            f32 len2 = dx * dx + dy * dy;
-            if (len2 < 4.0f) continue;
-
-            f32 nrm = std::sqrt(len2);
-            f32 nx = dx / nrm;
-            f32 ny = dy / nrm;
-
-            std::vector<Point2f> inliers;
-            f32 err_sum = 0.0f;
-
-            for (auto& p : remaining)
-            {
-                f32 px = p.x - a.x;
-                f32 py = p.y - a.y;
-                f32 dist = std::fabs(px * ny - py * nx);
-
-                if (dist < 18.0f)
-                {
-                    inliers.push_back(p);
-                    err_sum += dist;
-                }
-            }
-
-            int n = (int)inliers.size();
-            if (n < col_count - 2 || n > col_count + 2)
-                continue;
-
-            f32 err = err_sum / n;
-            if (err < best_err)
-            {
-                best_err = err;
-                best_inliers = inliers;
-            }
-        }
-
-        if (best_inliers.empty())
-            return false;
-
-        printf("  [chessboard] row %d has %zu points", r, best_inliers.size());
-        for (auto& p : best_inliers)
-            printf(" (%.0f,%.0f)", p.x, p.y);
-        printf("\n");
-
-        for (auto& p : best_inliers)
-        {
-            auto it = std::find_if(remaining.begin(), remaining.end(),
-                [&](const Point2f& q) {
-                    return std::fabs(q.x - p.x) < 0.1f &&
-                           std::fabs(q.y - p.y) < 0.1f;
-                });
-            if (it != remaining.end())
-                remaining.erase(it);
-        }
-
-        rows.push_back(std::move(best_inliers));
+    if (hi - lo < 20) return false;
+    float threshold = (hi + lo) * 0.5f;
+    std::vector<int> transitions;
+    float opposite_error = 0;
+    for (int k = 0; k < 32; ++k) {
+        if ((smooth[k] > threshold) != (smooth[(k + 31) % 32] > threshold))
+            transitions.push_back(k);
+        opposite_error += std::fabs(smooth[k] - smooth[(k + 16) % 32]);
     }
-
-    std::sort(rows.begin(), rows.end(),
-        [](const std::vector<Point2f>& a, const std::vector<Point2f>& b)
-        {
-            f32 ay = 0.0f, by = 0.0f;
-            for (auto& p : a) ay += p.y;
-            ay /= a.size();
-            for (auto& p : b) by += p.y;
-            by /= b.size();
-            return ay < by;
-        });
-
-    for (int r = 0; r < row_count; ++r)
-    {
-        std::sort(rows[r].begin(), rows[r].end(),
-            [](const Point2f& a, const Point2f& b)
-            {
-                return a.x < b.x;
-            });
+    if (transitions.size() != 4 || opposite_error > 32 * (hi - lo) * 0.28f) return false;
+    for (int k = 0; k < 4; ++k) {
+        int length = (transitions[(k + 1) % 4] - transitions[k] + 32) % 32;
+        if (length < 3 || length > 13) return false;
     }
-
     return true;
 }
 
-// Public API:
-//
-// rows / cols mean INTERNAL corner counts.
-//
-// Example:
-//   6x8 squares -> 5x7 internal corners
-//   detect_chessboard(gray, 5, 7)
-ChessboardInfo detect_chessboard(
-    const GrayImage& gray,
-    int rows,
-    int cols)
-{
-    ChessboardInfo info = {};
-    info.rows = rows;
-    info.cols = cols;
-    info.valid = false;
+// Validate both lattice directions, convex cells, and smoothly varying spacing.
+// All tolerances are relative to observed spacing, not fixed pixel distances.
+float grid_cost(const std::vector<Point2f>& g, int rows, int cols) {
+    float cost = 0, sign = 0;
+    for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) {
+        Point2f p = g[r * cols + c];
+        for (int axis = 0; axis < 2; ++axis) {
+            int step = axis ? cols : 1;
+            int pos = axis ? r : c, count = axis ? rows : cols;
+            if (pos + 2 >= count) continue;
+            Point2f a = g[r * cols + c + step], b = g[r * cols + c + 2 * step];
+            float dx1 = a.x - p.x, dy1 = a.y - p.y;
+            float dx2 = b.x - a.x, dy2 = b.y - a.y;
+            float l1 = std::hypot(dx1, dy1), l2 = std::hypot(dx2, dy2);
+            if (l1 < 4 || l2 < 4 || l2 / l1 < 0.55f || l2 / l1 > 1.8f) return 1e30f;
+            float cosine = (dx1 * dx2 + dy1 * dy2) / (l1 * l2);
+            if (cosine < 0.90f) return 1e30f;
+            float change = std::log(l2 / l1);
+            cost += (1 - cosine) + change * change;
+        }
+        if (r + 1 < rows && c + 1 < cols) {
+            Point2f q[4] = {p, g[r * cols + c + 1], g[(r + 1) * cols + c + 1], g[(r + 1) * cols + c]};
+            for (int k = 0; k < 4; ++k) {
+                Point2f a = q[k], b = q[(k + 1) % 4], d = q[(k + 2) % 4];
+                float cross = (b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x);
+                float lengths = distance(a, b) * distance(b, d);
+                if (lengths < 16 || std::fabs(cross) < lengths * 0.2f) return 1e30f;
+                if (sign == 0) sign = cross;
+                if (cross * sign <= 0) return 1e30f;
+            }
+        }
+    }
+    return cost;
+}
 
-    if (rows <= 0 || cols <= 0)
-        return info;
+bool organize_grid(const std::vector<Point2f>& points, int rows, int cols, std::vector<Point2f>& best) {
+    float best_cost = 1e30f;
+    // Search a board-aligned coordinate system; only project for ordering.
+    // The output always retains the original measured image coordinates.
+    for (int degree = -90; degree < 90; degree += 2) {
+        float a = degree * pi / 180, co = std::cos(a), si = std::sin(a);
+        auto u = [&](int i) { return points[i].x * co + points[i].y * si; };
+        auto v = [&](int i) { return -points[i].x * si + points[i].y * co; };
+        std::vector<int> order(points.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](int i, int j) { return v(i) < v(j); });
+        std::vector<int> gaps(order.size() - 1);
+        std::iota(gaps.begin(), gaps.end(), 0);
+        std::sort(gaps.begin(), gaps.end(), [&](int i, int j) {
+            return v(order[i + 1]) - v(order[i]) > v(order[j + 1]) - v(order[j]);
+        });
+        gaps.resize(rows - 1);
+        std::sort(gaps.begin(), gaps.end());
+        gaps.push_back(int(order.size()) - 1);
+        int begin = 0;
+        std::vector<Point2f> grid;
+        for (int r = 0; r < rows; ++r) {
+            int end = gaps[r] + 1;
+            if (end - begin < cols) break;
+            std::sort(order.begin() + begin, order.begin() + end, [&](int i, int j) { return u(i) < u(j); });
+            // Select a contiguous, regularly spaced row; extra edge candidates
+            // may be discarded, but missing interior corners are never invented.
+            float row_best = 1e30f;
+            int start_best = -1;
+            for (int start = begin; start + cols <= end; ++start) {
+                std::vector<float> steps;
+                for (int c = 1; c < cols; ++c) steps.push_back(distance(points[order[start + c - 1]], points[order[start + c]]));
+                float spacing = median(steps), score = 0;
+                if (spacing < 4) continue;
+                for (float step : steps) {
+                    float change = (step - spacing) / spacing;
+                    score += change * change;
+                }
+                if (score < row_best) { row_best = score; start_best = start; }
+            }
+            if (start_best < 0) break;
+            for (int c = 0; c < cols; ++c) grid.push_back(points[order[start_best + c]]);
+            begin = end;
+        }
+        if ((int)grid.size() != rows * cols) continue;
+        float cost = grid_cost(grid, rows, cols);
+        if (cost < best_cost) { best_cost = cost; best = std::move(grid); }
+    }
+    if (best.empty()) return false;
+    // Deterministic image-relative origin among the four equivalent board corners.
+    // An unmarked chessboard cannot encode a unique physical origin.
+    int corner_ids[4] = {0, cols - 1, (rows - 1) * cols, rows * cols - 1};
+    int origin = 0;
+    for (int k = 1; k < 4; ++k)
+        if (best[corner_ids[k]].x + best[corner_ids[k]].y < best[corner_ids[origin]].x + best[corner_ids[origin]].y) origin = k;
+    auto copy = best;
+    for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c)
+        best[r * cols + c] = copy[(origin >= 2 ? rows - 1 - r : r) * cols + (origin % 2 ? cols - 1 - c : c)];
+    return true;
+}
+}
 
-    const int expected_inner = rows * cols;
-
+static ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
+    ChessboardInfo info{};
+    info.rows = rows; info.cols = cols;
+    if (!gray.data || gray.w < 16 || gray.h < 16 || rows < 2 || cols < 2 ||
+        rows > 100 || cols > 100) return info;
     std::vector<Point2f> candidates;
-
-    shi_tomasi_detect(
-        gray,
-        candidates,
-        0.15f,
-        3
-    );
-
-    printf("  [chessboard] shi_tomasi raw: %zu\n", candidates.size());
-
-    if ((int)candidates.size() < expected_inner)
-    {
-        printf("  [chessboard] not enough raw candidates\n");
-        return info;
-    }
-
-    cluster_corners(candidates, 18.0f);
-
-    printf("  [chessboard] after cluster: %zu\n", candidates.size());
-
+    shi_tomasi_detect(gray, candidates, 0.08f, 3);
+    // Bound quadratic candidate work on unrelated, heavily textured inputs.
+    if (candidates.size() > 12000 || candidates.size() < size_t(rows * cols)) return info;
+    merge_duplicates(candidates, 5.0f);
+    refine_subpixel(gray, candidates, 7);
+    merge_duplicates(candidates, 3.0f);
     info.all_candidates = candidates;
-
-    candidates = filter_inner_corners(gray, candidates);
-
-    printf("  [chessboard] after inner filter: %zu\n", candidates.size());
-
-    if ((int)candidates.size() < expected_inner)
-    {
-        printf("  [chessboard] not enough inner candidates\n");
-        return info;
-    }
-
-    std::vector<std::vector<Point2f>> grid_rows;
-
-    if (!group_rows_by_y(candidates, rows, cols, grid_rows))
-    {
-        printf("  [chessboard] row grouping FAILED\n");
-        return info;
-    }
-
-    printf("  [chessboard] rows:");
-    for (int r = 0; r < rows; ++r)
-        printf(" %d", (int)grid_rows[r].size());
-    printf("\n");
-
-    for (int r = 0; r < rows; ++r)
-    {
-        if ((int)grid_rows[r].size() != cols)
-        {
-            printf("  [chessboard] row %d has %zu points, need %d\n",
-                r, grid_rows[r].size(), cols);
-            return info;
-        }
-    }
-
     std::vector<Point2f> inner;
-    inner.reserve(expected_inner);
-
-    for (int r = 0; r < rows; ++r)
-    {
-        std::vector<Point2f> row = grid_rows[r];
-        std::sort(
-            row.begin(), row.end(),
-            [](const Point2f& a, const Point2f& b)
-            {
-                return a.x < b.x;
-            });
-
-        for (auto& p : row)
-            inner.push_back(p);
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        float spacing = nearest_distance(candidates, i);
+        float radius = std::clamp(spacing * 0.22f, 4.0f, 18.0f);
+        if (alternating_ring(gray, candidates[i], radius) &&
+            (alternating_ring(gray, candidates[i], radius * 0.75f) ||
+             alternating_ring(gray, candidates[i], radius * 1.25f))) inner.push_back(candidates[i]);
     }
-
-    for (int r = 0; r < rows; ++r)
-    {
-        for (int c = 1; c < cols; ++c)
-        {
-            const Point2f& a = inner[r * cols + c - 1];
-            const Point2f& b = inner[r * cols + c];
-
-            if (b.x <= a.x)
-            {
-                printf("  [chessboard] invalid x order at (%d,%d)\n", r, c);
-                return info;
-            }
-        }
-
-        if (r > 0)
-        {
-            const Point2f& above = inner[(r - 1) * cols];
-            const Point2f& below = inner[r * cols];
-
-            if (below.y <= above.y)
-            {
-                printf("  [chessboard] invalid y order at row %d\n", r);
-                return info;
-            }
-        }
+    std::printf("  [chessboard] candidates=%zu inner=%zu\n", candidates.size(), inner.size());
+    if (inner.size() < size_t(rows * cols)) return info;
+    if (!organize_grid(inner, rows, cols, info.corners)) return info;
+    std::vector<float> steps;
+    for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) {
+        if (c + 1 < cols) steps.push_back(distance(info.corners[r * cols + c], info.corners[r * cols + c + 1]));
+        if (r + 1 < rows) steps.push_back(distance(info.corners[r * cols + c], info.corners[(r + 1) * cols + c]));
     }
-
-    info.corners = std::move(inner);
-    info.valid = true;
-
-    printf("  [chessboard] internal corners: %zu\n", info.corners.size());
-    printf("  [chessboard] valid: YES\n");
-
+    // Use the shortest observed cell edge so perspective-compressed cells
+    // do not share the refinement window with a neighboring junction.
+    int radius = std::clamp(int(*std::min_element(steps.begin(), steps.end()) * 0.15f), 2, 10);
+    refine_subpixel(gray, info.corners, radius);
+    info.valid = grid_cost(info.corners, rows, cols) < 1e30f;
+    if (!info.valid) info.corners.clear();
     return info;
+}
+
+ChessboardInfo detect_chessboard(const GrayImage& gray, int rows, int cols) {
+    if (gray.data && gray.w >= 32 && gray.h >= 32 && std::max(gray.w, gray.h) > 960) {
+        // Coarse-to-fine detection suppresses multiple responses around broad
+        // printed edges. Only the grid search is downsampled; final localization
+        // always uses the original image. Fall back to full resolution for small
+        // or distant boards whose corners would disappear in the pyramid.
+        GrayImage half(gray.w / 2, gray.h / 2);
+        for (int y = 0; y < half.h; ++y) for (int x = 0; x < half.w; ++x)
+            half.set(x, y, uint8_t((int(gray.get(2*x, 2*y)) + gray.get(2*x+1, 2*y)
+                + gray.get(2*x, 2*y+1) + gray.get(2*x+1, 2*y+1) + 2) / 4));
+        auto coarse = detect_chessboard(half, rows, cols);
+        if (coarse.valid) {
+            for (auto& p : coarse.corners) { p.x = 2*p.x + 0.5f; p.y = 2*p.y + 0.5f; }
+            for (auto& p : coarse.all_candidates) { p.x = 2*p.x + 0.5f; p.y = 2*p.y + 0.5f; }
+            float min_step = std::numeric_limits<float>::max();
+            for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) {
+                if (c+1 < cols) min_step = std::min(min_step, distance(coarse.corners[r*cols+c], coarse.corners[r*cols+c+1]));
+                if (r+1 < rows) min_step = std::min(min_step, distance(coarse.corners[r*cols+c], coarse.corners[(r+1)*cols+c]));
+            }
+            refine_subpixel(gray, coarse.corners, std::clamp(int(min_step * 0.15f), 2, 10));
+            if (grid_cost(coarse.corners, rows, cols) < 1e30f) return coarse;
+        }
+    }
+    return detect_native(gray, rows, cols);
 }

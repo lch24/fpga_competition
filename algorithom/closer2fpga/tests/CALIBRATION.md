@@ -4,7 +4,7 @@
 
 ## 纯 C++ 计算链路
 
-新增 `algo/camera_calibrate.cpp`，通过 `calibrate.h` 暴露 `calibrate_camera`。旧 `lm_calibrate_distort` 保留用于已知内参的测试，主程序不使用它完成真实相机标定。
+完整相机标定统一位于 `algo/calibrate.cpp`，通过 `calibrate.h` 暴露 `calibrate_camera`。
 
 1. 用归一化 DLT 估计各张棋盘的单应矩阵。
 2. 使用 Zhang 内参初始化及多个初始焦距候选。
@@ -18,7 +18,7 @@ Jacobi 特征分解、Rodrigues 旋转、数值雅可比、列缩放 LM、高斯
 
 三张图默认拟合 `k1,k2,p1,p2`，固定 `k3=0`，减少高阶参数过拟合。`CameraCalibrationOptions::estimate_k3=true` 可以启用第五项；此选项已在六幅已知真值的合成数据上验证。
 
-去畸变保留原来的内参和图像尺寸：理想目标像素 → 正向畸变模型 → 源图坐标。源图之外填黑，不复制边缘像素形成拖影。`remap_bilinear` 默认边界仍为复制边缘以兼容旧接口，主程序显式选择 `ConstantBlack`。支持灰度、三通道彩色、原位处理和单像素图像。
+去畸变保留原来的内参和图像尺寸：理想目标像素 → 正向畸变模型 → 源图坐标。源图之外填黑，不复制边缘像素形成拖影。`remap_bilinear` 支持复制边缘和黑色边界，主程序显式选择 `ConstantBlack`。支持灰度、三通道彩色、原位处理和单像素图像。
 
 ## 当前三张图的结果
 

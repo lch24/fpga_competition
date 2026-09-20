@@ -1,7 +1,9 @@
-﻿#define _CRT_SECURE_NO_WARNINGS
 #include <cstdio>
 #include <cmath>
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include "common/image.h"
 #include "algo/chessboard.h"
 #include "algo/calibrate.h"
@@ -65,6 +67,7 @@ int main() {
     };
     constexpr int rows = 5, cols = 8;
     int failures = 0;
+    bool correction_applied = false;
     cv::Mat views[3];
     cv::Mat colors[3];
     GrayImage sources[3];
@@ -123,6 +126,7 @@ int main() {
                 remap_bilinear(sources[i], table, corrected, RemapBorder::ConstantBlack);
                 views[i] = comparison(colors[i], corrected);
             }
+            correction_applied = true;
         } else ++failures;
     } else std::printf("Calibration skipped: all three images must contain the complete board at the same resolution.\n");
     // Show all results before entering the shared window event loop.
@@ -131,7 +135,7 @@ int main() {
         cv::namedWindow(windows[i], cv::WINDOW_NORMAL);
         cv::imshow(windows[i], views[i]);
         // Three simultaneous windows; each shows before/after side by side.
-        cv::resizeWindow(windows[i], views[i].cols > width ? 960 : 640, views[i].cols > width ? 270 : 360);
+        cv::resizeWindow(windows[i], correction_applied ? 960 : 640, correction_applied ? 270 : 360);
         cv::moveWindow(windows[i], 20 + (i % 2) * 80, 20 + i * 300);
         open[i] = true;
     }

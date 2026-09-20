@@ -44,9 +44,6 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="synthetic_main.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="algo\undistort.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -60,9 +57,6 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="algo\calibrate.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\camera_calibrate.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="common\matrix.cpp">

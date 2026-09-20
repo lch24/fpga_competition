@@ -8,11 +8,6 @@
 #include "../closer2fpga/algo/chessboard.h"
 #include "../closer2fpga/algo/undistort.h"
 
-GrayImage gray_image(const cv::Mat& image) {
-    GrayImage gray(image.cols,image.rows);
-    for (int y=0;y<gray.h;++y) for (int x=0;x<gray.w;++x) gray.set(x,y,image.at<uint8_t>(y,x));
-    return gray;
-}
 void report(const char* label,const CameraCalibrationResult& r) {
     const auto& k=r.camera;
     std::printf("%s valid=%d converged=%d rms=%.8f max=%.5f iterations=%d\n",label,k.valid,r.converged,r.rms,r.max_error,r.iterations);

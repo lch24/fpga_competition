@@ -1,5 +1,4 @@
 #pragma once
-#include <cstdlib>
 #include <cstdint>
 #include "types.h"
 
@@ -42,5 +41,4 @@ public:
 };
 
 using GrayImage = Image<uint8_t>;
-using RgbImage  = Image<uint8_t>;
 using FloatMap  = Image<f32>;

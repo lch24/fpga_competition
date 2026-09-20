@@ -1,1417 +1,373 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include "calibrate.h"
 #include "../common/matrix.h"
-
-#include <cmath>
-#include <cstdio>
-#include <vector>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <numeric>
 
-// ============================================================
-// Basic helpers
-// ============================================================
-
-static bool finite_f64(f64 v)
-{
-    return std::isfinite(v);
+namespace {
+using M3 = std::array<double, 9>;
+using V3 = std::array<double, 3>;
+using State = std::vector<double>;
+constexpr double infinity = std::numeric_limits<double>::infinity();
+double dot(V3 a, V3 b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+V3 cross(V3 a, V3 b) { return {a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]}; }
+V3 scaled(V3 a, double s) { for (auto& v : a) v *= s; return a; }
+M3 multiply(const M3& a, const M3& b) {
+    M3 c{};
+    for (int r=0;r<3;++r) for (int col=0;col<3;++col)
+        for (int k=0;k<3;++k) c[r*3+col] += a[r*3+k]*b[k*3+col];
+    return c;
 }
 
-// ============================================================
-// Radial distortion
-// ============================================================
-
-f64 radial_distort(
-    f64 x_n,
-    f64 y_n,
-    const CalibDistort& d
-)
-{
-    f64 r2 = x_n * x_n + y_n * y_n;
-    f64 r4 = r2 * r2;
-    f64 r6 = r4 * r2;
-
-    return 1.0
-        + d.k1 * r2
-        + d.k2 * r4
-        + d.k3 * r6;
+// Jacobi eigensolver for small real symmetric matrices (normalized DLT/Zhang).
+// Eigenvectors are columns; sorting leaves the smallest eigenpair first.
+bool eigen_symmetric(std::vector<double> a, int n, std::vector<double>& values, std::vector<double>& vectors) {
+    vectors.assign(n*n, 0);
+    for (int i=0;i<n;++i) vectors[i*n+i] = 1;
+    bool done = false;
+    for (int iteration=0;iteration<100*n*n;++iteration) {
+        int p=0,q=1; double largest=0, diagonal=0;
+        for (int i=0;i<n;++i) {
+            diagonal = std::max(diagonal, std::fabs(a[i*n+i]));
+            for (int j=i+1;j<n;++j) if (std::fabs(a[i*n+j]) > largest) {
+                largest=std::fabs(a[i*n+j]); p=i; q=j;
+            }
+        }
+        if (largest <= 1e-14*std::max(diagonal,1e-30)) { done=true; break; }
+        double phi=0.5*std::atan2(2*a[p*n+q], a[q*n+q]-a[p*n+p]);
+        double c=std::cos(phi), s=std::sin(phi);
+        double app=a[p*n+p], aqq=a[q*n+q], apq=a[p*n+q];
+        for (int k=0;k<n;++k) if (k!=p && k!=q) {
+            double akp=a[k*n+p], akq=a[k*n+q];
+            a[k*n+p]=a[p*n+k]=c*akp-s*akq;
+            a[k*n+q]=a[q*n+k]=s*akp+c*akq;
+        }
+        a[p*n+p]=c*c*app-2*s*c*apq+s*s*aqq;
+        a[q*n+q]=s*s*app+2*s*c*apq+c*c*aqq;
+        a[p*n+q]=a[q*n+p]=0;
+        for (int k=0;k<n;++k) {
+            double vkp=vectors[k*n+p], vkq=vectors[k*n+q];
+            vectors[k*n+p]=c*vkp-s*vkq; vectors[k*n+q]=s*vkp+c*vkq;
+        }
+    }
+    if (!done) return false;
+    std::vector<int> order(n); std::iota(order.begin(),order.end(),0);
+    std::sort(order.begin(),order.end(),[&](int i,int j){return a[i*n+i]<a[j*n+j];});
+    auto original=vectors; values.resize(n);
+    for (int j=0;j<n;++j) {
+        values[j]=a[order[j]*n+order[j]];
+        for (int i=0;i<n;++i) vectors[i*n+j]=original[i*n+order[j]];
+    }
+    return true;
 }
 
-// ============================================================
-// Ideal -> distorted projection
-// ============================================================
-
-void project_distorted(
-    f64 x_ideal,
-    f64 y_ideal,
-    f64 fx,
-    f64 fy,
-    f64 cx,
-    f64 cy,
-    const CalibDistort& d,
-    f64& x_d,
-    f64& y_d
-)
-{
-    // Pixel -> normalized camera coordinates.
-    f64 x_n = (x_ideal - cx) / fx;
-    f64 y_n = (y_ideal - cy) / fy;
-
-    f64 r2 = x_n * x_n + y_n * y_n;
-    f64 r4 = r2 * r2;
-    f64 r6 = r4 * r2;
-
-    // Radial distortion.
-    f64 radial =
-        1.0
-        + d.k1 * r2
-        + d.k2 * r4
-        + d.k3 * r6;
-
-    // Tangential distortion.
-    f64 xt =
-        2.0 * d.p1 * x_n * y_n
-        + d.p2 * (r2 + 2.0 * x_n * x_n);
-
-    f64 yt =
-        d.p1 * (r2 + 2.0 * y_n * y_n)
-        + 2.0 * d.p2 * x_n * y_n;
-
-    // Distorted normalized coordinates.
-    f64 x_dn = x_n * radial + xt;
-    f64 y_dn = y_n * radial + yt;
-
-    // Normalized -> pixel.
-    x_d = x_dn * fx + cx;
-    y_d = y_dn * fy + cy;
+void accumulate_outer(std::vector<double>& a, const std::vector<double>& row) {
+    const int n=int(row.size());
+    for (int i=0;i<n;++i) for (int j=0;j<n;++j) a[i*n+j]+=row[i]*row[j];
 }
 
-// ============================================================
-// Compute total squared reprojection cost
-// ============================================================
-
-static f64 compute_cost_all(
-    const CalibDistort& d,
-    const std::vector<Point2f>& image_pts,
-    const std::vector<Point2f>& ideal_pts,
-    f64 fx,
-    f64 fy,
-    f64 cx,
-    f64 cy
-)
-{
-    int N = (int)image_pts.size();
-
-    if (N == 0 ||
-        ideal_pts.size() != image_pts.size())
-    {
-        return 0.0;
+bool homography(const std::vector<Point2f>& points,int rows,int cols,M3& h) {
+    // Object coordinates are centered and expressed in board-square units.
+    double mx=0,my=0;
+    for (auto p:points) { mx+=p.x; my+=p.y; }
+    mx/=points.size(); my/=points.size();
+    double di=0, dw=0;
+    for (int r=0;r<rows;++r) for (int c=0;c<cols;++c) {
+        auto p=points[r*cols+c];
+        di+=std::hypot(p.x-mx,p.y-my);
+        dw+=std::hypot(c-(cols-1)*.5,r-(rows-1)*.5);
     }
-
-    f64 sum = 0.0;
-
-    for (int i = 0; i < N; ++i)
-    {
-        f64 xd, yd;
-
-        project_distorted(
-            ideal_pts[i].x,
-            ideal_pts[i].y,
-            fx,
-            fy,
-            cx,
-            cy,
-            d,
-            xd,
-            yd
-        );
-
-        f64 dx =
-            (f64)image_pts[i].x - xd;
-
-        f64 dy =
-            (f64)image_pts[i].y - yd;
-
-        if (!finite_f64(dx) ||
-            !finite_f64(dy))
-        {
-            return HUGE_VAL;
-        }
-
-        sum += dx * dx + dy * dy;
-
-        if (!finite_f64(sum))
-        {
-            return HUGE_VAL;
-        }
+    if (di<1e-6 || dw<1e-6) return false;
+    double si=std::sqrt(2.)*points.size()/di, sw=std::sqrt(2.)*points.size()/dw;
+    std::vector<double> ata(81,0),eval,evec;
+    for (int r=0;r<rows;++r) for (int c=0;c<cols;++c) {
+        auto p=points[r*cols+c];
+        double x=(c-(cols-1)*.5)*sw, y=(r-(rows-1)*.5)*sw;
+        double u=(p.x-mx)*si, v=(p.y-my)*si;
+        accumulate_outer(ata,{-x,-y,-1,0,0,0,u*x,u*y,u});
+        accumulate_outer(ata,{0,0,0,-x,-y,-1,v*x,v*y,v});
     }
-
-    return sum;
+    if (!eigen_symmetric(ata,9,eval,evec) || eval[1]<eval[8]*1e-10) return false;
+    M3 normalized{};
+    for (int k=0;k<9;++k) normalized[k]=evec[k*9];
+    h=multiply(multiply({1/si,0,mx,0,1/si,my,0,0,1},normalized),{sw,0,0,0,sw,0,0,0,1});
+    if (std::fabs(h[8])<1e-12) return false;
+    double scale=h[8]; for (auto& v:h) v/=scale;
+    return true;
 }
 
-// ============================================================
-// Parameter access
-// ============================================================
-
-static f64 param_get(
-    const CalibDistort& d,
-    int idx
-)
-{
-    switch (idx)
-    {
-    case 0: return d.k1;
-    case 1: return d.k2;
-    case 2: return d.p1;
-    case 3: return d.p2;
-    case 4: return d.k3;
-    default: return 0.0;
-    }
+std::vector<double> vij(const M3& h,int i,int j) {
+    return {h[i]*h[j],h[i]*h[3+j]+h[3+i]*h[j],h[3+i]*h[3+j],
+        h[6+i]*h[j]+h[i]*h[6+j],h[6+i]*h[3+j]+h[3+i]*h[6+j],h[6+i]*h[6+j]};
 }
 
-static void param_set(
-    CalibDistort& d,
-    int idx,
-    f64 v
-)
-{
-    switch (idx)
-    {
-    case 0: d.k1 = v; break;
-    case 1: d.k2 = v; break;
-    case 2: d.p1 = v; break;
-    case 3: d.p2 = v; break;
-    case 4: d.k3 = v; break;
-    default: break;
+bool zhang_intrinsics(const std::vector<M3>& homographies,int w,int h,std::array<double,4>& k) {
+    // Normalize image coordinates before forming the conic constraints to avoid
+    // mixing pixel^4 terms with order-one entries in the eigensystem.
+    std::vector<double> ata(36,0),eval,evec;
+    M3 t{1./w,0,-.5,0,1./w,-double(h)/(2*w),0,0,1};
+    for (const auto& hom:homographies) {
+        M3 a=multiply(t,hom);
+        auto v12=vij(a,0,1), v11=vij(a,0,0), v22=vij(a,1,1);
+        for (int i=0;i<6;++i) v11[i]-=v22[i];
+        accumulate_outer(ata,v12); accumulate_outer(ata,v11);
     }
+    if (!eigen_symmetric(ata,6,eval,evec)) return false;
+    double b[6]; for (int i=0;i<6;++i) b[i]=evec[i*6];
+    if (b[0]<0) for (auto& v:b) v=-v;
+    double denominator=b[0]*b[2]-b[1]*b[1];
+    if (b[0]<=0 || denominator<=1e-14) return false;
+    double cy=(b[1]*b[3]-b[0]*b[4])/denominator;
+    double lambda=b[5]-(b[3]*b[3]+cy*(b[1]*b[3]-b[0]*b[4]))/b[0];
+    if (lambda<=0) return false;
+    double fx=std::sqrt(lambda/b[0]), fy=std::sqrt(lambda*b[0]/denominator);
+    double skew=-b[1]*fx*fx*fy/lambda;
+    double cx=skew*cy/fy-b[3]*fx*fx/lambda;
+    k={fx*w,fy*w,cx*w+w*.5,cy*w+h*.5};
+    return std::isfinite(k[0]) && std::isfinite(k[1]) && k[0]>.05*w && k[1]>.05*w
+        && k[0]<20*w && k[1]<20*w && std::fabs(k[2]-w*.5)<w && std::fabs(k[3]-h*.5)<h;
 }
 
-// ============================================================
-// Compute full Jacobian
-//
-// residual:
-//
-//     r = observed - predicted
-//
-// Therefore Jacobian is:
-//
-//     dr / dp
-//
-// The derivatives below use the negative of the derivative
-// of the predicted distorted point.
-// ============================================================
-
-static void compute_full_jacobian(
-    int N,
-    int NP,
-    const std::vector<Point2f>& image_pts,
-    const std::vector<Point2f>& ideal_pts,
-    f64 fx,
-    f64 fy,
-    f64 cx,
-    f64 cy,
-    const CalibDistort& d,
-    LMtx& J,
-    LMtx& r_vec
-)
-{
-    for (int i = 0; i < N; ++i)
-    {
-        // Ideal pixel -> normalized coordinates.
-        f64 x_n =
-            ((f64)ideal_pts[i].x - cx) / fx;
-
-        f64 y_n =
-            ((f64)ideal_pts[i].y - cy) / fy;
-
-        f64 r2 = x_n * x_n + y_n * y_n;
-        f64 r4 = r2 * r2;
-        f64 r6 = r4 * r2;
-
-        // Pixel scale.
-        f64 fx_x = fx * x_n;
-        f64 fy_y = fy * y_n;
-
-        // Tangential derivatives.
-        f64 dxt_dp1 =
-            2.0 * x_n * y_n;
-
-        f64 dxt_dp2 =
-            r2 + 2.0 * x_n * x_n;
-
-        f64 dyt_dp1 =
-            r2 + 2.0 * y_n * y_n;
-
-        f64 dyt_dp2 =
-            2.0 * x_n * y_n;
-
-        // Current prediction.
-        f64 xd, yd;
-
-        project_distorted(
-            ideal_pts[i].x,
-            ideal_pts[i].y,
-            fx,
-            fy,
-            cx,
-            cy,
-            d,
-            xd,
-            yd
-        );
-
-        // Residual = observed - predicted.
-        f64 rx =
-            (f64)image_pts[i].x - xd;
-
-        f64 ry =
-            (f64)image_pts[i].y - yd;
-
-        r_vec.at(2 * i, 0) =
-            rx;
-
-        r_vec.at(2 * i + 1, 0) =
-            ry;
-
-        for (int k = 0; k < NP; ++k)
-        {
-            f64 jx = 0.0;
-            f64 jy = 0.0;
-
-            switch (k)
-            {
-                // k1
-            case 0:
-                jx = -fx_x * r2;
-                jy = -fy_y * r2;
-                break;
-
-                // k2
-            case 1:
-                jx = -fx_x * r4;
-                jy = -fy_y * r4;
-                break;
-
-                // p1
-            case 2:
-                jx = -fx * dxt_dp1;
-                jy = -fy * dyt_dp1;
-                break;
-
-                // p2
-            case 3:
-                jx = -fx * dxt_dp2;
-                jy = -fy * dyt_dp2;
-                break;
-
-                // k3
-            case 4:
-                jx = -fx_x * r6;
-                jy = -fy_y * r6;
-                break;
-            }
-
-            J.at(2 * i, k) =
-                jx;
-
-            J.at(2 * i + 1, k) =
-                jy;
-        }
-    }
+M3 rodrigues(V3 v) {
+    double t2=dot(v,v), a,b;
+    if (t2<1e-12) { a=1-t2/6; b=.5-t2/24; }
+    else { double t=std::sqrt(t2); a=std::sin(t)/t; b=(1-std::cos(t))/t2; }
+    M3 s{0,-v[2],v[1],v[2],0,-v[0],-v[1],v[0],0}, ss=multiply(s,s), r{};
+    for (int i=0;i<9;++i) r[i]=(i%4==0 ? 1.:0.)+a*s[i]+b*ss[i];
+    return r;
 }
 
-// ============================================================
-// LM solver for a subset of parameters
-// ============================================================
-
-static LMResult lm_solve_subset(
-    CalibDistort state,
-
-    const std::vector<Point2f>& image_pts,
-    const std::vector<Point2f>& ideal_pts,
-
-    f64 fx,
-    f64 fy,
-    f64 cx,
-    f64 cy,
-
-    const std::vector<int>& active,
-
-    int max_iter,
-    f64 tol,
-
-    bool verbose
-)
-{
-    LMResult res;
-
-    res.d = state;
-    res.final_error = HUGE_VAL;
-    res.iterations = 0;
-    res.converged = false;
-
-    int N =
-        (int)image_pts.size();
-
-    int NP =
-        (int)active.size();
-
-    if (N <= 0)
-        return res;
-
-    if ((int)ideal_pts.size() != N)
-        return res;
-
-    if (NP <= 0)
-        return res;
-
-    if (fx <= 0.0 ||
-        fy <= 0.0)
-    {
-        return res;
+V3 rotation_vector(const M3& r) {
+    // Quaternion conversion remains stable for row/column-flipped boards whose
+    // rotations can be close to pi (unlike division by sin(theta)).
+    double qw,qx,qy,qz, trace=r[0]+r[4]+r[8];
+    if (trace>0) {
+        double s=2*std::sqrt(trace+1); qw=s/4; qx=(r[7]-r[5])/s; qy=(r[2]-r[6])/s; qz=(r[3]-r[1])/s;
+    } else if (r[0]>r[4] && r[0]>r[8]) {
+        double s=2*std::sqrt(1+r[0]-r[4]-r[8]); qw=(r[7]-r[5])/s; qx=s/4; qy=(r[1]+r[3])/s; qz=(r[2]+r[6])/s;
+    } else if (r[4]>r[8]) {
+        double s=2*std::sqrt(1+r[4]-r[0]-r[8]); qw=(r[2]-r[6])/s; qx=(r[1]+r[3])/s; qy=s/4; qz=(r[5]+r[7])/s;
+    } else {
+        double s=2*std::sqrt(1+r[8]-r[0]-r[4]); qw=(r[3]-r[1])/s; qx=(r[2]+r[6])/s; qy=(r[5]+r[7])/s; qz=s/4;
     }
-
-    if (max_iter <= 0)
-        return res;
-
-    if (tol <= 0.0)
-        tol = 1e-8;
-
-    // --------------------------------------------------------
-    // Parameter scaling.
-    // --------------------------------------------------------
-
-    static const f64 full_scale[5] =
-    {
-        0.1,     // k1
-        0.01,    // k2
-        0.01,    // p1
-        0.01,    // p2
-        0.001    // k3
-    };
-
-    std::vector<f64> scale(NP);
-
-    for (int k = 0; k < NP; ++k)
-    {
-        int p =
-            active[k];
-
-        if (p < 0 ||
-            p >= 5)
-        {
-            return res;
-        }
-
-        scale[k] =
-            full_scale[p];
-    }
-
-    // --------------------------------------------------------
-    // Initial cost.
-    // --------------------------------------------------------
-
-    f64 cost =
-        compute_cost_all(
-            state,
-            image_pts,
-            ideal_pts,
-            fx,
-            fy,
-            cx,
-            cy
-        );
-
-    if (!finite_f64(cost))
-        return res;
-
-    res.final_error =
-        cost;
-
-    // --------------------------------------------------------
-    // Allocate matrices.
-    // --------------------------------------------------------
-
-    LMtx J_full(
-        2 * N,
-        5
-    );
-
-    LMtx r_full(
-        2 * N,
-        1
-    );
-
-    LMtx J(
-        2 * N,
-        NP
-    );
-
-    LMtx Js(
-        2 * N,
-        NP
-    );
-
-    // --------------------------------------------------------
-    // LM damping.
-    // --------------------------------------------------------
-
-    f64 lambda =
-        1e-3;
-
-    const f64 lambda_min =
-        1e-12;
-
-    const f64 lambda_max =
-        1e12;
-
-    // ========================================================
-    // Main optimization loop
-    // ========================================================
-
-    for (int iter = 0;
-        iter < max_iter;
-        ++iter)
-    {
-        // ----------------------------------------------------
-        // Calculate Jacobian and residual.
-        // ----------------------------------------------------
-
-        compute_full_jacobian(
-            N,
-            5,
-            image_pts,
-            ideal_pts,
-            fx,
-            fy,
-            cx,
-            cy,
-            state,
-            J_full,
-            r_full
-        );
-
-        // ----------------------------------------------------
-        // Extract active columns.
-        // ----------------------------------------------------
-
-        for (int i = 0;
-            i < 2 * N;
-            ++i)
-        {
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                J.at(i, k) =
-                    J_full.at(
-                        i,
-                        active[k]
-                    );
-            }
-        }
-
-        // ----------------------------------------------------
-        // Apply parameter scaling.
-        // ----------------------------------------------------
-
-        for (int i = 0;
-            i < 2 * N;
-            ++i)
-        {
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                Js.at(i, k) =
-                    J.at(i, k)
-                    * scale[k];
-            }
-        }
-
-        // ----------------------------------------------------
-        // H = J^T J
-        // g = J^T r
-        // ----------------------------------------------------
-
-        LMtx Jt =
-            Js.T();
-
-        LMtx H =
-            Jt * Js;
-
-        LMtx g =
-            Jt * r_full;
-
-        // ----------------------------------------------------
-        // Find maximum diagonal.
-        // ----------------------------------------------------
-
-        f64 max_diag =
-            0.0;
-
-        for (int k = 0;
-            k < NP;
-            ++k)
-        {
-            f64 diag =
-                H.at(k, k);
-
-            if (finite_f64(diag) &&
-                diag > max_diag)
-            {
-                max_diag =
-                    diag;
-            }
-        }
-
-        if (max_diag < 1e-18)
-            max_diag = 1e-18;
-
-        // ----------------------------------------------------
-        // Try multiple damping values.
-        // ----------------------------------------------------
-
-        bool accepted =
-            false;
-
-        CalibDistort best_state =
-            state;
-
-        f64 best_cost =
-            cost;
-
-        f64 best_step_norm =
-            HUGE_VAL;
-
-        f64 used_lambda =
-            lambda;
-
-        for (int attempt = 0;
-            attempt < 12;
-            ++attempt)
-        {
-            // ------------------------------------------------
-            // IMPORTANT:
-            //
-            // LMtx is non-copyable.
-            //
-            // Therefore we cannot do:
-            //
-            //     LMtx Hd = H;
-            //
-            // Instead construct a new matrix and manually
-            // copy the elements.
-            // ------------------------------------------------
-
-            LMtx Hd(
-                NP,
-                NP
-            );
-
-            for (int r = 0;
-                r < NP;
-                ++r)
-            {
-                for (int c = 0;
-                    c < NP;
-                    ++c)
-                {
-                    Hd.at(r, c) =
-                        H.at(r, c);
-                }
-            }
-
-            // ------------------------------------------------
-            // LM diagonal damping:
-            //
-            // Hii += lambda * max_diag
-            // ------------------------------------------------
-
-            f64 damp =
-                used_lambda * max_diag;
-
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                Hd.at(k, k) +=
-                    damp;
-            }
-
-            // ------------------------------------------------
-            // Build -g.
-            //
-            // Matrix is non-copyable, so solve_gauss receives
-            // it using std::move().
-            // ------------------------------------------------
-
-            LMtx neg_g =
-                g * (-1.0);
-
-            LMtx delta_s =
-                solve_gauss(
-                    std::move(Hd),
-                    std::move(neg_g)
-                );
-
-            // ------------------------------------------------
-            // Check Gaussian solver result.
-            // ------------------------------------------------
-
-            if (delta_s.rows != NP ||
-                delta_s.cols != 1 ||
-                delta_s.data == nullptr)
-            {
-                used_lambda *= 10.0;
-
-                if (used_lambda >
-                    lambda_max)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            // ------------------------------------------------
-            // Check delta for NaN / Inf.
-            // ------------------------------------------------
-
-            bool finite_delta =
-                true;
-
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                if (!finite_f64(
-                    delta_s.at(k, 0)))
-                {
-                    finite_delta =
-                        false;
-
-                    break;
-                }
-            }
-
-            if (!finite_delta)
-            {
-                used_lambda *= 10.0;
-
-                if (used_lambda >
-                    lambda_max)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            // ------------------------------------------------
-            // Convert scaled delta to real parameter delta.
-            // ------------------------------------------------
-
-            std::vector<f64> delta_p(
-                NP,
-                0.0
-            );
-
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                delta_p[k] =
-                    delta_s.at(k, 0)
-                    * scale[k];
-            }
-
-            // ------------------------------------------------
-            // Step norm in scaled parameter space.
-            // ------------------------------------------------
-
-            f64 step_norm =
-                0.0;
-
-            for (int k = 0;
-                k < NP;
-                ++k)
-            {
-                f64 q =
-                    delta_s.at(k, 0);
-
-                step_norm +=
-                    q * q;
-            }
-
-            step_norm =
-                std::sqrt(step_norm);
-
-            if (!finite_f64(step_norm))
-            {
-                used_lambda *= 10.0;
-
-                if (used_lambda >
-                    lambda_max)
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            // ------------------------------------------------
-            // Backtracking line search.
-            // ------------------------------------------------
-
-            for (int li = 0;
-                li < 12;
-                ++li)
-            {
-                f64 alpha =
-                    1.0 /
-                    (f64)(1 << li);
-
-                CalibDistort trial =
-                    state;
-
-                bool valid_trial =
-                    true;
-
-                for (int k = 0;
-                    k < NP;
-                    ++k)
-                {
-                    f64 old_p =
-                        param_get(
-                            state,
-                            active[k]
-                        );
-
-                    f64 new_p =
-                        old_p
-                        + alpha
-                        * delta_p[k];
-
-                    // Prevent numerical explosion.
-                    if (!finite_f64(new_p) ||
-                        std::fabs(new_p) > 100.0)
-                    {
-                        valid_trial =
-                            false;
-
-                        break;
-                    }
-
-                    param_set(
-                        trial,
-                        active[k],
-                        new_p
-                    );
-                }
-
-                if (!valid_trial)
-                    continue;
-
-                f64 trial_cost =
-                    compute_cost_all(
-                        trial,
-                        image_pts,
-                        ideal_pts,
-                        fx,
-                        fy,
-                        cx,
-                        cy
-                    );
-
-                if (finite_f64(trial_cost) &&
-                    trial_cost < best_cost)
-                {
-                    best_cost =
-                        trial_cost;
-
-                    best_state =
-                        trial;
-
-                    best_step_norm =
-                        step_norm
-                        * alpha;
-
-                    accepted =
-                        true;
-
-                    break;
-                }
-            }
-
-            // ------------------------------------------------
-            // A valid step was found.
-            // ------------------------------------------------
-
-            if (accepted)
-                break;
-
-            // ------------------------------------------------
-            // Otherwise increase damping.
-            // ------------------------------------------------
-
-            used_lambda *=
-                10.0;
-
-            if (used_lambda >
-                lambda_max)
-            {
-                break;
-            }
-        }
-
-        // ----------------------------------------------------
-        // Diagnostics.
-        // ----------------------------------------------------
-
-        if (verbose &&
-            iter < 8)
-        {
-            f64 rms =
-                std::sqrt(
-                    cost /
-                    (2.0 * N)
-                );
-
-            std::printf(
-                "    [iter %3d] "
-                "rms=%.8f "
-                "lambda=%.3e",
-                iter,
-                rms,
-                used_lambda
-            );
-        }
-
-        // ----------------------------------------------------
-        // No acceptable step.
-        // ----------------------------------------------------
-
-        if (!accepted)
-        {
-            if (verbose &&
-                iter < 8)
-            {
-                std::printf(
-                    " REJECT\n"
-                );
-            }
-
-            lambda =
-                used_lambda * 10.0;
-
-            if (lambda >
-                lambda_max)
-            {
-                break;
-            }
-
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // Apply step.
-        // ----------------------------------------------------
-
-        state =
-            best_state;
-
-        f64 old_cost =
-            cost;
-
-        cost =
-            best_cost;
-
-        res.iterations =
-            iter + 1;
-
-        // ----------------------------------------------------
-        // Successful step -> decrease damping.
-        // ----------------------------------------------------
-
-        lambda =
-            used_lambda * 0.3;
-
-        if (lambda <
-            lambda_min)
-        {
-            lambda =
-                lambda_min;
-        }
-
-        // ----------------------------------------------------
-        // Diagnostics.
-        // ----------------------------------------------------
-
-        if (verbose &&
-            iter < 8)
-        {
-            f64 rms =
-                std::sqrt(
-                    cost /
-                    (2.0 * N)
-                );
-
-            std::printf(
-                " ACCEPT "
-                "step=%.3e "
-                "rms=%.8f "
-                "cost_change=%.3e\n",
-                best_step_norm,
-                rms,
-                old_cost - cost
-            );
-        }
-
-        // ----------------------------------------------------
-        // Convergence.
-        // ----------------------------------------------------
-
-        f64 cost_change =
-            std::fabs(
-                old_cost - cost
-            );
-
-        f64 relative_change =
-            cost_change /
-            std::max(
-                1.0,
-                std::fabs(old_cost)
-            );
-
-        // Parameter change is tiny.
-        if (best_step_norm <
-            tol)
-        {
-            res.converged =
-                true;
-
-            break;
-        }
-
-        // Cost change is tiny.
-        if (relative_change <
-            tol * 0.1)
-        {
-            res.converged =
-                true;
-
-            break;
-        }
-
-        // Practically zero error.
-        if (cost <
-            1e-16)
-        {
-            res.converged =
-                true;
-
-            break;
-        }
-    }
-
-    // --------------------------------------------------------
-    // Final result.
-    // --------------------------------------------------------
-
-    res.d =
-        state;
-
-    res.final_error =
-        cost;
-
-    return res;
+    if (qw<0) { qw=-qw; qx=-qx; qy=-qy; qz=-qz; }
+    double n=std::sqrt(qx*qx+qy*qy+qz*qz);
+    double scale=n>1e-12 ? 2*std::atan2(n,qw)/n : 2;
+    return {qx*scale,qy*scale,qz*scale};
 }
 
-// ============================================================
-// Public distortion calibration
-// ============================================================
-
-LMResult lm_calibrate_distort(
-    const std::vector<Point2f>& image_pts,
-    const std::vector<Point2f>& ideal_pts,
-    f64 fx,
-    f64 fy,
-    f64 cx,
-    f64 cy,
-    const CalibDistort& init,
-    int max_iter,
-    f64 tol
-)
-{
-    LMResult res;
-
-    res.d =
-        init;
-
-    res.final_error =
-        HUGE_VAL;
-
-    res.iterations =
-        0;
-
-    res.converged =
-        false;
-
-    // --------------------------------------------------------
-    // Validate input.
-    // --------------------------------------------------------
-
-    int N =
-        (int)image_pts.size();
-
-    if (N == 0)
-    {
-        std::printf(
-            "  [calibrate] ERROR: no points\n"
-        );
-
-        return res;
+bool initialize(const std::vector<M3>& hom,const std::array<double,4>& k,int w,int h,State& p) {
+    p.assign(9+6*hom.size(),0);
+    p[0]=std::log(k[0]); p[1]=std::log(k[1]); p[2]=k[2]/w; p[3]=k[3]/h;
+    for (size_t i=0;i<hom.size();++i) {
+        const auto& a=hom[i];
+        auto kinv=[&](int c)->V3 {return {(a[c]-k[2]*a[6+c])/k[0],(a[3+c]-k[3]*a[6+c])/k[1],a[6+c]};};
+        V3 v1=kinv(0),v2=kinv(1),t=kinv(2);
+        double n1=std::sqrt(dot(v1,v1)),n2=std::sqrt(dot(v2,v2));
+        if (n1<1e-12 || n2<1e-12) return false;
+        double scale=2/(n1+n2); if (t[2]<0) scale=-scale;
+        t=scaled(t,scale); V3 r1=scaled(v1,scale>0 ? 1/n1:-1/n1);
+        double parallel=dot(r1,v2); for (int j=0;j<3;++j) v2[j]-=parallel*r1[j];
+        double norm=std::sqrt(dot(v2,v2)); if (norm<1e-12 || t[2]<=0) return false;
+        V3 r2=scaled(v2,scale>0 ? 1/norm:-1/norm),r3=cross(r1,r2);
+        M3 rotation{r1[0],r2[0],r3[0],r1[1],r2[1],r3[1],r1[2],r2[2],r3[2]};
+        V3 rv=rotation_vector(rotation);
+        size_t offset=9+6*i;
+        for (int j=0;j<3;++j) p[offset+j]=rv[j];
+        p[offset+3]=t[0]; p[offset+4]=t[1]; p[offset+5]=std::log(t[2]);
     }
+    return true;
+}
 
-    if ((int)ideal_pts.size() != N)
-    {
-        std::printf(
-            "  [calibrate] ERROR: "
-            "image_pts=%d ideal_pts=%d\n",
-            N,
-            (int)ideal_pts.size()
-        );
-
-        return res;
-    }
-
-    if (fx <= 0.0 ||
-        fy <= 0.0)
-    {
-        std::printf(
-            "  [calibrate] ERROR: "
-            "invalid fx/fy\n"
-        );
-
-        return res;
-    }
-
-    if (max_iter <= 0)
-        max_iter = 200;
-
-    if (tol <= 0.0)
-        tol = 1e-8;
-
-    // --------------------------------------------------------
-    // Initial RMS.
-    // --------------------------------------------------------
-
-    f64 cost0 =
-        compute_cost_all(
-            init,
-            image_pts,
-            ideal_pts,
-            fx,
-            fy,
-            cx,
-            cy
-        );
-
-    if (!finite_f64(cost0))
-    {
-        std::printf(
-            "  [calibrate] ERROR: "
-            "initial cost invalid\n"
-        );
-
-        return res;
-    }
-
-    f64 rms0 =
-        std::sqrt(
-            cost0 /
-            (2.0 * N)
-        );
-
-    std::printf(
-        "  [stage 0] init rms=%.8f\n",
-        rms0
-    );
-
-    // --------------------------------------------------------
-    // Already solved.
-    // --------------------------------------------------------
-
-    if (rms0 < 1e-8)
-    {
-        res.d =
-            init;
-
-        res.final_error =
-            cost0;
-
-        res.converged =
-            true;
-
-        res.iterations =
-            0;
-
-        std::printf(
-            "  [stage 0] "
-            "already near optimal, skip\n"
-        );
-
-        return res;
-    }
-
-    // --------------------------------------------------------
-    // Current optimization state.
-    // --------------------------------------------------------
-
-    CalibDistort state =
-        init;
-
-    int total_iterations =
-        0;
-
-    // ========================================================
-    // Stage helper
-    // ========================================================
-
-    auto run_stage =
-        [&](const char* name,
-            const std::vector<int>& active) -> bool
-        {
-            const char* names[5] =
-            {
-                "k1",
-                "k2",
-                "p1",
-                "p2",
-                "k3"
-            };
-
-            std::printf(
-                "  [stage %s] active params:",
-                name
-            );
-
-            for (int k : active)
-            {
-                std::printf(
-                    " %s",
-                    names[k]
-                );
-            }
-
-            std::printf("\n");
-
-            LMResult sub =
-                lm_solve_subset(
-                    state,
-                    image_pts,
-                    ideal_pts,
-                    fx,
-                    fy,
-                    cx,
-                    cy,
-                    active,
-                    max_iter,
-                    tol,
-                    true
-                );
-
-            if (!finite_f64(
-                sub.final_error))
-            {
-                std::printf(
-                    "    -> stage failed: "
-                    "invalid result\n"
-                );
-
-                return false;
-            }
-
-            state =
-                sub.d;
-
-            total_iterations +=
-                sub.iterations;
-
-            f64 rms =
-                std::sqrt(
-                    sub.final_error /
-                    (2.0 * N)
-                );
-
-            std::printf(
-                "    -> rms=%.8f "
-                "iters=%d "
-                "converged=%s\n",
-                rms,
-                sub.iterations,
-                sub.converged
-                ? "yes"
-                : "no"
-            );
-
-            return true;
-        };
-
-    // ========================================================
-    // Stage 1: k1
-    // ========================================================
-
-    if (!run_stage(
-        "1",
-        { 0 }))
-    {
-        res.d =
-            state;
-
-        res.final_error =
-            compute_cost_all(
-                state,
-                image_pts,
-                ideal_pts,
-                fx,
-                fy,
-                cx,
-                cy
-            );
-
-        res.iterations =
-            total_iterations;
-
-        return res;
-    }
-
-    // ========================================================
-    // Stage 2: k1 + k2
-    // ========================================================
-
-    if (!run_stage(
-        "2",
-        { 0, 1 }))
-    {
-        res.d =
-            state;
-
-        res.final_error =
-            compute_cost_all(
-                state,
-                image_pts,
-                ideal_pts,
-                fx,
-                fy,
-                cx,
-                cy
-            );
-
-        res.iterations =
-            total_iterations;
-
-        return res;
-    }
-
-    // ========================================================
-    // Stage 3: k1 + k2 + p1 + p2
-    // ========================================================
-
-    if (!run_stage(
-        "3",
-        { 0, 1, 2, 3 }))
-    {
-        res.d =
-            state;
-
-        res.final_error =
-            compute_cost_all(
-                state,
-                image_pts,
-                ideal_pts,
-                fx,
-                fy,
-                cx,
-                cy
-            );
-
-        res.iterations =
-            total_iterations;
-
-        return res;
-    }
-
-    // ========================================================
-    // Stage 4: k1 + k2 + p1 + p2 + k3
-    // ========================================================
-
-    if (!run_stage(
-        "4",
-        { 0, 1, 2, 3, 4 }))
-    {
-        res.d =
-            state;
-
-        res.final_error =
-            compute_cost_all(
-                state,
-                image_pts,
-                ideal_pts,
-                fx,
-                fy,
-                cx,
-                cy
-            );
-
-        res.iterations =
-            total_iterations;
-
-        return res;
-    }
-
-    // ========================================================
-    // Final result
-    // ========================================================
-
-    res.d =
-        state;
-
-    res.final_error =
-        compute_cost_all(
-            state,
-            image_pts,
-            ideal_pts,
-            fx,
-            fy,
-            cx,
-            cy
-        );
-
-    res.iterations =
-        total_iterations;
-
-    if (finite_f64(
-        res.final_error))
-    {
-        f64 rms_final =
-            std::sqrt(
-                res.final_error /
-                (2.0 * N)
-            );
-
-        std::printf(
-            "  [final] rms=%.8f\n",
-            rms_final
-        );
-
-        if (rms_final < 1e-6)
-        {
-            res.converged =
-                true;
+double residuals(const State& p,const std::vector<std::vector<Point2f>>& points,
+    int w,int h,int rows,int cols,std::vector<double>& residual) {
+    for (double v:p) if (!std::isfinite(v)) return infinity;
+    double fx=std::exp(p[0]),fy=std::exp(p[1]),cx=p[2]*w,cy=p[3]*h;
+    if (fx<1e-3 || fy<1e-3 || fx>1e7 || fy>1e7) return infinity;
+    residual.resize(points.size()*rows*cols*2);
+    double cost=0;
+    for (size_t i=0;i<points.size();++i) {
+        size_t offset=9+6*i;
+        M3 r=rodrigues({p[offset],p[offset+1],p[offset+2]});
+        double tz=std::exp(p[offset+5]);
+        for (int y=0;y<rows;++y) for (int x=0;x<cols;++x) {
+            double X=x-(cols-1)*.5,Y=y-(rows-1)*.5;
+            double z=r[6]*X+r[7]*Y+tz;
+            if (z<=1e-5) return infinity;
+            double nx=(r[0]*X+r[1]*Y+p[offset+3])/z;
+            double ny=(r[3]*X+r[4]*Y+p[offset+4])/z;
+            double r2=nx*nx+ny*ny, radial=1+p[4]*r2+p[5]*r2*r2+p[8]*r2*r2*r2;
+            double xd=nx*radial+2*p[6]*nx*ny+p[7]*(r2+2*nx*nx);
+            double yd=ny*radial+p[6]*(r2+2*ny*ny)+2*p[7]*nx*ny;
+            size_t id=2*(i*rows*cols+y*cols+x);
+            double dx=fx*xd+cx-points[i][y*cols+x].x;
+            double dy=fy*yd+cy-points[i][y*cols+x].y;
+            residual[id]=dx; residual[id+1]=dy; cost+=dx*dx+dy*dy;
         }
     }
+    return std::isfinite(cost) ? cost:infinity;
+}
 
-    return res;
+bool optimize(State& p,const std::vector<std::vector<Point2f>>& points,int w,int h,int rows,int cols,
+    const std::vector<int>& active,int limit,int& iterations) {
+    std::vector<double> r;
+    double cost=residuals(p,points,w,h,rows,cols,r),lambda=1e-3;
+    int n=int(active.size()),m=int(r.size());
+    if (!std::isfinite(cost)) return false;
+    for (int it=0;it<limit;++it) {
+        if (cost<1e-16) return true;
+        std::vector<double> j(m*n),scales(n),plus,minus;
+        for (int k=0;k<n;++k) {
+            State q=p; double step=1e-6*(1+std::fabs(p[active[k]]));
+            q[active[k]]+=step;
+            if (!std::isfinite(residuals(q,points,w,h,rows,cols,plus))) return false;
+            q[active[k]]-=2*step;
+            if (!std::isfinite(residuals(q,points,w,h,rows,cols,minus))) return false;
+            double norm=0;
+            for (int t=0;t<m;++t) { double v=(plus[t]-minus[t])/(2*step); j[t*n+k]=v; norm+=v*v; }
+            scales[k]=1/std::max(std::sqrt(norm),1e-12);
+            for (int t=0;t<m;++t) j[t*n+k]*=scales[k];
+        }
+        std::vector<double> normal(n*n,0),gradient(n,0);
+        for (int t=0;t<m;++t) for (int a=0;a<n;++a) {
+            gradient[a]+=j[t*n+a]*r[t];
+            for (int b=0;b<=a;++b) normal[a*n+b]+=j[t*n+a]*j[t*n+b];
+        }
+        double max_gradient=0;
+        for (double g:gradient) max_gradient=std::max(max_gradient,std::fabs(g));
+        if (max_gradient<1e-8*(1+std::sqrt(cost))) return true;
+        bool accepted=false;
+        for (int attempt=0;attempt<16;++attempt) {
+            LMtx a(n,n),b(n,1);
+            for (int x=0;x<n;++x) {
+                b.at(x,0)=-gradient[x];
+                for (int y=0;y<n;++y) a.at(x,y)=x>=y ? normal[x*n+y]:normal[y*n+x];
+                a.at(x,x)+=lambda;
+            }
+            auto delta=solve_gauss(std::move(a),std::move(b));
+            if (delta.rows!=n) {lambda*=10; continue;}
+            State q=p; double step_norm=0;
+            for (int k=0;k<n;++k) {
+                double d=delta.at(k,0)*scales[k]; q[active[k]]+=d;
+                step_norm=std::max(step_norm,std::fabs(d)/(1+std::fabs(p[active[k]])));
+            }
+            std::vector<double> trial;
+            double new_cost=residuals(q,points,w,h,rows,cols,trial);
+            if (new_cost<cost) {
+                double reduction=cost-new_cost;
+                p=std::move(q); r=std::move(trial); cost=new_cost; ++iterations;
+                lambda=std::max(lambda*.3,1e-12); accepted=true;
+                if (step_norm<1e-9 || reduction<1e-11*(1+cost)) return true;
+                break;
+            }
+            lambda*=10;
+        }
+        if (!accepted) return max_gradient<1e-5*(1+std::sqrt(cost));
+    }
+    return false;
+}
+
+bool mapping_is_regular(const CameraParams& k,int w,int h) {
+    // Require positive Jacobian determinant throughout the output field to
+    // reject folding maps caused by extrapolated high-order radial coefficients.
+    for (int iy=0;iy<=24;++iy) for (int ix=0;ix<=32;++ix) {
+        double x=((w-1)*ix/32.-k.cx)/k.fx,y=((h-1)*iy/24.-k.cy)/k.fy;
+        double r2=x*x+y*y,radial=1+k.k1*r2+k.k2*r2*r2+k.k3*r2*r2*r2;
+        double dr=k.k1+2*k.k2*r2+3*k.k3*r2*r2;
+        double a=radial+2*x*x*dr+2*k.p1*y+6*k.p2*x;
+        double b=2*x*y*dr+2*k.p1*x+2*k.p2*y;
+        double d=radial+2*y*y*dr+6*k.p1*y+2*k.p2*x;
+        if (!std::isfinite(a*d-b*b) || a<=0 || d<=0 || a*d-b*b<=1e-4) return false;
+    }
+    return true;
+}
+}
+
+CameraCalibrationResult calibrate_camera(const std::vector<std::vector<Point2f>>& points,
+    int width,int height,int rows,int cols,double square_size,const CameraCalibrationOptions& options) {
+    CameraCalibrationResult result;
+    result.k3_estimated=options.estimate_k3;
+    if (points.size()<3 || points.size()>100 || width<2 || height<2 || rows<3 || cols<3 || rows>100 || cols>100 ||
+        !std::isfinite(square_size) || square_size<=0 || options.max_iterations<1) {
+        result.message="Need at least three views, valid image/board dimensions and positive square size."; return result;
+    }
+    std::vector<M3> hom(points.size());
+    for (size_t i=0;i<points.size();++i) {
+        if (points[i].size()!=size_t(rows*cols)) {result.message="Corner count mismatch."; return result;}
+        for (auto p:points[i]) if (!std::isfinite(p.x)||!std::isfinite(p.y)||p.x<0||p.y<0||p.x>=width||p.y>=height) {
+            result.message="Non-finite or out-of-image corner."; return result;
+        }
+        if (!homography(points[i],rows,cols,hom[i])) {result.message="Degenerate board geometry."; return result;}
+    }
+    // Reject repeated homographies; three copies of one observation are not
+    // three independent calibration views, even though LM could fit them.
+    double diversity=0;
+    for (size_t i=1;i<hom.size();++i) for (int j=0;j<8;++j)
+        diversity+=std::fabs(hom[i][j]-hom[0][j]);
+    if (diversity<1e-6) {result.message="Repeated views do not constrain camera intrinsics."; return result;}
+    std::vector<std::array<double,4>> seeds;
+    std::array<double,4> zhang;
+    if (zhang_intrinsics(hom,width,height,zhang)) seeds.push_back(zhang);
+    for (double factor:{.6,1.,1.8,3.}) seeds.push_back({width*factor,width*factor,(width-1)*.5,(height-1)*.5});
+    State best; double best_cost=infinity; bool best_converged=false; int best_iterations=0;
+    for (const auto& seed:seeds) {
+        State state;
+        if (!initialize(hom,seed,width,height,state)) continue;
+        std::vector<int> active{0,1,2,3};
+        for (int i=9;i<int(state.size());++i) active.push_back(i);
+        int iterations=0;
+        optimize(state,points,width,height,rows,cols,active,options.max_iterations,iterations);
+        active.push_back(4);
+        optimize(state,points,width,height,rows,cols,active,options.max_iterations,iterations);
+        active.insert(active.end(),{5,6,7});
+        bool converged=optimize(state,points,width,height,rows,cols,active,options.max_iterations,iterations);
+        if (options.estimate_k3) {
+            active.push_back(8);
+            converged=optimize(state,points,width,height,rows,cols,active,options.max_iterations,iterations);
+        }
+        std::vector<double> residual;
+        double cost=residuals(state,points,width,height,rows,cols,residual);
+        if (cost<best_cost) {best_cost=cost; best=std::move(state); best_converged=converged; best_iterations=iterations;}
+    }
+    if (best.empty()) {result.message="Calibration optimization failed."; return result;}
+    auto& k=result.camera;
+    k.fx=float(std::exp(best[0])); k.fy=float(std::exp(best[1])); k.cx=float(best[2]*width); k.cy=float(best[3]*height);
+    k.k1=float(best[4]); k.k2=float(best[5]); k.p1=float(best[6]); k.p2=float(best[7]); k.k3=float(best[8]);
+    result.converged=best_converged; result.iterations=best_iterations;
+    std::vector<double> residual;
+    residuals(best,points,width,height,rows,cols,residual);
+    result.rms=std::sqrt(best_cost/(points.size()*rows*cols));
+    for (size_t i=0;i<points.size();++i) {
+        double cost=0;
+        for (int j=0;j<rows*cols;++j) {
+            size_t id=2*(i*rows*cols+j); double error=std::hypot(residual[id],residual[id+1]);
+            cost+=error*error; result.max_error=std::max(result.max_error,error);
+        }
+        result.per_view_rms.push_back(std::sqrt(cost/(rows*cols)));
+        size_t offset=9+6*i;
+        CameraPose pose;
+        pose.rotation=rodrigues({best[offset],best[offset+1],best[offset+2]});
+        // Report translation relative to the first inner corner (0,0), not
+        // the centered coordinates used internally for conditioning.
+        for (int j=0;j<3;++j) {
+            double t=j==2 ? std::exp(best[offset+5]):best[offset+3+j];
+            pose.translation[j]=(t-pose.rotation[j*3]*(cols-1)*.5-pose.rotation[j*3+1]*(rows-1)*.5)*square_size;
+        }
+        result.poses.push_back(pose);
+    }
+    double max_angle=0;
+    for (size_t i=0;i<result.poses.size();++i) for (size_t j=0;j<i;++j) {
+        auto a=result.poses[i].rotation,b=result.poses[j].rotation;
+        double cosine=std::fabs(a[2]*b[2]+a[5]*b[5]+a[8]*b[8]);
+        max_angle=std::max(max_angle,std::acos(std::clamp(cosine,0.,1.)));
+    }
+    result.weak_geometry=max_angle<.17 || points.size()<5;
+    bool intrinsics_ok=k.fx>.05*width && k.fy>.05*width && k.fx<20*width && k.fy<20*width
+        && k.cx>=0 && k.cx<width && k.cy>=0 && k.cy<height;
+    k.valid=best_converged && intrinsics_ok && result.rms<3 && mapping_is_regular(k,width,height) && max_angle>.01;
+    if (!k.valid) result.message="Unreliable calibration: check convergence, intrinsics, reprojection error and map folding. No correction should be applied.";
+    else if (result.weak_geometry) result.message="Only a few views or small pose variation: provisional parameters; low training RMS does not prove accuracy outside the board.";
+    else result.message="Calibration converged.";
+    return result;
 }

@@ -30,14 +30,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="algo\calibrate.cpp" />
-    <ClCompile Include="algo\camera_calibrate.cpp" />
     <ClCompile Include="algo\chessboard.cpp" />
     <ClCompile Include="algo\shi_tomasi.cpp" />
     <ClCompile Include="algo\subpixel.cpp" />
     <ClCompile Include="algo\undistort.cpp" />
     <ClCompile Include="common\matrix.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="synthetic_main.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>

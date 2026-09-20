@@ -16,9 +16,3 @@ enum class RemapBorder { Replicate, ConstantBlack };
 // is preserved. Source and destination may refer to the same Image object.
 void remap_bilinear(const GrayImage& src, const RemapTable& table, GrayImage& dst,
     RemapBorder border = RemapBorder::Replicate);
-
-void forward_distort_norm(f32 nx, f32 ny, const CameraParams& cam, f32& xd, f32& yd);
-
-void inverse_distort_norm(const CameraParams& cam, f32 xd, f32 yd, f32& nx, f32& ny);
-
-void make_distorted_image(const GrayImage& ideal, const CameraParams& cam, GrayImage& distorted);

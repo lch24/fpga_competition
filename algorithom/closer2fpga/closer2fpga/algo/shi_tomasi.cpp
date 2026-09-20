@@ -1,14 +1,7 @@
-#define _CRT_SECURE_NO_WARNINGS
 #include "shi_tomasi.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
-
-static f32 clamp_f32(f32 v, f32 lo, f32 hi) {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
-}
 
 static f32 safe_get(const FloatMap& m, int x, int y, f32 def) {
     if (x < 0 || x >= m.w || y < 0 || y >= m.h) return def;

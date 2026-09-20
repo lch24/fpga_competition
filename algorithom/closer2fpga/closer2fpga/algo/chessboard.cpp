@@ -3,7 +3,6 @@
 #include "subpixel.h"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <limits>
 #include <numeric>
 #include <vector>
@@ -168,9 +167,24 @@ bool organize_grid(const std::vector<Point2f>& points, int rows, int cols, std::
         best[r * cols + c] = copy[(origin >= 2 ? rows - 1 - r : r) * cols + (origin % 2 ? cols - 1 - c : c)];
     return true;
 }
+
+bool refine_grid(const GrayImage& gray, ChessboardInfo& board) {
+    // Keep the window within the shortest projected cell edge at this scale.
+    float min_step = std::numeric_limits<float>::max();
+    for (int r = 0; r < board.rows; ++r) for (int c = 0; c < board.cols; ++c) {
+        int i = r * board.cols + c;
+        if (c + 1 < board.cols)
+            min_step = std::min(min_step, distance(board.corners[i], board.corners[i + 1]));
+        if (r + 1 < board.rows)
+            min_step = std::min(min_step, distance(board.corners[i], board.corners[i + board.cols]));
+    }
+    refine_subpixel(gray, board.corners, std::clamp(int(min_step * 0.15f), 2, 10));
+    board.valid = grid_cost(board.corners, board.rows, board.cols) < 1e30f;
+    if (!board.valid) board.corners.clear();
+    return board.valid;
 }
 
-static ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
+ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
     ChessboardInfo info{};
     info.rows = rows; info.cols = cols;
     if (!gray.data || gray.w < 16 || gray.h < 16 || rows < 2 || cols < 2 ||
@@ -182,7 +196,6 @@ static ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
     merge_duplicates(candidates, 5.0f);
     refine_subpixel(gray, candidates, 7);
     merge_duplicates(candidates, 3.0f);
-    info.all_candidates = candidates;
     std::vector<Point2f> inner;
     for (size_t i = 0; i < candidates.size(); ++i) {
         float spacing = nearest_distance(candidates, i);
@@ -191,21 +204,11 @@ static ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
             (alternating_ring(gray, candidates[i], radius * 0.75f) ||
              alternating_ring(gray, candidates[i], radius * 1.25f))) inner.push_back(candidates[i]);
     }
-    std::printf("  [chessboard] candidates=%zu inner=%zu\n", candidates.size(), inner.size());
     if (inner.size() < size_t(rows * cols)) return info;
     if (!organize_grid(inner, rows, cols, info.corners)) return info;
-    std::vector<float> steps;
-    for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) {
-        if (c + 1 < cols) steps.push_back(distance(info.corners[r * cols + c], info.corners[r * cols + c + 1]));
-        if (r + 1 < rows) steps.push_back(distance(info.corners[r * cols + c], info.corners[(r + 1) * cols + c]));
-    }
-    // Use the shortest observed cell edge so perspective-compressed cells
-    // do not share the refinement window with a neighboring junction.
-    int radius = std::clamp(int(*std::min_element(steps.begin(), steps.end()) * 0.15f), 2, 10);
-    refine_subpixel(gray, info.corners, radius);
-    info.valid = grid_cost(info.corners, rows, cols) < 1e30f;
-    if (!info.valid) info.corners.clear();
+    refine_grid(gray, info);
     return info;
+}
 }
 
 ChessboardInfo detect_chessboard(const GrayImage& gray, int rows, int cols) {
@@ -221,14 +224,7 @@ ChessboardInfo detect_chessboard(const GrayImage& gray, int rows, int cols) {
         auto coarse = detect_chessboard(half, rows, cols);
         if (coarse.valid) {
             for (auto& p : coarse.corners) { p.x = 2*p.x + 0.5f; p.y = 2*p.y + 0.5f; }
-            for (auto& p : coarse.all_candidates) { p.x = 2*p.x + 0.5f; p.y = 2*p.y + 0.5f; }
-            float min_step = std::numeric_limits<float>::max();
-            for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) {
-                if (c+1 < cols) min_step = std::min(min_step, distance(coarse.corners[r*cols+c], coarse.corners[r*cols+c+1]));
-                if (r+1 < rows) min_step = std::min(min_step, distance(coarse.corners[r*cols+c], coarse.corners[(r+1)*cols+c]));
-            }
-            refine_subpixel(gray, coarse.corners, std::clamp(int(min_step * 0.15f), 2, 10));
-            if (grid_cost(coarse.corners, rows, cols) < 1e30f) return coarse;
+            if (refine_grid(gray, coarse)) return coarse;
         }
     }
     return detect_native(gray, rows, cols);

@@ -4,8 +4,6 @@ using f32 = float;
 using f64 = double;
 
 struct Point2f  { f32 x, y; };
-struct Point2i  { int x, y; };
-struct Point3f  { f32 x, y, z; };
 
 struct CameraParams {
     f32 fx, fy;

@@ -8,3 +8,12 @@
 # Generated test/inspection artifacts.
 tests/build/
 **/corner_results/
+
+# ModelSim / RTL simulation artifacts (M1+).
+work/
+**/work/
+transcript
+*.wlf
+vsim.wlf
+*.vstf
+modelsim.ini

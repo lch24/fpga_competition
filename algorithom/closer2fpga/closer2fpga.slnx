@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="closer2fpga/closer2fpga.vcxproj" Id="fda31a1c-7b71-449f-a290-845a8e1006c5" />
-</Solution>

@@ -40,6 +40,7 @@
 // 版本记录（数据格式变更必须更新）：
 //   v1  首版：BGR/gray/Ix/Iy/resp/rmax/thr/候选点
 //   v2  增加 _sum.bin（张量 3×3 窗口和，ZERO 边界），用于前端流水分段对拍
+//   v3  增加 test0_eigen.bin（min_eigen 单元对拍：三元组→resp 位模式）
 //------------------------------------------------------------------------------
 #include <cstdio>
 #include <cstring>
@@ -48,6 +49,7 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <random>
 
 #include "../../closer2fpga/algo/shi_tomasi.h"
 #include "../../closer2fpga/kernels/color.h"
@@ -270,7 +272,7 @@ bool export_one(const std::vector<uint8_t>& bgr, int w, int h,
     char buf[512];
     std::string man_path = out_dir + "/" + name + "_manifest.txt";
     std::remove(man_path.c_str());
-    std::snprintf(buf, sizeof(buf), "format_version=2\n");
+    std::snprintf(buf, sizeof(buf), "format_version=3\n");
     append_manifest(man_path, buf);
     std::snprintf(buf, sizeof(buf), "width=%d\nheight=%d\n", w, h);
     append_manifest(man_path, buf);
@@ -305,6 +307,88 @@ bool export_one(const std::vector<uint8_t>& bgr, int w, int h,
 
 } // namespace
 
+//------------------------------------------------------------------------------
+// v3：min_eigen 单元对拍向量（test0_eigen.bin）
+// 内容：u32 N，随后 N×{u32 a_bits, b_bits, c_bits, resp_bits}（小端）
+//   1) test0 前 3000 像素的真实张量和 (A,B,C)
+//   2) 1000 组随机整数三元组（f32 精确域，种子固定可复现）
+//   3) 定向边界用例（0/1 值、det<0、det=0、舍入边界 2^24、完全平方等）
+// 期望值一律调用官方 kernels::min_eigenvalue（权威实现）。
+//------------------------------------------------------------------------------
+bool export_eigen_vectors(const std::string& raw_dir, const std::string& out_dir) {
+    std::vector<uint8_t> bgr, dim_bytes;
+    if (!read_file(raw_dir + "/test0.bgr", bgr) ||
+        !read_file(raw_dir + "/test0.dim", dim_bytes))
+        return false;
+    int w = 0, h = 0;
+    if (std::sscanf((const char*)dim_bytes.data(), "%d %d", &w, &h) != 2)
+        return false;
+
+    GrayImage gray(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            size_t i = ((size_t)y * w + x) * 3;
+            gray.set(x, y, kernels::bgr_to_gray(bgr[i], bgr[i + 1], bgr[i + 2]));
+        }
+    FloatMap Ix, Iy;
+    sobel_xy(gray, Ix, Iy);
+    std::vector<float> sums;
+    compute_tensor_window_sums(Ix, Iy, kWinSize, sums);
+
+    struct Quad { uint32_t a, b, c, r; };
+    std::vector<Quad> quads;
+
+    int n_real = (int)std::min<size_t>(3000, sums.size() / 3);
+    for (int i = 0; i < n_real; ++i) {
+        float A = sums[(size_t)i * 3 + 0];
+        float B = sums[(size_t)i * 3 + 1];
+        float C = sums[(size_t)i * 3 + 2];
+        quads.push_back({f32_bits(A), f32_bits(B), f32_bits(C),
+                         f32_bits(kernels::min_eigenvalue(A, B, C))});
+    }
+
+    std::mt19937 rng(20260924u);
+    for (int i = 0; i < 1000; ++i) {
+        uint32_t a = rng() % (1u << 24);
+        uint32_t c = rng() % (1u << 24);
+        int32_t  b = (int32_t)(rng() % (1u << 23)) - (1 << 22);
+        float fa = (float)a, fb = (float)b, fc = (float)c;
+        quads.push_back({f32_bits(fa), f32_bits(fb), f32_bits(fc),
+                         f32_bits(kernels::min_eigenvalue(fa, fb, fc))});
+    }
+
+    struct Tri { float a, b, c; };
+    const Tri directed[] = {
+        {0,0,0}, {1,0,0}, {0,0,1}, {0,5,0}, {1,0,2}, {3,0,10},
+        {1,1,1}, {2,2,2}, {3,3,3}, {4,0,4}, {9,0,9}, {16,0,25}, {25,0,144},
+        {100,50,100}, {100,-50,100}, {1000,999,1000}, {1,10,1}, {100,1000,100},
+        {16777215,0,16777215}, {16777215,0,16777214}, {16777216,0,16777216},
+        {16777215,0,1}, {1,0,16777215}, {16777215,16777215,16777215},
+        {9363600,0,9363600}, {9363600,1040400,9363600}, {8789066,1234567,8781694},
+        {65535,65535,65535}, {65536,65536,65536}, {1040400,0,1040400},
+        {1040400,1040400,1040400}, {9363599,1,9363599}, {2,1,2}, {8,4,8},
+    };
+    for (const auto& t : directed)
+        quads.push_back({f32_bits(t.a), f32_bits(t.b), f32_bits(t.c),
+                         f32_bits(kernels::min_eigenvalue(t.a, t.b, t.c))});
+
+    std::vector<uint32_t> words;
+    words.push_back((uint32_t)quads.size());
+    for (const auto& q : quads) {
+        words.push_back(q.a); words.push_back(q.b);
+        words.push_back(q.c); words.push_back(q.r);
+    }
+    if (!write_vec(out_dir + "/test0_eigen.bin", words))
+        return false;
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "eigen_count=%zu\neigen_seed=20260924\n", quads.size());
+    append_manifest(out_dir + "/test0_manifest.txt", buf);
+    std::printf("[export] test0_eigen.bin: %zu cases (real=%d random=1000 directed=%zu)\n",
+                quads.size(), n_real, sizeof(directed) / sizeof(directed[0]));
+    return true;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::printf("usage: export_vectors.exe <raw_dir> <out_dir>\n");
@@ -337,6 +421,9 @@ int main(int argc, char** argv) {
         if (!export_one(bgr, w, h, name, out_dir, exported_candidates))
             return 1;
     }
+
+    if (!export_eigen_vectors(raw_dir, out_dir))
+        return 1;
 
     std::printf("[export] DONE: 3 images, %d candidates total, out_dir=%s\n",
                 exported_candidates, out_dir.c_str());

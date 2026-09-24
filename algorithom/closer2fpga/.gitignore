@@ -12,6 +12,7 @@ tests/build/
 # ModelSim / RTL simulation artifacts (M1+).
 work/
 **/work/
+**/work_*/
 transcript
 *.wlf
 vsim.wlf

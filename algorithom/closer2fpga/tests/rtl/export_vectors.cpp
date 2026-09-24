@@ -29,7 +29,8 @@
 //   testN_bgr.bin        W*H*3 字节（原样拷贝，DDR 模型初始化用）
 //   testN_gray.bin       W*H 字节
 //   testN_ix.bin         W*H 个 f32（IEEE754）
-//   testN_iy.bin         W*H 个 f32
+//   testN_iy.bin         W*H 个 f32（IEEE754）
+//   testN_sum.bin        W*H*3 个 f32：每像素 {xx和, xy和, yy和}（光栅序）
 //   testN_resp.bin       W*H 个 f32
 //   testN_candidates.bin u32 数量 N，随后 N 组 {i32 x, i32 y}
 //   testN_manifest.txt   尺寸/参数/关键标量（含 f32 位模式十六进制）
@@ -38,6 +39,7 @@
 //
 // 版本记录（数据格式变更必须更新）：
 //   v1  首版：BGR/gray/Ix/Iy/resp/rmax/thr/候选点
+//   v2  增加 _sum.bin（张量 3×3 窗口和，ZERO 边界），用于前端流水分段对拍
 //------------------------------------------------------------------------------
 #include <cstdio>
 #include <cstring>
@@ -49,11 +51,19 @@
 
 #include "../../closer2fpga/algo/shi_tomasi.h"
 #include "../../closer2fpga/kernels/color.h"
+#include "../../closer2fpga/kernels/gradient.h"
 
 namespace {
 
 constexpr float kThresholdRatio = 0.08f;   // candidates.cpp:80 的实参
 constexpr int   kWinSize       = 3;        // candidates.cpp:80 的实参
+
+// 边界安全取值（图外返回 def；与 shi_tomasi.cpp 的 safe_get 语义一致）
+static float safe_get_(const FloatMap& m, int x, int y, float def) {
+    if (x < 0 || x >= m.w || y < 0 || y >= m.h)
+        return def;
+    return m.get(x, y);
+}
 
 //------------------------------------------------------------------------------
 // 小工具
@@ -100,6 +110,36 @@ bool append_manifest(const std::string& path, const std::string& line) {
     std::fputs(line.c_str(), fp);
     std::fclose(fp);
     return true;
+}
+
+//------------------------------------------------------------------------------
+// 复刻 shi_tomasi.cpp 的张量 3×3 窗口和（ZERO 边界）—— v2 新增
+// 输出 sums：每像素 3 个 f32 {xx, xy, yy} 的窗口和，光栅序。
+// 数值为精确整数（< 2^24），f32 与整数位模式一一对应。
+//------------------------------------------------------------------------------
+void compute_tensor_window_sums(const FloatMap& Ix, const FloatMap& Iy, int win_size,
+                                std::vector<float>& sums) {
+    int r = win_size / 2;
+    sums.assign((size_t)Ix.w * Ix.h * 3, 0.0f);
+    for (int y = 0; y < Ix.h; ++y) {
+        for (int x = 0; x < Ix.w; ++x) {
+            float sxx = 0.0f, sxy = 0.0f, syy = 0.0f;
+            for (int dy = -r; dy <= r; ++dy) {
+                for (int dx = -r; dx <= r; ++dx) {
+                    float ix = safe_get_(Ix, x + dx, y + dy, 0.0f);
+                    float iy = safe_get_(Iy, x + dx, y + dy, 0.0f);
+                    auto t = kernels::outer_product(ix, iy);
+                    sxx += t.xx;
+                    sxy += t.xy;
+                    syy += t.yy;
+                }
+            }
+            size_t i = ((size_t)y * Ix.w + x) * 3;
+            sums[i + 0] = sxx;
+            sums[i + 1] = sxy;
+            sums[i + 2] = syy;
+        }
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -205,10 +245,15 @@ bool export_one(const std::vector<uint8_t>& bgr, int w, int h,
             resp_f[i] = resp.get(x, y);
         }
 
+    // v2：张量窗口和（ZERO 边界，供前端流水分段对拍）
+    std::vector<float> sum_f;
+    compute_tensor_window_sums(Ix, Iy, kWinSize, sum_f);
+
     if (!write_all(out_dir + "/" + name + "_bgr.bin", bgr.data(), bgr.size()) ||
         !write_vec(out_dir + "/" + name + "_gray.bin", gray_bytes) ||
         !write_vec(out_dir + "/" + name + "_ix.bin", ix_f) ||
         !write_vec(out_dir + "/" + name + "_iy.bin", iy_f) ||
+        !write_vec(out_dir + "/" + name + "_sum.bin", sum_f) ||
         !write_vec(out_dir + "/" + name + "_resp.bin", resp_f))
         return false;
 
@@ -225,7 +270,7 @@ bool export_one(const std::vector<uint8_t>& bgr, int w, int h,
     char buf[512];
     std::string man_path = out_dir + "/" + name + "_manifest.txt";
     std::remove(man_path.c_str());
-    std::snprintf(buf, sizeof(buf), "format_version=1\n");
+    std::snprintf(buf, sizeof(buf), "format_version=2\n");
     append_manifest(man_path, buf);
     std::snprintf(buf, sizeof(buf), "width=%d\nheight=%d\n", w, h);
     append_manifest(man_path, buf);
@@ -241,12 +286,13 @@ bool export_one(const std::vector<uint8_t>& bgr, int w, int h,
     append_manifest(man_path, buf);
     std::snprintf(buf, sizeof(buf),
                   "files=%s_bgr.bin(%zuB) %s_gray.bin(%zuB) "
-                  "%s_ix.bin(%zuB) %s_iy.bin(%zuB) %s_resp.bin(%zuB) "
-                  "%s_candidates.bin(%zuB)\n",
+                  "%s_ix.bin(%zuB) %s_iy.bin(%zuB) %s_sum.bin(%zuB) "
+                  "%s_resp.bin(%zuB) %s_candidates.bin(%zuB)\n",
                   name.c_str(), bgr.size(),
                   name.c_str(), gray_bytes.size(),
                   name.c_str(), ix_f.size() * 4,
                   name.c_str(), iy_f.size() * 4,
+                  name.c_str(), sum_f.size() * 4,
                   name.c_str(), resp_f.size() * 4,
                   name.c_str(), cand_words.size() * 4);
     append_manifest(man_path, buf);

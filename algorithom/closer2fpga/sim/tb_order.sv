@@ -68,8 +68,8 @@ module tb_order;
         rst_n = 1'b1;
         repeat (5) @(negedge clk);
 
-        // 读输入向量
-        read_file("../tests/build/vectors/m4_board5x8_inner.bin");
+        // 读输入向量（M5 全链 inner：subpixel 后经 ring 的输出）
+        read_file("../tests/build/vectors/m5_board5x8_inner.bin");
         N_in = rd32(0);
         for (k = 0; k < N_in; k = k + 1) begin
             inner_x[k] = rd32(4 + k * 8);
@@ -77,8 +77,8 @@ module tb_order;
         end
         $display("[TB] inner N=%0d", N_in);
 
-        // 读期望输出
-        read_file("../tests/build/vectors/m4_board5x8_grid.bin");
+        // 读期望输出（M5 全链 grid：organize_grid 40 点）
+        read_file("../tests/build/vectors/m5_board5x8_grid.bin");
         ok_exp = rd32(0);
         N_out  = rd32(4);
         for (k = 0; k < N_out; k = k + 1) begin
@@ -135,7 +135,7 @@ module tb_order;
 
     // 看门狗（2 秒仿真时间上限；vsim 时间刻度 1ps → 2e12 ps）
     initial begin
-        #2_000_000_000_000;
+        #2000000000;
         $display("[TB][FATAL] watchdog timeout");
         $finish;
     end

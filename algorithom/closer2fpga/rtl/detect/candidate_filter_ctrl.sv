@@ -1,23 +1,31 @@
 `timescale 1ns / 1ps
 //==============================================================================
-// candidate_filter_ctrl.sv — M3 候选后处理主控（MERGE→SUBPIXEL→MERGE→NEAREST→RING）
+// candidate_filter_ctrl.sv — M3/M5 候选后处理主控（MERGE→SUBPIXEL→MERGE→NEAREST→RING）
 //------------------------------------------------------------------------------
-// 编排 detect_native 的候选段（无 subpixel 变体，subpixel 在 M5 以直通占位）：
+// 编排 detect_native 的候选段（M5 起 subpixel 真实接入）：
 //   NMS 候选（整数坐标流）→ 存 A（fp32）
 //   → MERGE(r=5)：读 A 写 B
-//   → SUBPIXEL：直通占位（数据原地，不搬移）
-//   → MERGE(r=3)：读 B 写 A
-//   → NEAREST：读 A，逐点 {spacing,radius}，radius 顺序写 radius RAM
-//   → RING：逐点 i 读 A 点 + radius RAM，对 ring_check 按
+//   → SUBPIXEL：调 subpixel_ctrl（half_win=7），读 B 写 A（坐标亚像素精定位）
+//   → MERGE(r=3)：读 A 写 B
+//   → NEAREST：读 B，逐点 {spacing,radius}，radius 顺序写 radius RAM
+//   → RING：逐点 i 读 B 点 + radius RAM，对 ring_check 按
 //            pass0(r) && (passA(0.75r) || passB(1.25r)) 短路调用（C++ 语义），
 //            pass 点输出 inner 流（fp32 坐标）。
 //   → DONE（status 01）；候选 <MIN_CAND 或 >MAX_CAND → 失败（10/11）。
 //
-// 对拍探针：每点输出 d0（基本半径一次调用的中间量）+ 综合 pass，
-//   与 export_m3 的 m3_*_ring.bin 每点 7 字段逐一对应。
+// 存储相位（A/B 双缓冲轮换）：
+//   S_CAP    phase=0：写 A（收候选）
+//   S_MERGE5 phase=1：读 A 写 B
+//   S_SUBPX  phase=0：读 B（subpixel 输入）写 A（subpixel 输出，先清写侧回卷）
+//   S_MERGE3 phase=1：读 A 写 B
+//   S_NEAR/RING phase=0：读 B（merge3 结果）
 //
-// 存储共享：候选点存储（candidate_store）单读口，由 merge / nearest / 主控
-//   RING 三方向时复用（3 选 1 多路，阶段互斥）。
+// 存储共享：candidate_store 单读口由 merge / nearest / RING / subpixel 四方
+//   时复用（4 选 1 多路，阶段互斥）；gray 读口由 ring_check / subpixel 复用
+//   （2 选 1，阶段互斥）。
+//
+// 对拍探针：ring 阶段每点输出 d0 中间量 + 综合 pass（m3 向量用）；
+//   m5 全链对拍见 tb_filter（merge5/subpixel/merge3 输出流 + inner 流）。
 //==============================================================================
 module candidate_filter_ctrl #(
     parameter IMG_W       = 1280,
@@ -26,7 +34,8 @@ module candidate_filter_ctrl #(
     parameter N_ADDR_W    = 14,          // 候选点深度 2**14 = 16384
     parameter MIN_CAND    = 40,
     parameter MAX_CAND    = 12000,
-    parameter ROM_FILE    = "../tests/build/vectors/ring_cos_sin.mem"
+    parameter ROM_FILE    = "../tests/build/vectors/ring_cos_sin.mem",
+    parameter SUB_ROM_FILE = "../tests/build/vectors/gaussian_weights.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,
@@ -72,12 +81,17 @@ module candidate_filter_ctrl #(
     localparam S_IDLE   = 4'd0;
     localparam S_CAP    = 4'd1;   // 收 NMS 候选写 store A
     localparam S_MERGE5 = 4'd2;   // merge 读 A 写 B（phase=1）
-    localparam S_SUBPX  = 4'd3;   // subpixel 直通占位（1 拍）
-    localparam S_MERGE3 = 4'd4;   // merge 读 B 写 A（phase=0）
-    localparam S_NEAR   = 4'd5;   // nearest 读 A → radius RAM
-    localparam S_RING   = 4'd6;   // 逐点 ring 判定
+    localparam S_SUBPX  = 4'd3;   // subpixel：读 B 写 A（phase=0），half_win=7
+    localparam S_MERGE3 = 4'd4;   // merge 读 A 写 B（phase=1）
+    localparam S_NEAR   = 4'd5;   // nearest 读 B → radius RAM
+    localparam S_RING   = 4'd6;   // 逐点 ring 判定（读 B）
     localparam S_DONE   = 4'd7;
     reg [3:0] state;
+
+    // subpixel 子状态
+    localparam SPX_CLR = 2'd0;   // 清 store 写侧（回卷）+ 发 subpixel start
+    localparam SPX_RUN = 2'd1;   // 等 subpixel 输出流写回 store 写侧 → done
+    reg [1:0] spx_sub;
 
     // ring 子状态
     localparam RG_RDPT = 4'd0;   // 发读请求（store + radram）
@@ -130,10 +144,22 @@ module candidate_filter_ctrl #(
     wire        c2fx_v, c2fy_v, c2fx_rdy, c2fy_rdy;
     wire [31:0] c2fx_r, c2fy_r;
     wire [31:0] rad_rd_data;
+    // subpixel_ctrl 互连
+    wire        spx_busy, spx_done;
+    wire        spx_pt_rd_en;
+    wire [N_ADDR_W-1:0] spx_pt_rd_addr;
+    wire        spx_gray_rd_en;
+    wire [GRAY_ADDR_W-1:0] spx_gray_rd_addr;
+    wire        spx_out_valid, spx_out_ready;
+    wire [31:0] spx_out_x, spx_out_y;
+    // ring_check 内部 gray 读口（经仲裁后对外）
+    wire        ring_gray_rd_en;
+    wire [GRAY_ADDR_W-1:0] ring_gray_rd_addr;
     // 组合 assign 目标（显式声明位宽，避免隐式 1bit net）
     wire        store_wr_valid;
     wire [31:0] store_wr_x, store_wr_y;
     wire        phase_sel, cand_fire;
+    wire        spx_start, store_clr;
     wire [31:0] merge_radius;
     wire        merge_start, near_start;
     wire        rad_wr_en, rad_rd_en;
@@ -142,24 +168,30 @@ module candidate_filter_ctrl #(
     wire        ring_fire, mul_fire;
     wire [31:0] ring_in_x, ring_in_y, ring_in_radius, mul_b;
 
-    // 阶段互斥的 store 读口多路（merge / nearest / RING）
+    // 阶段互斥的 store 读口多路（subpixel / merge / nearest / RING）
     wire ctrl_rd_en = (rg_sub == RG_RDPT);
     wire [N_ADDR_W-1:0] ctrl_rd_addr = ring_i[N_ADDR_W-1:0];
-    wire        store_rd_en = (state == S_RING) ? ctrl_rd_en :
+    wire        store_rd_en = (state == S_SUBPX) ? spx_pt_rd_en :
+                              (state == S_RING) ? ctrl_rd_en :
                               (state == S_NEAR) ? near_rd_en :
                               (((state == S_MERGE5) || (state == S_MERGE3)) && merge_rd_en);
     wire [N_ADDR_W-1:0] store_rd_addr =
+        (state == S_SUBPX) ? spx_pt_rd_addr :
         (state == S_RING) ? ctrl_rd_addr :
         (state == S_NEAR) ? near_rd_addr : merge_rd_addr;
+
+    // 阶段互斥的 gray 读口多路（subpixel / ring_check）；端口已声明，仅 assign 驱动
+    assign gray_rd_en = (state == S_SUBPX) ? spx_gray_rd_en : ring_gray_rd_en;
+    assign gray_rd_addr = (state == S_SUBPX) ? spx_gray_rd_addr : ring_gray_rd_addr;
 
     //--------------------------------------------------------------------
     // 例化
     //--------------------------------------------------------------------
     candidate_store #(.N_ADDR_W(N_ADDR_W)) u_store (
         .clk (clk), .rst_n (rst_n),
-        // 写侧回卷：start 清两侧；S_SUBPX（merge5→merge3 之间）清一次写侧，
-        // 使 merge3 结果从 A 地址 0 起写（覆盖 NMS 候选旧数据）。
-        .clr (start || (state == S_SUBPX)), .phase (phase_sel),
+        // 写侧回卷：start 清两侧；S_SUBPX 进入拍清一次写侧（SPX_CLR 脉冲），
+        // 使 subpixel 结果从 A 地址 0 起写（覆盖 NMS 候选旧数据）。
+        .clr (store_clr), .phase (phase_sel),
         .wr_valid (store_wr_valid), .wr_ready (store_wr_ready),
         .wr_x (store_wr_x), .wr_y (store_wr_y),
         .count (store_count),
@@ -225,22 +257,49 @@ module candidate_filter_ctrl #(
         .clk (clk), .rst_n (rst_n),
         .in_valid (ring_fire), .in_ready (ring_in_ready),
         .in_x (ring_in_x), .in_y (ring_in_y), .in_radius (ring_in_radius),
-        .rd_en (gray_rd_en), .rd_addr (gray_rd_addr), .rd_data (gray_rd_data),
+        .rd_en (ring_gray_rd_en), .rd_addr (ring_gray_rd_addr), .rd_data (gray_rd_data),
         .out_valid (ring_out_valid), .out_ready (1'b1),
         .out_hi (ring_out_hi), .out_lo (ring_out_lo), .out_thr (ring_out_thr),
         .out_ntrans (ring_out_ntrans), .out_opp_err (ring_out_opp_err),
         .out_sector_ok (ring_out_sector_ok), .out_pass (ring_out_pass)
     );
 
+    // M5 亚像素精定位：SUBPX 期间读 store B（输入）、灰度，输出流写回 store A
+    subpixel_ctrl #(
+        .IMG_W (IMG_W), .IMG_H (IMG_H),
+        .GRAY_ADDR_W (GRAY_ADDR_W),
+        .N_ADDR_W (N_ADDR_W),
+        .ROM_FILE (SUB_ROM_FILE)
+    ) u_subpx (
+        .clk (clk), .rst_n (rst_n),
+        .start (spx_start), .busy (spx_busy), .done (spx_done),
+        .n_in (N_reg), .half_win (8'd7),
+        .pt_rd_en (spx_pt_rd_en), .pt_rd_addr (spx_pt_rd_addr),
+        .pt_rd_x (store_rd_x), .pt_rd_y (store_rd_y),
+        .gray_rd_en (spx_gray_rd_en), .gray_rd_addr (spx_gray_rd_addr),
+        .gray_rd_data (gray_rd_data),
+        .out_valid (spx_out_valid), .out_ready (spx_out_ready),
+        .out_x (spx_out_x), .out_y (spx_out_y),
+        .out_reliable ()
+    );
+
     //--------------------------------------------------------------------
     // 组合控制
     //--------------------------------------------------------------------
-    assign phase_sel = (state == S_MERGE5) ? 1'b1 : 1'b0;
+    // 相位轮换：CAP/SUBPX/NEAR/RING 写 A 读 B；MERGE5/MERGE3 写 B 读 A
+    assign phase_sel = ((state == S_MERGE5) || (state == S_MERGE3)) ? 1'b1 : 1'b0;
     assign cand_fire = (state == S_CAP) && cand_valid && cand_ready;
     assign store_wr_valid = ((state == S_CAP) && c2fx_v && c2fy_v) ||
-                            (((state == S_MERGE5) || (state == S_MERGE3)) && merge_res_valid);
-    assign store_wr_x = (state == S_CAP) ? c2fx_r : merge_res_x;
-    assign store_wr_y = (state == S_CAP) ? c2fy_r : merge_res_y;
+                            (((state == S_MERGE5) || (state == S_MERGE3)) && merge_res_valid) ||
+                            ((state == S_SUBPX) && spx_out_valid);
+    assign store_wr_x = (state == S_CAP) ? c2fx_r :
+                        (state == S_SUBPX) ? spx_out_x : merge_res_x;
+    assign store_wr_y = (state == S_CAP) ? c2fy_r :
+                        (state == S_SUBPX) ? spx_out_y : merge_res_y;
+    // subpixel 启动（SPX_CLR 拍 1 拍脉冲）+ 输出流背压 + 写侧回卷脉冲
+    assign spx_start = (state == S_SUBPX) && (spx_sub == SPX_CLR);
+    assign spx_out_ready = (state == S_SUBPX) && store_wr_ready;
+    assign store_clr = start || ((state == S_SUBPX) && (spx_sub == SPX_CLR));
     assign merge_radius = (state == S_MERGE5) ? C_R5 : C_R3;
     assign merge_start = ((state == S_MERGE5) && !m5_started) ||
                          ((state == S_MERGE3) && !m3_started);
@@ -273,6 +332,7 @@ module candidate_filter_ctrl #(
             done   <= 1'b0;
             status <= 2'b00;
             N_reg  <= 16'd0;
+            spx_sub <= SPX_CLR;
         end else begin
             case (state)
                 S_IDLE: begin
@@ -311,12 +371,23 @@ module candidate_filter_ctrl #(
                 end
 
                 S_SUBPX: begin
-                    state <= S_MERGE3;
+                    case (spx_sub)
+                        SPX_CLR: begin
+                            // 本拍组合 clr=1（清 store 写侧）+ spx_start=1（启动 subpixel）
+                            spx_sub <= SPX_RUN;
+                        end
+                        default: begin   // SPX_RUN：等 subpixel 输出流写回 → done
+                            if (spx_done) begin
+                                spx_sub <= SPX_CLR;
+                                state   <= S_MERGE3;   // N 不变（subpixel 不增减点数）
+                            end
+                        end
+                    endcase
                 end
 
                 S_MERGE3: begin
                     if (m3_started && merge_done && !merge_busy) begin
-                        N_reg <= store_count;   // cnt_a
+                        N_reg <= store_count;   // cnt_b（merge3 写 B）
                         state <= S_NEAR;
                     end
                 end

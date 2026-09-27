@@ -146,6 +146,7 @@ module grid_order_ctrl #(
     reg [31:0] wstep_r [0:COLS-2];
     reg [31:0] wmed_key [0:7];
     reg [63:0] best_buf [0:63];       // {y,x}
+    reg [63:0] buf_orig [0:63];       // A_ORIGIN 前快照（就地重排的读源，M6.2 修复）
 
     //--------------------------------------------------------------------
     // 子模块互连
@@ -468,11 +469,13 @@ module grid_order_ctrl #(
         out_y = best_buf[oc_idx2[5:0]][63:32];
     end
 
-    // 原点规范化源索引（A_ORIGIN 重排用）
+    // 原点规范化源索引（A_ORIGIN 重排用）；读源取 A_ORIGIN 前快照 buf_orig
+    // （M6.2 修复：原实现就地读 best_buf 做 c 镜像，src 被自身 dst 覆盖，
+    //   origin=1/3 时网格被破坏；C++ 参考用副本 copy 读源，此处等价）。
     wire [15:0] src_idx_c =
         ((origin_k[1] ? ROWS[15:0] - 1 - rc : rc) * COLS[15:0]) +
         (origin_k[0] ? COLS[15:0] - 1 - c : c);
-    wire [63:0] src_buf_d = best_buf[src_idx_c[5:0]];
+    wire [63:0] src_buf_d = buf_orig[src_idx_c[5:0]];
 
     //--------------------------------------------------------------------
     // 块 B：角度子状态机（A_PROJ…A_NEXT）
@@ -1153,6 +1156,7 @@ module grid_order_ctrl #(
                         end
                         4'd2: begin
                             best_buf[bc_cnt - 16'd1] <= best_rd64;
+                            buf_orig[bc_cnt - 16'd1] <= best_rd64;   // 快照（M6.2 修复）
                             best_rd_en <= 1'b0;
                             if (bc_cnt >= NCELL[15:0]) begin
                                 mc <= 4'd0;

@@ -132,6 +132,9 @@ module detect_ctrl #(
     output wire                    gray_rd_en,
     output wire [GRAY_ADDR_W-1:0]  gray_rd_addr,
     input  wire [7:0]              gray_rd_data,
+    // 响应流探针（Pass1 native 期间当前层 resp 流直出，供响应图写 DDR 等）
+    output wire                    resp_tap_valid,
+    output wire [31:0]             resp_tap_data,
     // 有序角点输出（40 点流）
     output reg                     out_valid,
     input  wire                    out_ready,
@@ -254,6 +257,10 @@ module detect_ctrl #(
     wire [19:0] p1_lim   = pix_of(dl);
     wire thr_mul_rdy, thr_mul_v;
     wire [31:0] thr_mul_r;
+
+    // resp 探针（Pass1 native 期间当前层 resp 流直出）
+    assign resp_tap_valid = (stage == ST_NATIVE) ? slot_resp_fire[dl] : 1'b0;
+    assign resp_tap_data  = (stage == ST_NATIVE) ? slot_resp_data[dl] : 32'd0;
 
     // map 算术互连
     wire mul_rdy_x, mul_rdy_y, mul_v_x, mul_v_y, add_rdy_x, add_rdy_y;

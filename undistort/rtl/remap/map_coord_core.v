@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-`include "../include/vision_defs.vh"
+`include "vision_defs.vh"
 
 // Bring-up implementation of the Brown reverse-map coordinate calculation.
 //

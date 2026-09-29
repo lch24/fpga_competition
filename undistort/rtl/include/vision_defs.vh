@@ -10,7 +10,7 @@
 `define VISION_STATUS_MEM_ERROR        8'd5
 `define VISION_STATUS_TIMEOUT          8'd6
 
-`define VISION_PIXEL_FORMAT_BGR888     8'd0
+`define VISION_PIXEL_FORMAT_RGB565     8'd1
 
 // IEEE 754 single-precision bit patterns used by the remap path.
 `define VISION_FP32_ZERO               32'h0000_0000

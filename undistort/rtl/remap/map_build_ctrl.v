@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-`include "../include/vision_defs.vh"
+`include "vision_defs.vh"
 
 // Controls one complete map-build job after a valid camera parameter packet
 // has already been received. This module contains no floating-point arithmetic

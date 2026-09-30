@@ -135,6 +135,13 @@ module detect_ctrl #(
     // 响应流探针（Pass1 native 期间当前层 resp 流直出，供响应图写 DDR 等）
     output wire                    resp_tap_valid,
     output wire [31:0]             resp_tap_data,
+    // 响应图帧级导出（M7.3：detect 有角点路径 ST_OUT 后，读回最深层槽位
+    //   resp RAM 全图 PIXELS fp32 → 外部写 DDR；cfg_resp_dump_en=0 时行为不变）
+    input  wire                    cfg_resp_dump_en,
+    output wire                    resp_dump_valid,
+    input  wire                    resp_dump_ready,
+    output wire [31:0]             resp_dump_data,
+    output reg                     resp_dump_done,   // 电平（离开 ST_DUMP / 下次 start 清零）
     // 有序角点输出（40 点流）
     output reg                     out_valid,
     input  wire                    out_ready,
@@ -180,15 +187,16 @@ module detect_ctrl #(
     //--------------------------------------------------------------------
     // 顶层状态
     //--------------------------------------------------------------------
-    localparam ST_IDLE   = 3'd0;
-    localparam ST_NATIVE = 3'd1;   // 层 dl native：shi/filter/order/reader 运行
-    localparam ST_ORDER  = 3'd2;   // 收 grid_order(dl) 40 点流 → corner RAM_dl
-    localparam ST_REFINE = 3'd3;   // refine(dl) 运行 + 收 out 流写回 corner RAM_dl
-    localparam ST_MAP    = 3'd4;   // map：读 RAM_{dl+1} 40 点 → 2p+0.5 → 写 RAM_dl
-    localparam ST_NEXT   = 3'd5;   // 层推进
-    localparam ST_FIN    = 3'd6;   // 收尾：status 判定
-    localparam ST_OUT    = 3'd7;   // 输出 corner RAM_0 40 点流
-    reg [2:0] stage;
+    localparam ST_IDLE   = 4'd0;
+    localparam ST_NATIVE = 4'd1;   // 层 dl native：shi/filter/order/reader 运行
+    localparam ST_ORDER  = 4'd2;   // 收 grid_order(dl) 40 点流 → corner RAM_dl
+    localparam ST_REFINE = 4'd3;   // refine(dl) 运行 + 收 out 流写回 corner RAM_dl
+    localparam ST_MAP    = 4'd4;   // map：读 RAM_{dl+1} 40 点 → 2p+0.5 → 写 RAM_dl
+    localparam ST_NEXT   = 4'd5;   // 层推进
+    localparam ST_FIN    = 4'd6;   // 收尾：status 判定
+    localparam ST_OUT    = 4'd7;   // 输出 corner RAM_0 40 点流
+    localparam ST_DUMP   = 4'd8;   // M7.3：帧级响应图导出（读回最深层 resp RAM）
+    reg [3:0] stage;
 
     localparam M_IDLE = 3'd0, M_RD = 3'd1, M_RD2 = 3'd2, M_MULW = 3'd3,
                M_ADDW = 3'd4, M_WR = 3'd5, M_DONE = 3'd6;
@@ -214,6 +222,10 @@ module detect_ctrl #(
     reg [31:0] rmax_r, thr_r;      // resp max / 闩存 thr
     reg [19:0] p1_cnt;             // 当前 native 已收 resp 数
     reg        thr_mul_fire;
+    // M7.3 帧级响应图导出（块 4；声明在 generate 之前供 slot_dump_addr 引用）
+    reg [1:0]  d_st;
+    reg [19:0] d_addr;
+    reg        d_v;
 
     //--------------------------------------------------------------------
     // 槽位互连 wire 数组（generate 赋值）
@@ -238,6 +250,10 @@ module detect_ctrl #(
     wire [CORNER_AW-1:0] slot_refine_pt_addr [0:DEPTH-1];
     wire        slot_resp_fire   [0:DEPTH-1];
     wire [31:0] slot_resp_data   [0:DEPTH-1];
+    // M7.3 dump 读回（ST_DUMP 期间只驱动最深层槽位）
+    wire        slot_dump_en     [0:DEPTH-1];
+    wire [19:0] slot_dump_addr   [0:DEPTH-1];
+    wire [31:0] slot_dump_data   [0:DEPTH-1];
     wire [63:0] cram_rd64        [0:DEPTH-1];
     wire [31:0] cram_rd_x        [0:DEPTH-1];
     wire [31:0] cram_rd_y        [0:DEPTH-1];
@@ -380,6 +396,8 @@ module detect_ctrl #(
                 .resp_valid(fv), .resp_rdy(frdy), .resp_data(fd),
                 .resp_in_ready(me_rdy),
                 .mem_addr(), .mem_data(),
+                .dump_en(slot_dump_en[d]), .dump_addr(slot_dump_addr[d]),
+                .dump_data(slot_dump_data[d]),
                 .done(shi_done), .status(),
                 .cand_valid(cand_v), .cand_ready(cand_rdy),
                 .cand_x(cand_x), .cand_y(cand_y), .cand_total(cand_total)
@@ -456,6 +474,8 @@ module detect_ctrl #(
             assign slot_refine_val[d] = refine_valid_d;
             assign slot_resp_fire[d]  = fv && frdy;
             assign slot_resp_data[d]  = fd;
+            assign slot_dump_en[d]    = (stage == ST_DUMP) && (d == DEPTH - 1);
+            assign slot_dump_addr[d]  = d_addr;
             assign base_d[d]          = base_w;
 
             // corner RAM 读口 3 选 1（refine pt_rd / map 读 / S_OUT 输出）
@@ -788,10 +808,15 @@ module detect_ctrl #(
                             end else if (out_ready) begin
                                 out_valid <= 1'b0;
                                 if (out_oc + 16'd1 >= CORNER_N[15:0]) begin
-                                    done   <= 1'b1;
-                                    busy   <= 1'b0;
-                                    o_st   <= O_IDLE;
-                                    stage  <= ST_IDLE;
+                                    if (cfg_resp_dump_en) begin
+                                        o_st  <= O_IDLE;
+                                        stage <= ST_DUMP;
+                                    end else begin
+                                        done  <= 1'b1;
+                                        busy  <= 1'b0;
+                                        o_st  <= O_IDLE;
+                                        stage <= ST_IDLE;
+                                    end
                                 end else begin
                                     out_oc <= out_oc + 16'd1;
                                     o_st   <= O_RD;
@@ -801,7 +826,78 @@ module detect_ctrl #(
                         default: o_st <= O_RD;
                     endcase
                 end
+                //-------------------------------------------- DUMP（M7.3 帧级响应图导出）
+                ST_DUMP: begin
+                    if (resp_dump_done) begin
+                        done  <= 1'b1;
+                        busy  <= 1'b0;
+                        stage <= ST_IDLE;
+                    end
+                end
                 default: stage <= ST_IDLE;
+            endcase
+        end
+    end
+
+    //--------------------------------------------------------------------
+    // 块 4：帧级响应图导出（ST_DUMP：读回最深层槽位 resp RAM 全图）
+    //   dump_addr = d_addr（registered 读语义：地址须稳定 1 拍，下一拍出数据）
+    //   时序：D_PRE 呈现地址 0（d_v=0）→ D_RUN 数据=mem[0] 且 d_v=1；
+    //   接受后进 D_NXT 气泡拍（d_v=0、d_addr+1、呈现新地址），下一拍
+    //   D_RUN 数据=mem[新地址]——**必须**隔拍推进：若在接受同拍推进，
+    //   接受拍采到的是上一地址的旧数据，字重复/错位（曾导致角点簇写 0）。
+    //   收满 D_PIX 个字 → resp_dump_done=1。
+    //--------------------------------------------------------------------
+    localparam D_IDLE = 3'd0, D_PRE = 3'd1, D_RUN = 3'd2, D_NXT = 3'd3, D_END = 3'd4;
+    localparam [19:0] D_PIX = pix_of(DEPTH - 1);
+
+    assign resp_dump_valid = d_v;
+    assign resp_dump_data  = slot_dump_data[DEPTH - 1];
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            d_st           <= D_IDLE;
+            d_addr         <= 20'd0;
+            d_v            <= 1'b0;
+            resp_dump_done <= 1'b0;
+        end else if (stage != ST_DUMP) begin
+            d_st           <= D_IDLE;
+            d_addr         <= 20'd0;
+            d_v            <= 1'b0;
+            resp_dump_done <= 1'b0;
+        end else begin
+            case (d_st)
+                D_IDLE: begin
+                    d_addr <= 20'd0;
+                    d_v    <= 1'b0;
+                    d_st   <= D_PRE;
+                end
+                D_PRE: begin
+                    d_v  <= 1'b1;
+                    d_st <= D_RUN;
+                end
+                D_RUN: begin
+                    if (d_v && resp_dump_ready) begin
+                        if (d_addr >= D_PIX - 20'd1) begin
+                            resp_dump_done <= 1'b1;
+                            d_v            <= 1'b0;
+                            d_st           <= D_END;
+                        end else begin
+                            d_v    <= 1'b0;
+                            d_addr <= d_addr + 20'd1;
+                            d_st   <= D_NXT;
+                        end
+                    end
+                end
+                D_NXT: begin
+                    d_v  <= 1'b1;
+                    d_st <= D_RUN;
+                end
+                D_END: begin
+                    resp_dump_done <= 1'b1;
+                    d_v            <= 1'b0;
+                end
+                default: d_st <= D_IDLE;
             endcase
         end
     end

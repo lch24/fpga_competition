@@ -1,4 +1,4 @@
-# M7 说明文档：DDR 对接（raster_dma / byte_packer / ddr_port_adapter / gray_fetch + 灰度经 DDR 全链）
+# M7 说明文档：DDR 对接（raster_dma / byte_packer / ddr_port_adapter / gray_fetch / resp_ddr_writer + 灰度经 DDR 全链 + 响应图写 DDR）
 
 - 负责人：苏晨（corner 分支）
 - 状态：已完成（待提交）
@@ -20,12 +20,20 @@ M7 把 M6 遗留的 DDR 对接落地。权威为 **M1 交付的 `ddr_memory_mode
 | `gray_fetch.v`（层灰度 DDR → 片上 gray RAM，内部例化 raster_dma 读方向 + 写捕获） | 单元 tb_grayfetch 4 用例 ALL PASSED（err=0 proto=0） |
 | **灰度经 DDR 全链** `tb_detect_ddr.sv`（DDR 预载 → gray_fetch L0 → pyramid 生成 L1 → detect_ctrl） | big 金字塔路径 40/40 + board5x8 native 路径 40/40，err=0 proto_violations=0 |
 | `detect_ctrl.sv`（新增 resp_tap 探针端口，向后兼容） | 全链对拍通过，旧 TB 不受影响 |
+| `shi_tomasi_ctrl.sv`（新增响应图读回口 dump_en/dump_addr/dump_data，最小侵入 mux） | 全链回归通过（M7.3） |
+| `resp_ddr_writer.v`（响应字流 → DDR 写，单事务，keep 全 1111，复用 ddr_port_adapter） | 单元 tb_resp_writer 4 用例（257 字/多帧复用/零字违规/写错误注入）err=0 proto=0 |
+| **响应图写 DDR 帧级导出** `tb_resp_ddr.sv`（detect ST_OUT 后 ST_DUMP 读回最深层 resp RAM → resp_ddr_writer → DDR → 读回逐字节比对） | big 921600B + board5x8 104448B 均 err=0，40/40 点，err=0 proto_violations=0 |
 
 全链场景（`tb_detect_ddr.sv`，仿真 123.5ms / 真实约 13 分钟）：
 - **big（金字塔路径，1280×720）**：DDR @0x1000 预载 `m6_big_gray.bin`（stride=1280）→ `gray_fetch` 加载 L0 到片上 RAM（921600 字节 err=0）→ `pyramid_ctrl` 生成 L1 640×360（count=2）→ `detect_ctrl` DEPTH=2（native@L1 → 2p+0.5 → refine@L0）→ 40 点与 `m6_chain_big.bin` 逐位一致。
 - **board5x8（native 路径，272×96）**：DDR @0x200000 预载 `m5_board5x8_gray.bin` → `gray_fetch` → `detect_ctrl` DEPTH=1 → 40 点与 `m6_chain_board5x8.bin` 逐位一致。
 
-**不在 M7 范围**：响应图写 DDR（resp_tap → 字宽写路径 + 帧级任务流）留 **M7.3**；标定、remap 仍为后续里程碑。M7.3 的输入接口已就绪（detect_ctrl 新增 `resp_tap_valid/resp_tap_data`：Pass1 native 期间当前层 resp 流直出）。
+M7.3 响应图写 DDR 场景（`tb_resp_ddr.sv`，仿真 142ms / 真实约 14 分钟）：
+- **big**：检测完成后（`cfg_resp_dump_en=1`）ST_DUMP 帧级导出最深层 L1 的 230400 个 fp32 响应（`m7_resp_big.bin` 同源，M2 位级一致）→ `resp_ddr_writer` 单事务写 DDR @0x300000 → `u_rb`（raster_dma 读方向）读回 921600 字节 vs `m7_resp_big.bin` 逐位一致。
+- **board5x8**：同路径导出 L0 26112 个 fp32 → DDR @0x400000 → 读回 104448 字节 vs `m7_resp_board5x8.bin` 逐位一致。
+- 权威：`export_m6.cpp` 新增 `dump_resp_map`（`sobel_xy` + `shi_tomasi_response`，原始 min_eigen 全图，无阈值/NMS），m6_* 既有向量经 SHA256 全部一致零回归。
+
+**不在 M7 范围**：标定、remap 仍为后续里程碑。DDR 通道仲裁（gray_fetch 读 / 响应写 / 响应读回与未来 DMAC 的共享）留真实系统集成阶段。
 
 ---
 
@@ -73,6 +81,15 @@ DDR（ddr_memory_model，字节流语义）
 
 新增 `resp_tap_valid`/`resp_tap_data` 输出端口：Pass1 native 期间当前层 resp 流直出（供响应图写 DDR 等后续使用）。向后兼容——旧 TB 未连接该端口不受影响（全链对拍即为回归证据）。
 
+### 3.6 M7.3 响应图写 DDR（shi_tomasi dump 口 + resp_ddr_writer + detect_ctrl ST_DUMP）
+
+**数据源**：最深层槽位（d=DEPTH-1，恒 native）`shi_tomasi_ctrl` 内部 `response_store_max` RAM 存有全图 PIXELS 个 fp32 原始 min_eigen 响应（M4/M2 已位级验证该值；M7.3 用 resp_tap 探针逐字复核 26112/26112 一致）。**RTL 计算本身无错**。
+
+- `shi_tomasi_ctrl.sv` 新增 `dump_en`/`dump_addr`/`dump_data` 读回口（最小侵入：u_store 的 rd_addr 组合 mux，状态机零改动；PASS2 期间 dump_en=0 为外部职责）。
+- `resp_ddr_writer.v`：响应字流 → DDR 单事务写。start 锁存 `cfg_base`/`cfg_words` → 发写请求（len=words*4，tag=0）→ 逐字 `in→wr_dat`（keep 恒 1111，尾字 last=1）→ 收 wr_cplt（error→status=10）→ done。背压吸收：wr_dat_ready=0 时 in_ready 拉低（纯握手无缓冲，上游保持）。内部例化 `ddr_port_adapter` 承担在途阻塞与零长处理；对外 wr_* 为模型侧直连。
+- `detect_ctrl.sv` ST_DUMP 阶段（`cfg_resp_dump_en=1` 时 ST_OUT 后执行，=0 时行为与 M7.2 完全一致）：D_PRE 呈现地址 0 → D_RUN 输出数据（d_v=1，registered 读 1 拍对齐）→ 接受后进 **D_NXT 气泡拍**（d_v=0、d_addr+1）→ 收满 D_PIX 个字 → `resp_dump_done`。**关键纪律：registered 读的地址须稳定 1 拍，接受与推进必须隔拍（见 §5 问题 6）。**
+- `export_m6.cpp` 新增 `dump_resp_map`：`sobel_xy` + `shi_tomasi_response`（原始 min_eigen 全图，无阈值/NMS）→ `m7_resp_big.bin`（640×360）/ `m7_resp_board5x8.bin`（272×96），文件头 u32 W + u32 H + W*H 个 fp32 小端；既有 m6_* 向量 SHA256 零回归。
+
 ---
 
 ## 4. 验证矩阵
@@ -85,10 +102,12 @@ DDR（ddr_memory_model，字节流语义）
 | `tb_ddr_copy.sv` | **集成拷贝闭环**：u_pre 预载 → u_rd 读 A → u_wr 写 B → 模型内存逐字节比对（对齐/非对齐/尾字节/双路背压/读错误注入） | 4 用例 err=0 proto_violations=0 |
 | `tb_grayfetch.sv` | gray_fetch 单元（big-L0 921600B / big-L1 230400B / 非对齐 127×63 stride=131 ram_base 非零 / 读错误注入） | 4 用例 err=0 proto_violations=0 |
 | `tb_detect_ddr.sv` | **灰度经 DDR 全链集成**（DDR 预载 → gray_fetch → pyramid → detect；big 金字塔路径 + board5x8 native 路径） | 40/40 × 2，err=0 proto_violations=0 |
+| `tb_resp_writer.sv` | resp_ddr_writer 单元（257 字比对 / 多帧连续复用 / cfg_words=0 违规 / 写错误注入） | 4 用例 err=0 proto_violations=0 |
+| `tb_resp_ddr.sv` | **响应图写 DDR 帧级集成**（detect ST_DUMP → writer → DDR → u_rb 读回逐字节比对；big + board5x8） | 40/40 × 2，resp 读回 921600B/104448B 均 err=0，proto_violations=0 |
 
 模型配置：LATENCY_MIN=1..6、JITTER/BACKPRESSURE/PROTOCOL_CHECKS 全开（随机延迟 + 随机背压下全过）。
 
-复现：ModelSim vlog + vsim（单实例，授权码并发受限——**多个 vsim 并行会 license 争用失败**，务必串行：启动前 `Get-Process vsimk` 确认无实例）。编译链：detect 层槽位链（M6 集）+ pyramid_ctrl/downsample2x + raster_dma/gray_fetch + ddr_memory_model + TB。
+复现：ModelSim vlog + vsim（单实例，授权码并发受限——**多个 vsim 并行会 license 争用失败**，务必串行：启动前 `Get-Process vsimk` 确认无实例；模型关联数组警告洪水可用 `vsim -suppress vsim-3829` 抑制，proto 计数不受影响）。编译链：detect 层槽位链（M6 集）+ pyramid_ctrl/downsample2x + raster_dma/gray_fetch/ddr_port_adapter/resp_ddr_writer + ddr_memory_model + TB。向量：g++ 编译 export_m6.cpp（链接 shi_tomasi.cpp）重生成 m6_*/m7_resp_*.bin（确定性，既有向量字节不变）。
 
 ---
 
@@ -98,8 +117,10 @@ DDR（ddr_memory_model，字节流语义）
 2. **gray_fetch 初版漏接内部 DMA 读通道输入（G 发现并修复）**：`rd_req_ready`/`rd_ret_valid/data/keep/tag/last/error` 未从模块端口透传给内部 raster_dma，悬空 z → `1 && z = x` 请求握手永不成立、DMA 卡死 RD_IDLE、模型 RD_STREAM 死锁。补 7 条 `assign` 透传后 PASS。
 3. **集成 TB 握手竞态教训（M7.1 主控）**：请求握手用"组合 valid=pending&&ready + ready 回落判接受"零竞态；数据拍**非尾**用模型 `wr_off_r` 前进判接受、**尾拍**用 `wr_dat_ready` 回落判接受——混用会导致尾字节重复或丢失。
 4. **SV 任务入参值拷贝冻结（M7.1 集成 TB）**：任务 `input logic d` 为值拷贝，循环内 d 冻结为初值，永远等不到 done 沿 → 改用内联"前一负沿值判沿"循环（与 M6 集成 TB 同款教训，M7 再次确认此纪律）。
-5. **模型关联数组警告洪水（非违规）**：ddr_memory_model 的 `rd_addr_r`/`rd_len_r` 在首次读请求前为 X，稀疏数组 X 索引查询触发 ~92 万条 `Non-existent associative array entry` 警告；参考 TB tb_ddr_copy 同样洪水，proto_violations=0，模型为只读未改动。
-6. **响应写 DDR 未做（留 M7.3）**：resp 流写 DDR 需要**字宽写路径**（response_store_max 现为内部 RAM，其输出是窄位宽响应结构而非字节流）——按事务契约写 DDR 需先打包成字，本里程碑不做，detect_ctrl 已留 resp_tap 探针作为 M7.3 输入。
+5. **模型关联数组警告洪水（非违规）**：ddr_memory_model 的 `rd_addr_r`/`rd_len_r` 在首次读请求前为 X，稀疏数组 X 索引查询触发 ~92 万条 `Non-existent associative array entry` 警告；参考 TB tb_ddr_copy 同样洪水，proto_violations=0，模型为只读未改动（可用 `vsim -suppress vsim-3829` 抑制，不影响 proto 计数）。
+6. **ST_DUMP 响应图导出 prefetch 错位（M7.3 主控发现并修复，本阶段最隐蔽的 bug）**：初版 ST_DUMP 在**接受同拍**推进 `d_addr`（prefetch 提前 1 拍），而 response_store_max 的 registered 读是"地址须稳定 1 拍、下一拍出数据"——接受拍采到的是上一地址的旧数据，导致导出流**字重复/错位**。因为背景区 resp 全 0（"重复 0=0"不报错），错字**只在角点簇显形**（大图 6759B / 小板 4167B 错），且 40 点检测不受影响——是全链 40/40 掩盖的隐蔽缺陷。修复：接受后进 D_NXT 气泡拍（d_v=0、d_addr+1、呈现新地址），隔拍推进后全图 0 错。
+   - 排查路径（留档）：resp_tap 探针证明 **RTL resp 计算 100% 正确**（26112/26112 逐字一致）→ 问题不在计算/不在 RAM 内容 → 锁定在 dump→writer 读回路径 → Python 复刻 C++ 语义（clamp 与 zero 边界各只差 0/16 边界像素，均不解释内侧错字）排除语义差异 → 逐拍时序分析定位 prefetch 竞态。
+7. **响应图写 DDR（M7.3 完成）**：resp 流经 `resp_tap` 探针与内部 RAM 双证据确认后，帧级导出路径 = detect_ctrl ST_DUMP（读最深层槽位 resp RAM）→ `resp_ddr_writer`（单事务字流写，keep 全 1111）→ DDR；读回与 `export_m6.cpp` 新增 `dump_resp_map` 导出的权威逐位一致。
 
 **项目级教训（license）**：ModelSim 授权码并发实例数有限，所有 vsim 必须串行（检查无 vsimk 进程再启动）。本阶段 3 个子代理 + 主控全程遵守。
 
@@ -107,7 +128,7 @@ DDR（ddr_memory_model，字节流语义）
 
 ## 6. 遗留事项与接口契约（交接重点）
 
-- **M7.3 响应写 DDR（未做）**：resp_tap 探针流（Pass1 native 期间当前层 resp 流直出）→ 字宽写路径 → DDR。需评估：响应结构窄位宽打包成字、帧级任务流（detect 完成后统一搬移）、与 gray_fetch 的 DDR 读通道仲裁。
+- **响应图写 DDR 已交付（M7.3）**：detect_ctrl `cfg_resp_dump_en=1` 时 ST_OUT 后执行 ST_DUMP，帧级导出**最深层槽位**（恒 native，d=DEPTH-1）的 resp RAM 全图 fp32 → `resp_ddr_writer` 写 DDR（`cfg_base`/`cfg_words` 配置）。语义说明：只导出最深层响应图（恢复路径的"发起层"）；无角点路径（status=10）不导出。响应结构已是 32 位 fp32，字宽写路径无需再打包。
 - **字节语义契约（冻结）**：模型读写均按连续字节地址；keep[k] 对应 data[8k+:8]；非尾 keep=1111、尾拍按剩余字节（0001/0011/0111/1111）、last 只在尾字；wr_req_addr/rd_req_addr = 首字节字节地址（任意起点，无字对齐要求）。**任何 DDR 侧新模块必须遵守，否则触发模型协议违规（PROTOCOL_CHECKS）并得到 error=1 事务。**
 - **ddr_port_adapter 是未来真实控制器替换点**：真实 DDR 服务层控制器（强文韬侧）就绪后，仅需将 m_* 端口改接，客户端侧接口不变。
 - **行调度纪律**：raster_dma/gray_fetch 一笔在途（读收 last / 写收 wr_done 才发下一行），tag=y 行号回带。

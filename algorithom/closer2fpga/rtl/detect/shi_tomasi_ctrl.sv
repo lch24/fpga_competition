@@ -34,6 +34,12 @@ module shi_tomasi_ctrl #(
     // Pass2 resp RAM 读口
     output [ADDR_W-1:0]                    mem_addr,
     input  [31:0]                          mem_data,
+    // 响应图读回口（dump：外部在 busy=0/done 后驱动；S_IDLE 期间 store 只读不写无冲突。
+    //   registered 读：dump_addr 施加拍 N，dump_data 拍 N+1 有效。
+    //   PASS1/PASS2 期间外部必须保持 dump_en=0，本模块仅做组合 mux 不干预状态机）
+    input  wire                            dump_en,
+    input  wire [ADDR_W-1:0]               dump_addr,
+    output wire [31:0]                     dump_data,
     // 输出
     output reg                             done,
     output reg [1:0]                       status,     //01=有角点 10=无 11=内部错
@@ -57,6 +63,10 @@ module shi_tomasi_ctrl #(
     wire store_pass1_done;
     wire [31:0] store_rmax;
     wire [31:0] store_rd_data;
+    // 响应图读回口 mux：dump_en=1 时读口交给外部 dump，否则照旧给 Pass2 mem_addr
+    wire [ADDR_W-1:0] store_rd_addr_mux;
+    assign store_rd_addr_mux = dump_en ? dump_addr : mem_addr;
+    assign dump_data         = store_rd_data;   // registered 读，dump 地址拍 N → 数据拍 N+1
     // Pass1 门控（先在例化前声明，避免隐式 net 与显式声明冲突）
     wire resp_valid_to_store;
     wire store_in_ready;                       // store in_ready（恒 1）
@@ -72,7 +82,7 @@ module shi_tomasi_ctrl #(
         .in_resp    (resp_data),
         .pass1_done (store_pass1_done),
         .rmax       (store_rmax),
-        .rd_addr    (mem_addr),
+        .rd_addr    (store_rd_addr_mux),
         .rd_data    (store_rd_data)
     );
 

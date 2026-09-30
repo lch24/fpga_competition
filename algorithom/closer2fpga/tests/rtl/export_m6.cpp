@@ -537,6 +537,32 @@ void export_chain(const std::string& out_dir, const std::string& name,
                     res.corners.back().x, res.corners.back().y);
 }
 
+// --- M7.3 权威：shi_tomasi 全图响应矩阵（= RTL response_store_max RAM 存的 resp 流）---
+// 复刻 shi_tomasi_detect 的 Pass1（shi_tomasi.cpp:69-72 调用的两个公开函数）：
+//   sobel_xy（shi_tomasi.cpp:13-38，clamp 边界）→ shi_tomasi_response
+//   （shi_tomasi.cpp:40-62，win_size=3：3×3 window 累加 tensor，出界补 0，
+//    逐像素 min_eigenvalue，gradient.h:19-23）→ resp 为原始 min_eigen 值。
+// 不做任何阈值/NMS（那些在 shi_tomasi_detect Pass2，shi_tomasi.cpp:86-102）。
+// RTL 对应：detect_ctrl 最深层槽位（恒 native）shi_tomasi_ctrl 的 Pass1 resp 流
+//   以光栅序逐像素写入 response_store_max RAM（response_store_max.sv:78-83）。
+// 文件格式（小端）：u32 W, u32 H, W*H 个 fp32（fb 位透传，光栅序 x 递增→y 递增）。
+void dump_resp_map(const std::string& out_dir, const std::string& name,
+                   const GrayImage& gray) {
+    FloatMap Ix, Iy, resp;
+    sobel_xy(gray, Ix, Iy);
+    shi_tomasi_response(Ix, Iy, resp, 3);
+    std::vector<uint32_t> w;
+    w.reserve((size_t)resp.w * resp.h + 2);
+    w.push_back((uint32_t)resp.w);
+    w.push_back((uint32_t)resp.h);
+    for (int y = 0; y < resp.h; ++y)
+        for (int x = 0; x < resp.w; ++x)
+            w.push_back(fb(resp.get(x, y)));
+    write_vec(out_dir + "/m7_resp_" + name + ".bin", w);
+    std::printf("[resp:%s] %dx%d bytes=%zu\n", name.c_str(), resp.w, resp.h,
+                w.size() * sizeof(uint32_t));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -584,6 +610,21 @@ int main(int argc, char** argv) {
     // ---- M6.2 全链向量：big（金字塔路径）+ board5x8（native 路径）----
     export_chain(out_dir, "big", big, 5, 8);
     export_chain(out_dir, "board5x8", b5, 5, 8);
+
+    // ---- M7.3 响应图权威向量（= RTL response_store_max RAM 存的 resp 流）----
+    // big：detect_chessboard_ref 走金字塔路径（1280×720 >960 → 缩半），native
+    //   检测发生在 L1 半图 640×360 → 先在原图上做 down4 缩半，再在半图上算响应。
+    {
+        GrayImage half(big.w / 2, big.h / 2);
+        for (int y = 0; y < half.h; ++y)
+            for (int x = 0; x < half.w; ++x)
+                half.set(x, y, uint8_t((int(big.get(2 * x, 2 * y)) + big.get(2 * x + 1, 2 * y) +
+                                        big.get(2 * x, 2 * y + 1) + big.get(2 * x + 1, 2 * y + 1) + 2) /
+                                       4));
+        dump_resp_map(out_dir, "big", half);            // 640×360 → 921608 B
+    }
+    // board5x8：native 检测在 L0 原图 272×96 → 直接在原图上算响应。
+    dump_resp_map(out_dir, "board5x8", b5);             // 272×96 → 104456 B
 
     std::printf("[export_m6] DONE\n");
     return 0;

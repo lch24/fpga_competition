@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 module camera_calibration_rtl (
     input  wire                clk,
     input  wire                rst_n,
@@ -12,25 +14,25 @@ module camera_calibration_rtl (
     output wire                param_valid,
     input  wire                param_ready,
 
-    // 相机内参：signed Q16.16
-    output wire signed [31:0]  param_fx,
-    output wire signed [31:0]  param_fy,
-    output wire signed [31:0]  param_cx,
-    output wire signed [31:0]  param_cy,
+    // 相机内参：IEEE-754 FP32原始位模式
+    output wire        [31:0]  param_fx,
+    output wire        [31:0]  param_fy,
+    output wire        [31:0]  param_cx,
+    output wire        [31:0]  param_cy,
 
-    // 畸变参数：signed Q4.28
-    output wire signed [31:0]  param_k1,
-    output wire signed [31:0]  param_k2,
-    output wire signed [31:0]  param_p1,
-    output wire signed [31:0]  param_p2,
-    output wire signed [31:0]  param_k3,
+    // 畸变参数：IEEE-754 FP32原始位模式
+    output wire        [31:0]  param_k1,
+    output wire        [31:0]  param_k2,
+    output wire        [31:0]  param_k3,
+    output wire        [31:0]  param_p1,
+    output wire        [31:0]  param_p2,
 
     // 标定时使用的图像分辨率
     output wire [15:0]         calib_width,
     output wire [15:0]         calib_height,
 
     // 本次标定结果编号
-    output wire [15:0]         calib_id,
+    output wire [31:0]         calib_id,
 
     // 标定状态
     output wire                calib_busy,
@@ -38,8 +40,8 @@ module camera_calibration_rtl (
     output wire                calib_failed,
     output wire [7:0]          calib_error_code,
 
-    // 可选：标定误差，例如Q16.16像素
-    output wire [31:0]         calib_rms_error
+    // 可选：标定误差，IEEE-754 FP64原始位模式
+    output wire [63:0]         calib_rms_error
 );
 
 endmodule

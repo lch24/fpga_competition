@@ -1,46 +1,42 @@
-# Undistortion RTL interface (draft 0.1)
+# Undistortion RTL interface
 
-## Ownership
+The authoritative team contract is `main/README.md`. This branch implements the
+work after a successful calibration parameter packet has been received.
 
-- Calibration team: detect/calibrate and produce one complete camera-parameter set.
-- Undistortion team: store the result, generate reverse-map coordinates, access DDR,
-  perform bilinear interpolation, and send corrected pixels to the display path.
+## Input boundary
 
-## Calibration result transaction
+One accepted packet contains:
 
-The nine parameters form one transaction. They do not have independent handshakes.
-The transfer occurs on a rising clock edge when both `param_valid` and
-`param_ready` are high.
+```text
+calib_id[31:0], width[15:0], height[15:0], camera_valid,
+fx, fy, cx, cy, k1, k2, k3, p1, p2
+```
 
-The calibration producer must keep every parameter and all metadata stable while
-`param_valid=1` and `param_ready=0`.
+The nine numeric fields are raw IEEE-754 FP32 bit patterns. RMS is an optional
+FP64 diagnostic and is not used by map generation. The top-level controller must
+pair the packet with the successful calibration response before starting a map
+job. Failed or partial calibration results never replace the last good map.
 
-| Field | Format | Meaning |
-| --- | --- | --- |
-| `fx fy cx cy` | signed Q16.16 | Intrinsic parameters in pixels |
-| `k1 k2 p1 p2 k3` | signed Q4.28 | Brown distortion coefficients |
-| `calib_width/height` | unsigned integer | Resolution used for calibration |
-| `calib_id` | unsigned integer | Monotonic result identifier |
-| `rms_error` | unsigned Q16.16 | Reprojection RMS error in pixels |
+## Internal map-build boundary
 
-The producer asserts `param_valid` only for a successful and usable calibration.
-Failure status is a separate control/status path and must not overwrite the last
-good parameter set.
+`map_build_ctrl` locks the parameters for one complete job. It configures
+`map_coord_core`, emits destination coordinates in raster order, and passes the
+resulting FP32 `(src_x,src_y)` stream to `map_table_writer`.
 
-## Parameter store behavior
+The table writer stores two planes:
 
-`rtl/camera_param_store.v` provides a one-entry shadow bank and an active bank.
-A newly received result may wait in the shadow bank while the remap generator is
-busy. The entire result is switched to the active bank on one clock edge after
-`map_busy` goes low. `active_update` pulses for one cycle on that edge.
+```text
+map_x_addr = map_x_base + y*map_stride_bytes + 4*x
+map_y_addr = map_y_base + y*map_stride_bytes + 4*x
+```
 
-Version 0.1 assumes the producer and the parameter store use the same clock. If
-they use different clocks, place an asynchronous mailbox/FIFO in front of the
-store; a bare ready/valid connection is not a clock-domain crossing solution.
+It returns completion only after both planes' DDR write responses have arrived.
+The published map descriptor binds the table to `calib_id`, width, height, and
+the pixel-center coordinate convention.
 
-## Next interface boundary
+## Protocol rule
 
-The remap generator will consume the active bank and produce, in raster order,
-signed Q16.16 source coordinates for each destination pixel. DDR base addresses,
-strides, RGB565 packing, border policy, and bilinear interpolation remain outside
-the calibration RTL.
+Every command and stream uses ready/valid. When `valid=1` and `ready=0`, valid
+and the complete payload remain stable. Counters advance only on
+`valid && ready`. All current modules assume the same `core_clk`; crossing from
+the camera clock requires a separate verified CDC FIFO.

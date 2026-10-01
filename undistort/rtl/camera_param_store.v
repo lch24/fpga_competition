@@ -5,9 +5,8 @@
 //
 // Interface assumptions:
 //   * All signals are synchronous to clk. A CDC bridge is required otherwise.
-//   * fx/fy/cx/cy use signed Q16.16.
-//   * k1/k2/p1/p2/k3 use signed Q4.28.
-//   * RMS error uses unsigned Q16.16 pixels.
+//   * All nine camera fields are raw IEEE-754 FP32 bit patterns.
+//   * RMS error is a raw IEEE-754 FP64 bit pattern.
 //   * The producer must keep the entire s_* bundle stable while
 //     s_param_valid is high and s_param_ready is low.
 module camera_param_store (
@@ -17,19 +16,19 @@ module camera_param_store (
     input  wire                s_param_valid,
     output wire                s_param_ready,
 
-    input  wire signed [31:0]  s_fx,
-    input  wire signed [31:0]  s_fy,
-    input  wire signed [31:0]  s_cx,
-    input  wire signed [31:0]  s_cy,
-    input  wire signed [31:0]  s_k1,
-    input  wire signed [31:0]  s_k2,
-    input  wire signed [31:0]  s_p1,
-    input  wire signed [31:0]  s_p2,
-    input  wire signed [31:0]  s_k3,
+    input  wire        [31:0]  s_fx,
+    input  wire        [31:0]  s_fy,
+    input  wire        [31:0]  s_cx,
+    input  wire        [31:0]  s_cy,
+    input  wire        [31:0]  s_k1,
+    input  wire        [31:0]  s_k2,
+    input  wire        [31:0]  s_p1,
+    input  wire        [31:0]  s_p2,
+    input  wire        [31:0]  s_k3,
     input  wire        [15:0]  s_calib_width,
     input  wire        [15:0]  s_calib_height,
-    input  wire        [15:0]  s_calib_id,
-    input  wire        [31:0]  s_rms_error,
+    input  wire        [31:0]  s_calib_id,
+    input  wire        [63:0]  s_rms_error,
 
     // A new parameter set may be received while the remap generator is busy,
     // but it is not made active until map_busy becomes low.
@@ -37,38 +36,38 @@ module camera_param_store (
 
     output reg                 active_valid,
     output reg                 active_update,
-    output reg  signed [31:0]  active_fx,
-    output reg  signed [31:0]  active_fy,
-    output reg  signed [31:0]  active_cx,
-    output reg  signed [31:0]  active_cy,
-    output reg  signed [31:0]  active_k1,
-    output reg  signed [31:0]  active_k2,
-    output reg  signed [31:0]  active_p1,
-    output reg  signed [31:0]  active_p2,
-    output reg  signed [31:0]  active_k3,
+    output reg          [31:0] active_fx,
+    output reg          [31:0] active_fy,
+    output reg          [31:0] active_cx,
+    output reg          [31:0] active_cy,
+    output reg          [31:0] active_k1,
+    output reg          [31:0] active_k2,
+    output reg          [31:0] active_p1,
+    output reg          [31:0] active_p2,
+    output reg          [31:0] active_k3,
     output reg          [15:0] active_calib_width,
     output reg          [15:0] active_calib_height,
-    output reg          [15:0] active_calib_id,
-    output reg          [31:0] active_rms_error,
+    output reg          [31:0] active_calib_id,
+    output reg          [63:0] active_rms_error,
 
     // Debug/status signal: one complete result is waiting to become active.
     output wire                shadow_pending
 );
 
     reg                        shadow_valid;
-    reg signed [31:0]          shadow_fx;
-    reg signed [31:0]          shadow_fy;
-    reg signed [31:0]          shadow_cx;
-    reg signed [31:0]          shadow_cy;
-    reg signed [31:0]          shadow_k1;
-    reg signed [31:0]          shadow_k2;
-    reg signed [31:0]          shadow_p1;
-    reg signed [31:0]          shadow_p2;
-    reg signed [31:0]          shadow_k3;
+    reg        [31:0]          shadow_fx;
+    reg        [31:0]          shadow_fy;
+    reg        [31:0]          shadow_cx;
+    reg        [31:0]          shadow_cy;
+    reg        [31:0]          shadow_k1;
+    reg        [31:0]          shadow_k2;
+    reg        [31:0]          shadow_p1;
+    reg        [31:0]          shadow_p2;
+    reg        [31:0]          shadow_k3;
     reg        [15:0]          shadow_calib_width;
     reg        [15:0]          shadow_calib_height;
-    reg        [15:0]          shadow_calib_id;
-    reg        [31:0]          shadow_rms_error;
+    reg        [31:0]          shadow_calib_id;
+    reg        [63:0]          shadow_rms_error;
 
     assign s_param_ready = ~shadow_valid;
     assign shadow_pending = shadow_valid;
@@ -90,8 +89,8 @@ module camera_param_store (
             shadow_k3           <= 32'sd0;
             shadow_calib_width  <= 16'd0;
             shadow_calib_height <= 16'd0;
-            shadow_calib_id     <= 16'd0;
-            shadow_rms_error    <= 32'd0;
+            shadow_calib_id     <= 32'd0;
+            shadow_rms_error    <= 64'd0;
 
             active_fx           <= 32'sd0;
             active_fy           <= 32'sd0;
@@ -104,8 +103,8 @@ module camera_param_store (
             active_k3           <= 32'sd0;
             active_calib_width  <= 16'd0;
             active_calib_height <= 16'd0;
-            active_calib_id     <= 16'd0;
-            active_rms_error    <= 32'd0;
+            active_calib_id     <= 32'd0;
+            active_rms_error    <= 64'd0;
         end
         else begin
             active_update <= 1'b0;

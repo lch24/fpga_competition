@@ -30,4 +30,6 @@ x86/
 *.FileListAbsolute.txt
 *.idb
 *.ipch
+__pycache__/
+undistort/sim/build/
 *.pdb

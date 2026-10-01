@@ -18,3 +18,7 @@ transcript
 vsim.wlf
 *.vstf
 modelsim.ini
+
+# Archived simulation logs (override parent *[Ll]ogs/ and *.log).
+!docs/logs/
+!docs/logs/*.log

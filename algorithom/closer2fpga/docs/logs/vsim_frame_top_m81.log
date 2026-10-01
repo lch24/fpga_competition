@@ -1,0 +1,119 @@
+﻿Reading D:/MentorGraphics/64_10.6e/tcl/vsim/pref.tcl
+
+# 10.6e
+
+# vsim -c tb_frame_top -suppress vsim-3829 -do "run -all; quit -f" 
+# Start time: 12:16:28 on Oct 01,2026
+# ** Warning: (vsim-8891) All optimizations are turned off because the -novopt switch is in effect. This will cause your simulation to run very slowly. If you are using this switch to preserve visibility for Debug or PLI features please see the User's Manual section on Preserving Object Visibility with vopt.
+# //  ModelSim SE-64 10.6e Jun 23 2018
+# //
+# //  Copyright 1991-2018 Mentor Graphics Corporation
+# //  All Rights Reserved.
+# //
+# //  ModelSim SE-64 and its associated documentation contain trade
+# //  secrets and commercial or financial information that are the property of
+# //  Mentor Graphics Corporation and are privileged, confidential,
+# //  and exempt from disclosure under the Freedom of Information Act,
+# //  5 U.S.C. Section 552. Furthermore, this information
+# //  is prohibited from disclosure under the Trade Secrets Act,
+# //  18 U.S.C. Section 1905.
+# //
+# Loading sv_std.std
+# Loading work.tb_frame_top
+# Loading work.ddr_memory_model
+# Loading work.corner_detect_ddr_top
+# Loading work.frame_task_ctrl
+# Loading work.gray_fetch
+# Loading work.raster_dma
+# Loading work.pyramid_ctrl
+# Loading work.downsample2x
+# Loading work.detect_ctrl
+# Loading work.fp32_mul
+# Loading work.sync_fifo
+# Loading work.fp32_add
+# Loading work.resp_ddr_writer
+# Loading work.ddr_port_adapter
+# Loading work.ddr_port_arbiter
+# Loading work.gray_reader
+# Loading work.window3x3
+# Loading work.sobel_core
+# Loading work.tensor_core
+# Loading work.tensor_window_sum
+# Loading work.s32_to_f32
+# Loading work.min_eigen_core
+# Loading work.fp32_sub
+# Loading work.stream_fork2
+# Loading work.fp64_mul
+# Loading work.fp64_sub
+# Loading work.fp64_sqrt
+# Loading work.f64_to_f32
+# Loading work.shi_tomasi_ctrl
+# Loading work.response_store_max
+# Loading work.dual_port_ram
+# Loading work.nms_candidates
+# Loading work.candidate_filter_ctrl
+# Loading work.candidate_store
+# Loading work.candidate_merge
+# Loading work.fp32_hypot
+# Loading work.fp32_div
+# Loading work.nearest_spacing
+# Loading work.lround_pkg
+# Loading work.ring_check
+# Loading work.subpixel_ctrl
+# Loading work.bilinear_core
+# Loading work.tensor_solve
+# Loading work.fp64_add
+# Loading work.fp64_div
+# Loading work.subpixel_accum
+# Loading work.grid_order_ctrl
+# Loading work.index_sort
+# Loading work.grid_validate
+# Loading work.fp32_log
+# Loading work.grid_refine_ctrl
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(225): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[0]/u_order/u_idxv File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(235): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[0]/u_order/u_order File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(245): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[0]/u_order/u_gapi File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(255): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[0]/u_order/u_idxu File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/detect_ctrl.sv(393): [PCDPC] - Port size (18) does not match connection size (20) for port 'dump_addr'. The port definition is at: ../rtl/detect/shi_tomasi_ctrl.sv(41).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[1]/u_shi File: ../rtl/detect/shi_tomasi_ctrl.sv
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(225): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[1]/u_order/u_idxv File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(235): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[1]/u_order/u_order File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(245): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[1]/u_order/u_gapi File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(255): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_big/u_det/g_slot[1]/u_order/u_idxu File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/detect_ctrl.sv(393): [PCDPC] - Port size (15) does not match connection size (20) for port 'dump_addr'. The port definition is at: ../rtl/detect/shi_tomasi_ctrl.sv(41).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_b5/u_det/g_slot[0]/u_shi File: ../rtl/detect/shi_tomasi_ctrl.sv
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(225): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_b5/u_det/g_slot[0]/u_order/u_idxv File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(235): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_b5/u_det/g_slot[0]/u_order/u_order File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(245): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_b5/u_det/g_slot[0]/u_order/u_gapi File: ../rtl/common/dual_port_ram.v
+# ** Warning: (vsim-3015) ../rtl/detect/grid_order_ctrl.sv(255): [PCDPC] - Port size (8) does not match connection size (32) for port 'rd_data'. The port definition is at: ../rtl/common/dual_port_ram.v(43).
+#    Time: 0 ps  Iteration: 0  Instance: /tb_frame_top/u_top_b5/u_det/g_slot[0]/u_order/u_idxu File: ../rtl/common/dual_port_ram.v
+# run -all
+# === scene: big frame A (pyramid + resp dump) @ 150000 ===
+# [big A] frame done @ 104025510000 status=01 total=40 grid_ok=1 pts=40
+# [big_A] resp DDR readback err=0 / 921600 (rb_status=01)
+# === scene: big frame B (frame reuse, resp_base reload) @ 115572450000 ===
+# [big B] frame done @ 207439110000 status=01 total=40 grid_ok=1 pts=40
+# [big_B] resp DDR readback err=0 / 921600 (rb_status=01)
+# === scene: big frame C (resp dump disabled) @ 218985630000 ===
+# [big C] frame done @ 305789210000 status=01 total=40 grid_ok=1 pts=40
+# === scene: board5x8 frame D (native + resp dump) @ 305789260000 ===
+# [board5x8] frame done @ 330915310000 status=01 total=40 grid_ok=1 pts=40
+# [board5x8] resp DDR readback err=0 / 104448 (rb_status=01)
+# ==============================================
+# FRAME-TOP TB: err=0 proto_violations=0 (big_frames=3 b5_frame=1)
+# TB RESULT: ALL FRAME-TOP TESTS PASSED
+# ** Note: $finish    : tb_frame_top.sv(853)
+#    Time: 332224280 ns  Iteration: 1  Instance: /tb_frame_top
+# End time: 13:25:49 on Oct 01,2026, Elapsed time: 1:09:21
+# Errors: 0, Warnings: 15

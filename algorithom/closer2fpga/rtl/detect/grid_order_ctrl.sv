@@ -443,8 +443,15 @@ module grid_order_ctrl #(
                         end
                     end
                     if (start) begin
+                        // 连续帧/连续层复用：start 必须"完整再武装"（与 S_IDLE 的
+                        // start 同语义，直达 S_CAP）——否则 done/out_grid_ok 残留
+                        // 使 detect 误判 order 已完成，误进 ST_ORDER 等点死锁
+                        // （M8 集成暴露的连续帧 bug：残留 S_DONE 吃掉 start 后
+                        //   卡 S_IDLE；此根治替代 top 帧级软复位规避）。
+                        busy <= 1'b1; done <= 1'b0; status <= 2'b00;
+                        cnt_pts <= 16'd0; out_grid_ok <= 1'b0;
                         out_valid <= 1'b0;
-                        state <= S_IDLE;
+                        state <= S_CAP;
                     end
                 end
                 default: state <= S_IDLE;

@@ -70,7 +70,7 @@ corner_detect_ddr_top
 
 联调顶层。arbiter N_RD=2/N_WR=2：读槽 0=gray_fetch、1=ext_rd；写槽 0=resp_ddr_writer、1=ext_wr。gray RAM 读写口按子模块 busy 阶段互斥 mux（参考 tb_detect_ddr active 选通）。`cfg_words=(W0>>(DEPTH-1))*(H0>>(DEPTH-1))` 参数化。子模块 cfg 由 top 直连 cfg 总线（子模块在自身 start 拍采样，帧期间 cfg 稳定）。
 
-**帧级软复位（连续帧关键）**：`det_rst_n = rst_n && !(f_busy || pyr_busy)`——GF/PYR 阶段给 detect 每帧软复位（见 §5 问题 1），det_start 时已释放，保证连续帧复用干净。
+**帧级软复位（连续帧架构保证，M8.1 保留）**：`det_rst_n = rst_n && !(f_busy || pyr_busy)`——GF/PYR 阶段给 detect 每帧软复位（见 §5 问题 1/2/3），det_start 时已释放，统一兜底各类帧间残留与 fp32 弹性罕见死锁。
 
 ---
 
@@ -80,6 +80,7 @@ corner_detect_ddr_top
 |---|---|---|
 | `tb_arbiter.sv` | 两读交错 / 两写交错 / 读写并发×2 / round-robin 公平（各 10 笔无饿死）/ 在途阻塞×2 / 零长伪返回 | 7 用例 ALL PASSED，proto=0 |
 | `tb_frame_top.sv` | big 帧 A（pyramid+resp dump）/ 帧 B（连续帧复用+resp_base 重锁存）/ 帧 C（dump 关闭）/ board5x8 帧 D（DEPTH=1） | 40/40×4，resp 读回 921600B×2 + 104448B 均 err=0，proto=0 |
+| `tb_frame_b5x2.sv` | **M8.1 快速连续帧回归**（board5x8 同一 top 实例连跑两帧，~2.5 分钟） | 40/40×2，err=0 proto=0 |
 
 模型配置：LATENCY_MIN=1..6、JITTER/BACKPRESSURE/PROTOCOL_CHECKS 全开。仿真 332ms / 真实 55 分钟（vsim 串行，-suppress vsim-3829）。向量复用 M7：`m6_big_gray`/`m6_chain_big`/`m5_board5x8_gray`/`m6_chain_board5x8`/`m7_resp_{big,board5x8}`（只读）。
 
@@ -87,11 +88,13 @@ corner_detect_ddr_top
 
 ## 5. 过程中发现并修复的问题
 
-1. **grid_order_ctrl 连续帧死锁（M8 集成发现的既有潜在 bug，K 定位）**：`grid_order_ctrl` 主状态机 `S_DONE: if(start) 只转移 S_IDLE 不锁存`，而 detect 的 order_start 是 1 拍脉冲——**连续帧第 2 帧**起 order 残留 S_DONE 吃掉 start 卡 S_IDLE，done/gok 残留使 detect 误进 ST_ORDER 死锁（看门狗定位 det stage=2）。M6/M7 各 TB 每场景只用独立实例/未连续复用，从未触发。**规避（不动已验证模块）**：top 内帧级软复位 `det_rst_n = rst_n && !(f_busy||pyr_busy)`，GF/PYR 阶段复位 detect（含 order），det_start 时已回 IDLE。**遗留**：根治需改 grid_order_ctrl（S_DONE 遇 start 锁存复位），但须 M4 tb_order 回归 + 全链重对拍，M8 不做，记入 §6。
-2. **`process` 关键字冲突**：ModelSim 10.6e -sv 保留字 → 帧命令端口改名 `process_frame`。
-3. **ext_rd/ext_wr 方向初版写反**：req/dat 为输入、ret/done 为输出，已修正。
-4. **ST_DUMP 串行启动死锁**：dump_en 时 writer 必须先 start 才有 in_ready，而 detect 的 ST_DUMP 等 resp_dump_ready 才推进——串行启动（det 完成再启 writer）必死锁；w_start 与 det_start 同拍解决（见 §3.2）。
-5. **vsim-3839 multiply-driven 警告（28 条）**：ModelSim 10.6e 对含数组端口模块的端口连接误报（数组端口驱动方向被误判为双驱动）；已用最小实验 + 功能结果（4 帧全过）双重确认不影响方向与数据。
+1. **grid_order_ctrl 连续帧死锁（M8 集成发现，M8.1 根治）**：`grid_order_ctrl` 主状态机 `S_DONE: if(start) 只转移 S_IDLE 不锁存`，而 detect 的 order_start 是 1 拍脉冲——**连续帧第 2 帧**起 order 残留 S_DONE 吃掉 start 卡 S_IDLE，done/gok 残留使 detect 误进 ST_ORDER 死锁。M6/M7 各 TB 每场景只用独立实例/未连续复用，从未触发。**M8.1 根治**：S_DONE 遇 start 改为"完整再武装直达 S_CAP"（清 done/status/cnt_pts/out_grid_ok、busy=1、out_valid=0，与 S_IDLE 的 start 同语义）；M4 tb_order 回归 40/40 位级一致，单帧行为不变。
+2. **candidate_filter_ctrl 连续帧残留（M8.1 移除软复位后暴露并根治）**：① `m3_started` 只置位从不清零——帧 2 的 S_MERGE3 `merge_start=0`、merge3 永不启动，filter 卡死 S_MERGE3（order 在 S_CAP 等 inner，全链挂起）；② `ring_finish` 只清于复位——帧 2 进 S_RING 时残留 1 导致 ring 瞬间空跑、inner 全丢。修复：S_NEAR 清 m3_started、非 RING 阶段清 ring_finish。均为"帧 2 起才触发"，单帧 TB 从未暴露。
+3. **fp32 弹性模块罕见背压死锁（M8.1 新发现，确定性复现，软复位兜底）**：移除软复位后帧 2 在 subpixel 末点（pt_idx=39/iter=4）卡死——bilinear 停在 S_ADD 等 at_v，且 u_subdy 的 out_valid（sdy_v）卡 1（FIFO 残留 token 从未消费），fp32_add/sub 弹性封装在连续数千次弹性事务后偶发死锁（与帧边界无关，单帧内也可能触发，时序敏感）。**已用帧级软复位兜底**（每帧复位清空全部弹性 FIFO，K 原方案验证 4 帧通过）；根治需 fp32 弹性封装波形级深挖（sync_fifo 计数/out_valid 清除与 fire 消费的竞态），单独立项，记入 §6。
+4. **`process` 关键字冲突**：ModelSim 10.6e -sv 保留字 → 帧命令端口改名 `process_frame`。
+5. **ext_rd/ext_wr 方向初版写反**：req/dat 为输入、ret/done 为输出，已修正。
+6. **ST_DUMP 串行启动死锁**：dump_en 时 writer 必须先 start 才有 in_ready，而 detect 的 ST_DUMP 等 resp_dump_ready 才推进——串行启动（det 完成再启 writer）必死锁；w_start 与 det_start 同拍解决（见 §3.2）。
+7. **vsim-3839 multiply-driven 警告（28 条）**：ModelSim 10.6e 对含数组端口模块的端口连接误报（数组端口驱动方向被误判为双驱动）；已用最小实验 + 功能结果（4 帧全过）双重确认不影响方向与数据。
 
 ---
 
@@ -102,7 +105,7 @@ corner_detect_ddr_top
   - 上游（相机→灰度）：`ext_wr_*` 写客户端槽 1 把 L0 灰度写入 `cfg_gray_base` 区（top 帧级自动拉取）；
   - 下游（标定/remap）：40 点流（out_valid/ready/x/y/total/grid_ok）+ `ext_rd_*` 读响应图；
   - 上层：`process_frame` + cfg 总线 + busy/done/status。
-- **grid_order_ctrl S_DONE 连续帧 bug 待根治**：现以 top 帧级软复位规避（`det_rst_n = rst_n && !(f_busy||pyr_busy)`）；根治须改 grid_order_ctrl 并回归 M4 tb_order + 全链重对拍。
-- **帧级软复位纪律**：detect 在 GF/PYR 阶段保持复位（f_busy||pyr_busy 期间），det_start 前释放；任何改变阶段时序的改动须重跑 tb_frame_top 连续帧用例。
+- **grid_order_ctrl S_DONE 连续帧 bug（M8.1 已根治）**：S_DONE 遇 start 由"仅转 S_IDLE"改为"完整再武装直达 S_CAP"（与 S_IDLE 的 start 同语义：清 done/status/cnt_pts/out_grid_ok、busy=1、out_valid=0）。M4 tb_order 单元回归 40/40 位级一致。**根治后 top 仍保留帧级软复位**（`det_rst_n = rst_n && !(f_busy||pyr_busy)`）作为连续帧架构保证——因为还发现两类更深残留（见 §5），软复位统一兜底。
+- **帧级软复位纪律**：detect 在 GF/PYR 阶段保持复位（f_busy||pyr_busy 期间），det_start 前释放；任何改变阶段时序的改动须重跑 tb_frame_top 连续帧用例（快速迭代可用 tb_frame_b5x2，约 2.5 分钟）。
 - **握手纪律（沿用）**：等待电平"前一拍值判沿"；请求"组合 valid+pending&&ready + ready 回落判接受"；数据非尾"wr_off_r 前进判接受"、尾拍"ready 回落判接受"。
-- **范围外**：OV5640 通路、真实控制器时序、PDS 综合、标定/remap。
+- **范围外**：OV5640 通路、真实控制器时序、PDS 综合、标定/remap。fp32 弹性模块罕见背压死锁（§5 问题 4）需专用深挖（波形级）。

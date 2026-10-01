@@ -227,9 +227,10 @@ module corner_detect_ddr_top #(
     //--------------------------------------------------------------------
     // detect_ctrl（检测全链 + 响应图帧级导出；cfg_base0=cfg_ram_base）
     //   per-frame 软复位：GF/PYR 阶段拉低 det_rst_n，把 detect 内部子模块
-    //   （grid_order_ctrl 等）残留状态复位回 IDLE —— 规避 M6 基础件"主状态机
-    //   S_DONE 吃单拍 start 后不锁存"的连续帧残留 bug（帧 2 起 order 卡 S_IDLE、
-    //   done/gok 残留导致 detect 误进 ST_ORDER 死锁）；det_start 时已释放。
+    //   残留状态复位回 IDLE —— 连续帧复用的架构保证。M8.1 已根治三个
+    //   具体残留 bug（grid_order_ctrl S_DONE 再武装、candidate_filter
+    //   m3_started/ring_finish 清零），软复位继续兜底其余潜伏残留与
+    //   fp32 弹性模块的罕见背压死锁（见 M8_REPORT §5）；det_start 时已释放。
     //--------------------------------------------------------------------
     wire det_rst_n = rst_n && !(f_busy || pyr_busy);
     wire        det_gray_rd_en;

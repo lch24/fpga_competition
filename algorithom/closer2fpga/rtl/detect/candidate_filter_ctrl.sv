@@ -448,6 +448,11 @@ module candidate_filter_ctrl #(
             // probe/inner 输出自清（握手恒收，1 拍）
             probe_valid <= 1'b0;
             inner_valid <= 1'b0;
+            // M8.1：ring_finish 只在复位清零会残留到下一帧——帧 2 进 S_RING 时
+            //   ring_finish=1 导致 S_RING 瞬间空跑完成、inner 全丢（order 无点）。
+            //   非 RING 阶段清零（S_RING 期间保持由 RG_END 置位）。
+            if (state != S_RING)
+                ring_finish <= 1'b0;
             if (state == S_RING) begin
                 case (rg_sub)
                     RG_RDPT: begin
@@ -561,6 +566,8 @@ module candidate_filter_ctrl #(
             if (state == S_MERGE3) m3_started <= 1'b1;
             if (state == S_NEAR)   near_started <= 1'b1;
             if (state == S_SUBPX)  m5_started <= 1'b0;
+            if (state == S_NEAR)   m3_started <= 1'b0;   // M8.1：m3_started 从不清零会残留
+                // 到下一帧——帧 2 的 S_MERGE3 merge_start=0、merge3 永不启动，filter 卡死
             if (state == S_NEAR && near_done && !near_busy)
                 near_started <= 1'b0;
         end

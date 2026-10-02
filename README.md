@@ -1,8 +1,8 @@
 # FPGA 相机标定与图像校正分工
 
-> 2026-10-02：三个开发分支已合并到本地 main。当前源码入口、去重结果、逐信号对接表与待解决问题见 [合并与接口检查](integration/INTERFACE_REVIEW.md)。下文保留团队的目标接口约定；与已交付实现不一致处以该检查文档明确标注的实际行为为准，尚未实现整机自动闭环。
+> 2026-10-02：三个分支合并后，已新增实际闭环顶层。现在的使用方式、接口、内存布局和验证范围以 [闭环使用说明](integration/CLOSED_LOOP.md) 为准。[合并与接口检查](integration/INTERFACE_REVIEW.md) 保留合并时的问题记录，下文保留原分工与目标接口约定。
 
-当前三个入口：检测 `corner_detect_ddr_top`、标定 `calib_top`、采集/DDR/校正 `camera_system_top`。检测实际读 Gray8，采集/校正实际用 RGB565；需补格式转换与检测帧协议适配，不能直接按下文原 BGR888 规划接线。联合编译和接口回归入口为 `integration/run_checks.ps1`。
+整机入口为 `vision_camera_top`（开始→逐张拍照确认→标定→校正最后一张→DDR），预存图入口为 `vision_ddr_top`。外部不传 job/view/index；内部自动编号。已接好 RGB565→Gray8、检测帧协议、参数完成屏障和共享 DDR。原三个子系统入口保留，联合编译和回归入口为 `integration/run_checks.ps1`。
 
 目标：摄像头图像写入 DDR → 棋盘角点检测 → 相机参数标定 → 图像校正 → 校正结果写回 DDR。
 

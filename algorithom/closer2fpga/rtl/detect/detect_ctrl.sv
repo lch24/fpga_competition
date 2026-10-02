@@ -118,7 +118,9 @@ module detect_ctrl #(
     parameter H0          = 720,
     parameter DEPTH       = 2,           // 层数（含 L0；DEPTH=1 无金字塔）
     parameter GRAY_ADDR_W = 26,          // ≥ $clog2(Σ_{d<DEPTH} W_d*H_d + base0)
-    parameter CORNER_N    = 40,
+    parameter ROWS        = 5,
+    parameter COLS        = 8,
+    parameter CORNER_N    = ROWS*COLS,
     parameter CORNER_AW   = 8
 ) (
     input  wire                    clk,
@@ -416,7 +418,7 @@ module detect_ctrl #(
                 .probe_valid(), .probe_hi(), .probe_lo(), .probe_thr(),
                 .probe_ntrans(), .probe_opp_err(), .probe_sector_ok(), .probe_pass()
             );
-            grid_order_ctrl #(.ROWS(5), .COLS(8)) u_order (
+            grid_order_ctrl #(.ROWS(ROWS), .COLS(COLS)) u_order (
                 .clk(clk), .rst_n(rst_n),
                 .start(order_start), .busy(), .done(order_done_d), .status(),
                 .pts_valid(inner_v), .pts_ready(inner_rdy),
@@ -426,7 +428,7 @@ module detect_ctrl #(
                 .out_total(order_total), .out_grid_ok(order_gok)
             );
             grid_refine_ctrl #(
-                .ROWS(5), .COLS(8), .N_ADDR_W(CORNER_AW),
+                .ROWS(ROWS), .COLS(COLS), .N_ADDR_W(CORNER_AW),
                 .IMG_W(WD), .IMG_H(HD), .GRAY_ADDR_W(GRAY_ADDR_W)
             ) u_refine (
                 .clk(clk), .rst_n(rst_n),

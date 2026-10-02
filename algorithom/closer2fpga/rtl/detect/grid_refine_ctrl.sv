@@ -43,7 +43,7 @@ module grid_refine_ctrl #(
     parameter IMG_W       = 1280,
     parameter IMG_H       = 720,
     parameter GRAY_ADDR_W = 20,
-    parameter ROM_FILE    = "../tests/build/vectors/gaussian_weights.mem"
+    parameter ROM_FILE    = "integration/rom/gaussian_weights.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,

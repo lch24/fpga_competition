@@ -47,7 +47,7 @@ module grid_order_ctrl #(
     parameter COLS        = 8,
     parameter N_ADDR_W    = 8,          // 点容量 256
     parameter GAP_ADDR_W  = 8,
-    parameter ROM_FILE    = "../tests/build/vectors/grid_cos_sin.mem"
+    parameter ROM_FILE    = "integration/rom/grid_cos_sin.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,

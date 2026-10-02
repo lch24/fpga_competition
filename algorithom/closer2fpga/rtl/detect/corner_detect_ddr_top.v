@@ -30,7 +30,9 @@ module corner_detect_ddr_top #(
     parameter GRAY_ADDR_W = 21,         // >= $clog2(Σ层像素 + ram_base)
     parameter MAX_W       = 2560,       // pyramid 上限
     parameter MAX_H       = 1440,
-    parameter MAX_DEPTH   = 4
+    parameter MAX_DEPTH   = 4,
+    parameter ROWS        = 5,
+    parameter COLS        = 8
 ) (
     input  wire                    clk,
     input  wire                    rst_n,
@@ -239,7 +241,8 @@ module corner_detect_ddr_top #(
     wire [31:0] det_resp_dump_data;
 
     detect_ctrl #(
-        .W0 (W0), .H0 (H0), .DEPTH (DEPTH), .GRAY_ADDR_W (GRAY_ADDR_W)
+        .W0 (W0), .H0 (H0), .DEPTH (DEPTH), .GRAY_ADDR_W (GRAY_ADDR_W),
+        .ROWS(ROWS), .COLS(COLS)
     ) u_det (
         .clk (clk), .rst_n (det_rst_n),
         .start (det_start), .busy (det_busy), .done (det_done), .status (det_status),

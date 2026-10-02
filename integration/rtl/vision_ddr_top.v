@@ -1,0 +1,250 @@
+`timescale 1ns/1ps
+`include "calib_defs.vh"
+// Generated connections: integration/tools/generate_wiring.js.
+// DDR -> Gray8 -> detected corners -> real calibration -> maps -> RGB565 DDR.
+// One job and one frame lease at a time. Last input frame is the correction input.
+// Result memory remains owned by caller until rsp_ready; next start may overwrite.
+module vision_ddr_top #(
+ parameter WIDTH=1280,HEIGHT=720,DEPTH=2,
+ parameter GRAY_BASE=32'h03000000,DST_BASE=32'h01000000,
+ parameter MAP_X_BASE=32'h02000000,MAP_Y_BASE=32'h02800000
+)(
+ input wire clk,rst_n,start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
+ input wire frame_valid,output wire frame_ready,input wire [31:0] frame_base,frame_stride,frame_capacity,
+ input wire [7:0] frame_status,output wire frame_release_valid,input wire frame_release_ready,
+ output wire rsp_valid,input wire rsp_ready,output wire [7:0] rsp_status,
+ output wire [31:0] result_base,result_stride,output wire [15:0] result_width,result_height,
+ output wire busy,output wire [31:0] debug_job,output wire [7:0] debug_view,output wire [5:0] debug_phase,
+ output wire [287:0] result_params,output reg [63:0] result_rms,
+ output wire rd_valid,
+ input wire rd_ready,
+ output wire [31:0] rd_addr,
+ output wire [31:0] rd_len,
+ output wire [15:0] rd_tag,
+ input wire r_valid,
+ output wire r_ready,
+ input wire [31:0] r_data,
+ input wire [3:0] r_keep,
+ input wire [15:0] r_tag,
+ input wire r_last,
+ input wire r_error,
+ output wire wr_valid,
+ input wire wr_ready,
+ output wire [31:0] wr_addr,
+ output wire [31:0] wr_len,
+ output wire [15:0] wr_tag,
+ output wire w_valid,
+ input wire w_ready,
+ output wire [31:0] w_data,
+ output wire [3:0] w_keep,
+ output wire w_last,
+ input wire b_valid,
+ output wire b_ready,
+ input wire [15:0] b_tag,
+ input wire b_error
+);
+ localparam [63:0] IMAGE_BYTES=64'd2*WIDTH*HEIGHT,GRAY_BYTES=64'd1*WIDTH*HEIGHT,MAP_BYTES=64'd4*WIDTH*HEIGHT;
+ function disjoint;
+  input [63:0] a,an,b,bn;begin disjoint=(a+an<=b)||(b+bn<=a);end
+ endfunction
+ wire layout_ok=WIDTH>=32&&HEIGHT>=32&&WIDTH<=1920&&HEIGHT<=1080&&DEPTH>=1&&DEPTH<=4&&
+  (WIDTH>>(DEPTH-1))>=16&&(HEIGHT>>(DEPTH-1))>=16&&
+  `PAR_BOARD_ROWS>=2&&`PAR_BOARD_COLS>=2&&`PAR_POINTS<=64&&
+  GRAY_BASE+GRAY_BYTES<=64'h40000000&&DST_BASE+IMAGE_BYTES<=64'h40000000&&
+  MAP_X_BASE+MAP_BYTES<=64'h40000000&&MAP_Y_BASE+MAP_BYTES<=64'h40000000&&
+  disjoint(GRAY_BASE,GRAY_BYTES,DST_BASE,IMAGE_BYTES)&&disjoint(GRAY_BASE,GRAY_BYTES,MAP_X_BASE,MAP_BYTES)&&
+  disjoint(GRAY_BASE,GRAY_BYTES,MAP_Y_BASE,MAP_BYTES)&&disjoint(DST_BASE,IMAGE_BYTES,MAP_X_BASE,MAP_BYTES)&&
+  disjoint(DST_BASE,IMAGE_BYTES,MAP_Y_BASE,MAP_BYTES)&&disjoint(MAP_X_BASE,MAP_BYTES,MAP_Y_BASE,MAP_BYTES);
+ wire [63:0] frame_bytes=64'd1*(HEIGHT-1)*frame_stride+64'd2*WIDTH;
+ wire frame_ok=frame_stride>=2*WIDTH&&frame_bytes<=frame_capacity&&{32'd0,frame_base}+frame_bytes<=64'h40000000&&
+  disjoint(frame_base,frame_bytes,GRAY_BASE,GRAY_BYTES)&&disjoint(frame_base,frame_bytes,DST_BASE,IMAGE_BYTES)&&
+  disjoint(frame_base,frame_bytes,MAP_X_BASE,MAP_BYTES)&&disjoint(frame_base,frame_bytes,MAP_Y_BASE,MAP_BYTES);
+ assign result_base=DST_BASE;assign result_stride=2*WIDTH;assign result_width=WIDTH;assign result_height=HEIGHT;
+ wire ar;wire [31:0] src,ss,capacity;wire [63:0] square;
+ wire gv,gr,gdone,gack;wire [7:0] gs;
+ wire process_frame,ddone,dv,dr,grid_ok;wire [1:0] dstatus;wire [15:0] total;wire [31:0] dx,dy;
+ wire collect_v,collect_r,cv,cr,last,vr,va,ccv,ccr;wire [7:0] index,view_status;
+ wire cbv,cbr,mv,mr;wire [7:0] ms;wire [31:0] mid;wire [15:0] mw,mh;wire [287:0] mp;
+ wire pv,pr,usable,rv,rr;wire [31:0] pid,rid;wire [15:0] pw,ph;wire [287:0] pp;wire [7:0] rs;
+ wire diag_v,diag_metrics;wire [63:0] diag_rms;
+ wire uv,ur,udone,uack;wire [1:0] opcode;wire [7:0] us;
+ wire [2:0] c_rd_valid;
+ wire [2:0] c_rd_ready;
+ wire [95:0] c_rd_addr;
+ wire [95:0] c_rd_len;
+ wire [47:0] c_rd_tag;
+ wire [2:0] c_r_valid;
+ wire [2:0] c_r_ready;
+ wire [31:0] c_r_data;
+ wire [3:0] c_r_keep;
+ wire [15:0] c_r_tag;
+ wire c_r_last;
+ wire c_r_error;
+ wire [2:0] c_wr_valid;
+ wire [2:0] c_wr_ready;
+ wire [95:0] c_wr_addr;
+ wire [95:0] c_wr_len;
+ wire [47:0] c_wr_tag;
+ wire [2:0] c_w_valid;
+ wire [2:0] c_w_ready;
+ wire [95:0] c_w_data;
+ wire [11:0] c_w_keep;
+ wire [2:0] c_w_last;
+ wire [2:0] c_b_valid;
+ wire [2:0] c_b_ready;
+ wire [15:0] c_b_tag;
+ wire c_b_error;
+ vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) sequence_ctrl(
+  .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
+  .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(frame_stride),.frame_capacity(frame_capacity),
+  .frame_status(frame_status),.frame_config_ok(frame_ok),.frame_release_valid(frame_release_valid),.frame_release_ready(frame_release_ready),
+  .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.busy(busy),.job(debug_job),.view_id(debug_view),.debug_phase(debug_phase),
+  .src_base(src),.src_stride(ss),.src_capacity(capacity),.square(square),.algorithm_rst_n(ar),
+  .gray_cmd_valid(gv),.gray_cmd_ready(gr),.gray_rsp_valid(gdone),.gray_rsp_ready(gack),.gray_rsp_status(gs),
+  .det_process(process_frame),.det_done(ddone),.det_status(dstatus),.det_valid(dv),.det_ready(dr),.det_x(dx),.det_y(dy),.det_total(total),.det_grid_ok(grid_ok),
+  .collect_valid(collect_v),.collect_ready(collect_r),.corner_valid(cv),.corner_ready(cr),.corner_index(index),.corner_last(last),
+  .view_rsp_valid(vr),.view_rsp_ready(va),.view_status(view_status),.cal_cmd_valid(ccv),.cal_cmd_ready(ccr),
+  .mb_begin_valid(cbv),.mb_begin_ready(cbr),.mb_valid(mv),.mb_ready(mr),.mb_status(ms),.mb_id(mid),.mb_width(mw),.mb_height(mh),.mb_params(mp),.params(result_params),
+  .remap_cmd_valid(uv),.remap_cmd_ready(ur),.remap_opcode(opcode),.remap_rsp_valid(udone),.remap_rsp_ready(uack),.remap_status(us));
+ rgb565_gray_dma gray(
+  .clk(clk),.rst_n(rst_n),.cmd_valid(gv),.cmd_ready(gr),.width(16'(WIDTH)),.height(16'(HEIGHT)),
+  .src_base(src),.src_stride(ss),.dst_base(GRAY_BASE),.dst_stride(32'(WIDTH)),.rsp_valid(gdone),.rsp_ready(gack),.rsp_status(gs),
+  .rd_valid(c_rd_valid[0]),
+  .rd_ready(c_rd_ready[0]),
+  .rd_addr(c_rd_addr[0+:32]),
+  .rd_len(c_rd_len[0+:32]),
+  .rd_tag(c_rd_tag[0+:16]),
+  .r_valid(c_r_valid[0]),
+  .r_ready(c_r_ready[0]),
+  .r_data(c_r_data),
+  .r_keep(c_r_keep),
+  .r_tag(c_r_tag),
+  .r_last(c_r_last),
+  .r_error(c_r_error),
+  .wr_valid(c_wr_valid[0]),
+  .wr_ready(c_wr_ready[0]),
+  .wr_addr(c_wr_addr[0+:32]),
+  .wr_len(c_wr_len[0+:32]),
+  .wr_tag(c_wr_tag[0+:16]),
+  .w_valid(c_w_valid[0]),
+  .w_ready(c_w_ready[0]),
+  .w_data(c_w_data[0+:32]),
+  .w_keep(c_w_keep[0+:4]),
+  .w_last(c_w_last[0]),
+  .b_valid(c_b_valid[0]),
+  .b_ready(c_b_ready[0]),
+  .b_tag(c_b_tag),
+  .b_error(c_b_error));
+ corner_detect_ddr_top #(.W0(WIDTH),.H0(HEIGHT),.DEPTH(DEPTH),.GRAY_ADDR_W($clog2(2*WIDTH*HEIGHT)),.ROWS(`PAR_BOARD_ROWS),.COLS(`PAR_BOARD_COLS)) detector(
+  .clk(clk),.rst_n(ar),.process_frame(process_frame),.busy(),.done(ddone),.status(dstatus),
+  .cfg_gray_base(GRAY_BASE),.cfg_gray_stride(32'(WIDTH)),.cfg_gray_w(16'(WIDTH)),.cfg_gray_h(16'(HEIGHT)),.cfg_ram_base({$clog2(2*WIDTH*HEIGHT){1'b0}}),
+  .cfg_resp_base(32'd0),.cfg_resp_dump_en(1'b0),.cfg_pyr_en(DEPTH>1),
+  .out_valid(dv),.out_ready(dr),.out_x(dx),.out_y(dy),.out_total(total),.out_grid_ok(grid_ok),
+  .ext_rd_req_valid(1'b0),.ext_rd_req_addr(32'd0),.ext_rd_req_len(32'd0),.ext_rd_req_tag(16'd0),.ext_rd_ret_ready(1'b1),
+  .ext_wr_req_valid(1'b0),.ext_wr_req_addr(32'd0),.ext_wr_req_len(32'd0),.ext_wr_req_tag(16'd0),
+  .ext_wr_dat_valid(1'b0),.ext_wr_dat_data(32'd0),.ext_wr_dat_keep(4'd0),.ext_wr_dat_last(1'b0),.ext_wr_done_ready(1'b1),
+  .m_rd_req_valid(c_rd_valid[1]),
+  .m_rd_req_ready(c_rd_ready[1]),
+  .m_rd_req_addr(c_rd_addr[32+:32]),
+  .m_rd_req_len_bytes(c_rd_len[32+:32]),
+  .m_rd_req_tag(c_rd_tag[16+:16]),
+  .m_rd_ret_valid(c_r_valid[1]),
+  .m_rd_ret_ready(c_r_ready[1]),
+  .m_rd_ret_data(c_r_data),
+  .m_rd_ret_keep(c_r_keep),
+  .m_rd_ret_tag(c_r_tag),
+  .m_rd_ret_last(c_r_last),
+  .m_rd_ret_error(c_r_error),
+  .m_wr_req_valid(c_wr_valid[1]),
+  .m_wr_req_ready(c_wr_ready[1]),
+  .m_wr_req_addr(c_wr_addr[32+:32]),
+  .m_wr_req_len_bytes(c_wr_len[32+:32]),
+  .m_wr_req_tag(c_wr_tag[16+:16]),
+  .m_wr_dat_valid(c_w_valid[1]),
+  .m_wr_dat_ready(c_w_ready[1]),
+  .m_wr_dat_data(c_w_data[32+:32]),
+  .m_wr_dat_keep(c_w_keep[4+:4]),
+  .m_wr_dat_last(c_w_last[1]),
+  .m_wr_cplt_valid(c_b_valid[1]),
+  .m_wr_cplt_ready(c_b_ready[1]),
+  .m_wr_cplt_tag(c_b_tag),
+  .m_wr_cplt_error(c_b_error));
+ calib_top calibration(
+  .clk(clk),.rst_n(ar),.collect_valid(collect_v),.collect_ready(collect_r),.collect_job_id(debug_job),
+  .corner_valid(cv),.corner_ready(cr),.corner_job_id(debug_job),.corner_view_id(debug_view),.corner_point_index(index),.corner_x_fp32(dx),.corner_y_fp32(dy),.corner_last(last),
+  .view_rsp_valid(vr),.view_rsp_ready(va),.view_rsp_job_id(debug_job),.view_rsp_view_id(debug_view),.view_rsp_status(view_status),
+  .cmd_valid(ccv),.cmd_ready(ccr),.cmd_job_id(debug_job),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_square_size_fp64(square),
+  .camera_valid(pv),.camera_ready(pr),.camera_calib_id(pid),.camera_width(pw),.camera_height(ph),.camera_usable(usable),.camera_params(pp),
+  .diag_valid(diag_v),.diag_ready(1'b1),.diag_metrics_valid(diag_metrics),.diag_rms_fp64(diag_rms),
+  .rsp_valid(rv),.rsp_ready(rr),.rsp_status(rs),.rsp_job_id(rid));
+ calibration_mailbox mailbox(
+  .clk(clk),.rst_n(ar),.begin_valid(cbv),.begin_ready(cbr),.begin_job_id(debug_job),
+  .param_valid(pv),.param_ready(pr),.param_calib_id(pid),.param_width(pw),.param_height(ph),.param_camera_valid(usable),.param_values(pp),
+  .calib_rsp_valid(rv),.calib_rsp_ready(rr),.calib_rsp_id(rid),.calib_rsp_status(rs),
+  .result_valid(mv),.result_ready(mr),.result_status(ms),.result_calib_id(mid),.result_width(mw),.result_height(mh),.result_values(mp));
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)result_rms<=0;
+  else if(start_valid&&start_ready)result_rms<=0;
+  else if(diag_v&&diag_metrics)result_rms<=diag_rms;
+ end
+ undistort_top correction(
+  .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_job_id(debug_job),.cmd_calib_id(debug_job),
+  .cmd_camera_valid(1'b1),.cmd_params(result_params),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),
+  .cmd_src_base(src),.cmd_dst_base(DST_BASE),.cmd_map_x_base(MAP_X_BASE),.cmd_map_y_base(MAP_Y_BASE),
+  .cmd_src_stride(ss),.cmd_dst_stride(32'(2*WIDTH)),.cmd_map_stride(32'(4*WIDTH)),
+  .cmd_src_capacity(capacity),.cmd_dst_capacity(32'(IMAGE_BYTES)),.cmd_map_capacity(32'(MAP_BYTES)),.cmd_border_replicate(1'b0),
+  .rsp_valid(udone),.rsp_ready(uack),.rsp_status(us),
+  .rd_valid(c_rd_valid[2]),
+  .rd_ready(c_rd_ready[2]),
+  .rd_addr(c_rd_addr[64+:32]),
+  .rd_len(c_rd_len[64+:32]),
+  .rd_tag(c_rd_tag[32+:16]),
+  .r_valid(c_r_valid[2]),
+  .r_ready(c_r_ready[2]),
+  .r_data(c_r_data),
+  .r_keep(c_r_keep),
+  .r_tag(c_r_tag),
+  .r_last(c_r_last),
+  .r_error(c_r_error),
+  .wr_valid(c_wr_valid[2]),
+  .wr_ready(c_wr_ready[2]),
+  .wr_addr(c_wr_addr[64+:32]),
+  .wr_len(c_wr_len[64+:32]),
+  .wr_tag(c_wr_tag[32+:16]),
+  .w_valid(c_w_valid[2]),
+  .w_ready(c_w_ready[2]),
+  .w_data(c_w_data[64+:32]),
+  .w_keep(c_w_keep[8+:4]),
+  .w_last(c_w_last[2]),
+  .b_valid(c_b_valid[2]),
+  .b_ready(c_b_ready[2]),
+  .b_tag(c_b_tag),
+  .b_error(c_b_error));
+ ddr_service #(.CLIENTS(3)) memory_service(.clk(clk),.rst_n(rst_n),
+  .c_rd_valid(c_rd_valid),.rd_valid(rd_valid),
+  .c_rd_ready(c_rd_ready),.rd_ready(rd_ready),
+  .c_rd_addr(c_rd_addr),.rd_addr(rd_addr),
+  .c_rd_len(c_rd_len),.rd_len(rd_len),
+  .c_rd_tag(c_rd_tag),.rd_tag(rd_tag),
+  .c_r_valid(c_r_valid),.r_valid(r_valid),
+  .c_r_ready(c_r_ready),.r_ready(r_ready),
+  .c_r_data(c_r_data),.r_data(r_data),
+  .c_r_keep(c_r_keep),.r_keep(r_keep),
+  .c_r_tag(c_r_tag),.r_tag(r_tag),
+  .c_r_last(c_r_last),.r_last(r_last),
+  .c_r_error(c_r_error),.r_error(r_error),
+  .c_wr_valid(c_wr_valid),.wr_valid(wr_valid),
+  .c_wr_ready(c_wr_ready),.wr_ready(wr_ready),
+  .c_wr_addr(c_wr_addr),.wr_addr(wr_addr),
+  .c_wr_len(c_wr_len),.wr_len(wr_len),
+  .c_wr_tag(c_wr_tag),.wr_tag(wr_tag),
+  .c_w_valid(c_w_valid),.w_valid(w_valid),
+  .c_w_ready(c_w_ready),.w_ready(w_ready),
+  .c_w_data(c_w_data),.w_data(w_data),
+  .c_w_keep(c_w_keep),.w_keep(w_keep),
+  .c_w_last(c_w_last),.w_last(w_last),
+  .c_b_valid(c_b_valid),.b_valid(b_valid),
+  .c_b_ready(c_b_ready),.b_ready(b_ready),
+  .c_b_tag(c_b_tag),.b_tag(b_tag),
+  .c_b_error(c_b_error),.b_error(b_error));
+endmodule

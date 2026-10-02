@@ -38,7 +38,7 @@ module subpixel_ctrl #(
     parameter GRAY_ADDR_W  = 20,        // ≥ $clog2(W*H)
     parameter N_ADDR_W     = 8,         // 点容量 256
     parameter PATCH_HW     = 16,        // 最大半宽 r+1=16 → patch 2r+4=34
-    parameter ROM_FILE     = "../tests/build/vectors/gaussian_weights.mem"
+    parameter ROM_FILE     = "integration/rom/gaussian_weights.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,

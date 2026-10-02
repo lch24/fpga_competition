@@ -24,7 +24,7 @@ module ring_check #(
     parameter W          = 32,
     parameter H          = 24,
     parameter GRAY_ADDR_W = 14,
-    parameter ROM_FILE   = "ring_cos_sin.mem"
+    parameter ROM_FILE   = "integration/rom/ring_cos_sin.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,

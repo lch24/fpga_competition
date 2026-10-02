@@ -1,9 +1,20 @@
-param([string]$ModelSimBin='E:\pangu\Modelsim10.1c\win64',[string]$OnlyTest='')
+param([string]$ModelSimBin='E:\pangu\Modelsim10.1c\win64',[string]$OnlyTest='', [string]$Configuration='')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $build=Join-Path $PSScriptRoot 'build'
+$defines=@()
+if($Configuration){
+  if($OnlyTest -ne 'tb_vision_ddr'){throw 'Configuration override currently supports tb_vision_ddr only'}
+  foreach($entry in $Configuration.Split(',')){
+    if($entry -notmatch '^PAR_(VIEWS|BOARD_ROWS|BOARD_COLS|LM_MAX_ITERS|LM_MAX_TRIES)=[0-9]+$'){throw "Invalid configuration: $entry"}
+    $defines+='+define+'+$entry
+  }
+  $build=Join-Path $build ('config_'+$Configuration.Replace(',','_').Replace('=','_'))
+}
 New-Item -ItemType Directory -Force $build | Out-Null
-$rtlRoots=@('algorithom/closer2fpga/rtl','parameter/rtl','undistort/rtl')
+New-Item -ItemType Directory -Force (Join-Path $build 'integration/rom') | Out-Null
+Copy-Item (Join-Path $PSScriptRoot 'rom/*.mem') (Join-Path $build 'integration/rom') -Force
+$rtlRoots=@('algorithom/closer2fpga/rtl','parameter/rtl','undistort/rtl','integration/rtl')
 $sources=@($rtlRoots | ForEach-Object { Get-ChildItem (Join-Path $root $_) -Recurse -File | Where-Object {$_.Extension -in '.v','.sv'} })
 # Package must precede ring_check. Reject duplicate modules before compiling.
 $names=@{}
@@ -26,11 +37,17 @@ $testFiles=@($tests | ForEach-Object {
 $testFiles+=Join-Path $root 'algorithom/closer2fpga/sim/ddr_memory_model.sv'
 $testFiles+=Join-Path $root 'algorithom/closer2fpga/sim/tb_arbiter.sv'
 $tests+='tb_arbiter'
+$testFiles+=Join-Path $root 'algorithom/closer2fpga/sim/tb_adapter.sv'
+$tests+='tb_adapter'
 $testFiles+=Join-Path $root 'parameter/sim/tb_corner_store.sv'
 $testFiles+=Join-Path $root 'parameter/sim/tb_calib_top.sv'
 $tests+=@('tb_corner_store','tb_calib_top')
-$includes=@('parameter/rtl/common','parameter/rtl/math','undistort/rtl/include') | ForEach-Object {'+incdir+'+(Join-Path $root $_).Replace('\','/')}
-$manifest=@($includes)+@($sources.FullName | ForEach-Object {'"'+$_.Replace('\','/')+'"'})+@($testFiles | ForEach-Object {'"'+$_.Replace('\','/')+'"'})
+$integrationTests=@(Get-ChildItem (Join-Path $PSScriptRoot 'tb') -Filter 'tb_*.sv' -ErrorAction SilentlyContinue)
+$testFiles+=@($integrationTests.FullName)
+$tests+=@($integrationTests.BaseName)
+if($OnlyTest -and $OnlyTest -notin $tests){throw "Unknown test: $OnlyTest"}
+$includes=@('parameter/rtl/common','parameter/rtl/math','undistort/rtl/include','integration/tb') | ForEach-Object {'+incdir+'+(Join-Path $root $_).Replace('\','/')}
+$manifest=@($defines)+@($includes)+@($sources.FullName | ForEach-Object {'"'+$_.Replace('\','/')+'"'})+@($testFiles | ForEach-Object {'"'+$_.Replace('\','/')+'"'})
 [IO.File]::WriteAllLines((Join-Path $build 'sources.f'),$manifest,[Text.Encoding]::ASCII)
 function Invoke-Tool([string]$tool,[string[]]$arguments,[string]$log) {
   # ModelSim 10.1c can print a harmless FileWatch Tcl error while exiting.
@@ -47,12 +64,13 @@ Push-Location $build
 try {
   if(!(Test-Path work)){Invoke-Tool 'vlib.exe' @('work') 'vlib.log' | Out-Null}
   Invoke-Tool 'vlog.exe' @('-sv','-work','work','-f','sources.f') 'compile.log' | Out-Null
-  foreach($top in @('calib_top','corner_detect_ddr_top','camera_system_top')) {
+  foreach($top in @('calib_top','corner_detect_ddr_top','camera_system_top','vision_ddr_top','vision_camera_top')) {
     Invoke-Tool 'vopt.exe' @($top,'-o',($top+'_checked')) ($top+'_elaborate.log') | Out-Null
     Write-Host "ELABORATE PASS $top"
   }
   foreach($test in $tests) {
     if($OnlyTest -and $test -ne $OnlyTest){continue}
+    if(!$OnlyTest -and $test -eq 'tb_vision_numeric'){continue} # opt-in long numerical run
     # $finish returns to Tcl; a fatal/break or timeout cannot be mistaken for PASS.
     [IO.File]::WriteAllText((Join-Path $build 'run.do'),"onerror {quit -code 1 -f}`nonbreak {quit -code 1 -f}`nrun -all`nquit -code 0 -f`n",[Text.Encoding]::ASCII)
     $simArgs=@('-c',('work.'+$test),'-do','run.do')
@@ -65,7 +83,7 @@ try {
       }
     }
     $out=Invoke-Tool 'vsim.exe' $simArgs ($test+'.log')
-    if($out -notmatch '(?m)^# (PASS[: ]|TB RESULT: ALL ARBITER TESTS PASSED|CORNER_STORE_PASS |CALIB_TOP_PASS )' -or $out -match '\*\* (Error|Fatal):'){throw "Missing PASS or simulator error in $test"}
+    if($out -notmatch '(?m)^# (PASS[: ]|TB RESULT: ALL ((ARBITER|ADAPTER) )?TESTS PASSED|CORNER_STORE_PASS |CALIB_TOP_PASS )' -or $out -match '\*\* (Error|Fatal):'){throw "Missing PASS or simulator error in $test"}
     Write-Host "SIM PASS $test"
   }
 } finally {Pop-Location}

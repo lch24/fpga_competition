@@ -118,7 +118,7 @@ module ddr_port_adapter #(
     reg [TAG_W-1:0] rd_tag_r;
 
     // 请求握手：仅空闲且模型可收时接受（len==0 也在空闲接受，但不发模型）
-    assign rd_req_ready   = (rd_state == RD_IDLE) && m_rd_req_ready;
+    assign rd_req_ready   = (rd_state == RD_IDLE) && ((rd_req_len == 0) || m_rd_req_ready);
     assign m_rd_req_valid = (rd_state == RD_IDLE) && rd_req_valid && (rd_req_len != {LEN_W{1'b0}});
     assign m_rd_req_addr  = rd_req_addr;
     assign m_rd_req_len_bytes = rd_req_len;
@@ -175,7 +175,7 @@ module ddr_port_adapter #(
     reg [1:0]   wr_state;
     reg [TAG_W-1:0] wr_tag_r;
 
-    assign wr_req_ready   = (wr_state == WR_IDLE) && m_wr_req_ready;
+    assign wr_req_ready   = (wr_state == WR_IDLE) && ((wr_req_len == 0) || m_wr_req_ready);
     assign m_wr_req_valid = (wr_state == WR_IDLE) && wr_req_valid && (wr_req_len != {LEN_W{1'b0}});
     assign m_wr_req_addr  = wr_req_addr;
     assign m_wr_req_len_bytes = wr_req_len;

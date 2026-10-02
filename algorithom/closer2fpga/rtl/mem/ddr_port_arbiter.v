@@ -108,6 +108,8 @@ module ddr_port_arbiter #(
     reg [1:0]       rd_state;
     reg [RD_IW-1:0] rd_ptr, rd_cur;
     reg [TAG_W-1:0] rd_tag_r;
+    reg rd_locked;
+    reg [RD_IW-1:0] rd_hold;
 
     // round-robin 选通：自 rd_ptr 起循环扫描第一个有请求的客户端
     reg [N_RD-1:0] rd_req_rot, rd_grant_rot, rd_grant;
@@ -123,6 +125,7 @@ module ddr_port_arbiter #(
         for (rk = 0; rk < N_RD; rk = rk + 1)
             if (rd_grant_rot[rk])
                 rd_grant[(rk + rd_ptr) % N_RD] = 1'b1;
+        if (rd_locked) begin rd_grant = 0; rd_grant[rd_hold] = 1'b1; end
     end
 
     wire rd_sel_valid = |rd_grant;
@@ -136,15 +139,18 @@ module ddr_port_arbiter #(
     end
 
     // 请求握手：仅空闲；被选客户端 ready 直通模型，其余 0；
-    // m_rd_req_valid 仅在被选客户端请求且模型就绪时拉高（len==0 不发模型）
+    // valid 独立于 ready；等待时锁定选中的客户端（len==0 在本地完成）。
     genvar rg;
     generate
         for (rg = 0; rg < N_RD; rg = rg + 1) begin : rd_req_ready_gen
-            assign rd_req_ready[rg] = (rd_state == RD_IDLE) && rd_grant[rg] && m_rd_req_ready;
+            assign rd_req_ready[rg] = (rd_state == RD_IDLE) && rd_grant[rg] &&
+                                      ((rd_req_len[rg] == 0) || m_rd_req_ready);
         end
     endgenerate
 
-    assign m_rd_req_valid     = (rd_state == RD_IDLE) && rd_sel_valid && m_rd_req_ready &&
+    // VALID must not depend on READY: a downstream arbiter may wait for VALID.
+    // Freeze selection during stalls so the entire request remains stable.
+    assign m_rd_req_valid     = (rd_state == RD_IDLE) && rd_sel_valid &&
                                 (rd_req_len[rd_sel] != {LEN_W{1'b0}});
     assign m_rd_req_addr      = rd_req_addr[rd_sel];
     assign m_rd_req_len_bytes = rd_req_len[rd_sel];
@@ -171,10 +177,16 @@ module ddr_port_arbiter #(
             rd_ptr   <= {RD_IW{1'b0}};
             rd_cur   <= {RD_IW{1'b0}};
             rd_tag_r <= {TAG_W{1'b0}};
+            rd_locked <= 1'b0;
+            rd_hold <= 0;
         end else begin
             case (rd_state)
                 RD_IDLE: begin
-                    if (rd_sel_valid && m_rd_req_ready) begin
+                    if (rd_sel_valid && rd_req_len[rd_sel] != 0 && !m_rd_req_ready) begin
+                        rd_locked <= 1'b1; rd_hold <= rd_sel;
+                    end
+                    if (rd_sel_valid && ((rd_req_len[rd_sel] == 0) || m_rd_req_ready)) begin
+                        rd_locked <= 1'b0;
                         rd_cur   <= rd_sel;
                         rd_tag_r <= rd_req_tag[rd_sel];
                         if (rd_req_len[rd_sel] == {LEN_W{1'b0}})
@@ -216,6 +228,8 @@ module ddr_port_arbiter #(
     reg [1:0]       wr_state;
     reg [WR_IW-1:0] wr_ptr, wr_cur;
     reg [TAG_W-1:0] wr_tag_r;
+    reg wr_locked;
+    reg [WR_IW-1:0] wr_hold;
 
     reg [N_WR-1:0] wr_req_rot, wr_grant_rot, wr_grant;
     integer wk;
@@ -230,6 +244,7 @@ module ddr_port_arbiter #(
         for (wk = 0; wk < N_WR; wk = wk + 1)
             if (wr_grant_rot[wk])
                 wr_grant[(wk + wr_ptr) % N_WR] = 1'b1;
+        if (wr_locked) begin wr_grant = 0; wr_grant[wr_hold] = 1'b1; end
     end
 
     wire wr_sel_valid = |wr_grant;
@@ -245,11 +260,12 @@ module ddr_port_arbiter #(
     genvar wg;
     generate
         for (wg = 0; wg < N_WR; wg = wg + 1) begin : wr_req_ready_gen
-            assign wr_req_ready[wg] = (wr_state == WR_IDLE) && wr_grant[wg] && m_wr_req_ready;
+            assign wr_req_ready[wg] = (wr_state == WR_IDLE) && wr_grant[wg] &&
+                                      ((wr_req_len[wg] == 0) || m_wr_req_ready);
         end
     endgenerate
 
-    assign m_wr_req_valid     = (wr_state == WR_IDLE) && wr_sel_valid && m_wr_req_ready &&
+    assign m_wr_req_valid     = (wr_state == WR_IDLE) && wr_sel_valid &&
                                 (wr_req_len[wr_sel] != {LEN_W{1'b0}});
     assign m_wr_req_addr      = wr_req_addr[wr_sel];
     assign m_wr_req_len_bytes = wr_req_len[wr_sel];
@@ -286,10 +302,16 @@ module ddr_port_arbiter #(
             wr_ptr   <= {WR_IW{1'b0}};
             wr_cur   <= {WR_IW{1'b0}};
             wr_tag_r <= {TAG_W{1'b0}};
+            wr_locked <= 1'b0;
+            wr_hold <= 0;
         end else begin
             case (wr_state)
                 WR_IDLE: begin
-                    if (wr_sel_valid && m_wr_req_ready) begin
+                    if (wr_sel_valid && wr_req_len[wr_sel] != 0 && !m_wr_req_ready) begin
+                        wr_locked <= 1'b1; wr_hold <= wr_sel;
+                    end
+                    if (wr_sel_valid && ((wr_req_len[wr_sel] == 0) || m_wr_req_ready)) begin
+                        wr_locked <= 1'b0;
                         wr_cur   <= wr_sel;
                         wr_tag_r <= wr_req_tag[wr_sel];
                         if (wr_req_len[wr_sel] == {LEN_W{1'b0}})

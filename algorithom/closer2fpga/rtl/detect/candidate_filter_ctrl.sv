@@ -34,8 +34,8 @@ module candidate_filter_ctrl #(
     parameter N_ADDR_W    = 14,          // 候选点深度 2**14 = 16384
     parameter MIN_CAND    = 40,
     parameter MAX_CAND    = 12000,
-    parameter ROM_FILE    = "../tests/build/vectors/ring_cos_sin.mem",
-    parameter SUB_ROM_FILE = "../tests/build/vectors/gaussian_weights.mem"
+    parameter ROM_FILE    = "integration/rom/ring_cos_sin.mem",
+    parameter SUB_ROM_FILE = "integration/rom/gaussian_weights.mem"
 ) (
     input  wire                    clk,
     input  wire                    rst_n,

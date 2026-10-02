@@ -4,6 +4,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include "desktop/display.h"
+#include "desktop/calibration_export.h"
 #include "common/image.h"
 #include "algo/grayscale.h"
 #include "algo/chessboard.h"
@@ -19,6 +20,12 @@ int main() {
         "E:/fpga/algorithom/test2.jpg",
     };
     constexpr int rows = 5, cols = 8;
+    constexpr double square_size = 1.0;
+    const CameraCalibrationOptions options{}; // Matches RTL: 150 iterations/stage, k3 fixed.
+    const char* export_root = "E:/fpga/algorithom/closer2fpga/exports";
+    std::vector<CalibrationExportView> export_views(3);
+    CameraCalibrationResult calibration{};
+    bool calibration_attempted = false;
     int failures = 0;
     bool correction_applied = false;
     cv::Mat views[3];
@@ -29,6 +36,7 @@ int main() {
     const char* windows[] = {"test0.jpg", "test1.jpg", "test2.jpg"};
     bool open[3] = {};
     for (int i = 0; i < 3; ++i) {
+        export_views[i].path = paths[i];
         cv::Mat color = cv::imread(paths[i]);
         if (color.empty()) {
             std::printf("Cannot load: %s\n", paths[i]);
@@ -36,6 +44,9 @@ int main() {
             continue;
         }
         GrayImage gray(color.cols, color.rows);
+        export_views[i].image_loaded = true;
+        export_views[i].width = color.cols;
+        export_views[i].height = color.rows;
         if (width == 0) {
             width = color.cols;
             height = color.rows;
@@ -55,6 +66,7 @@ int main() {
         }
         convert_grayscale(image_view(static_cast<const GrayImage&>(sources[i])), image_view(gray));
         ChessboardInfo board = detect_chessboard(gray, rows, cols);
+        export_views[i].board_valid = board.valid;
         std::printf("test%d.jpg: valid=%s corners=%zu\n", i, board.valid ? "YES" : "NO",
                     board.corners.size());
         if (!board.valid)
@@ -66,7 +78,22 @@ int main() {
     if (failures == 0) {
         // The square's physical length is unnecessary for intrinsics/distortion.
         // With size=1, reported translations are in board-square units.
-        auto calibration = calibrate_camera(image_points, width, height, rows, cols, 1.0);
+        calibration = calibrate_camera(image_points, width, height, rows, cols, square_size, options);
+        calibration_attempted = true;
+    }
+    // Export the exact observed FP32 coordinates and THIS invocation's result,
+    // before remapping/window display. Failed/skipped calibrations are recorded too.
+    try {
+        const auto exported = export_calibration_run(export_root, export_views, image_points,
+            width, height, rows, cols, square_size, options,
+            calibration_attempted ? &calibration : nullptr);
+        std::printf("\nCalibration export: %s\n", exported.string().c_str());
+        std::printf("Files: corners.csv, calibration.json, COMPLETE.txt\n");
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "Calibration export failed: %s\n", error.what());
+        ++failures;
+    }
+    if (calibration_attempted) {
         const auto& k = calibration.camera;
         std::printf("\nCamera calibration (zero skew, k3 fixed to zero for three views):\n");
         std::printf("fx=%.8f fy=%.8f cx=%.8f cy=%.8f\n", k.fx, k.fy, k.cx, k.cy);

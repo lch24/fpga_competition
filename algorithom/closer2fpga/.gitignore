@@ -8,3 +8,4 @@
 # Generated test/inspection artifacts.
 tests/build/
 **/corner_results/
+/exports/

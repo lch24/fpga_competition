@@ -14,6 +14,7 @@
 - 三张图使用同一分辨率、同一相机及 5 行 × 8 列内角点棋盘。
 - 三个窗口同时显示左侧原图、右侧去畸变结果；关闭全部窗口退出。
 - 控制台输出参数及重投影误差，标定失败时不应用校正。
+- 每次运行自动把角点和C++标定结果保存到 `E:/fpga/algorithom/closer2fpga/exports/run_*`；控制台打印本次目录。用于后续真实角点的FPGA对比，格式和使用方法见 [数据导出说明](docs/CALIBRATION_EXPORT.md)。
 - 三视图默认固定 `k3=0`，其余四个畸变系数参与估计。
 
 OpenCV 用于桌面程序的读图、图像容器、绘制和显示。`algo/`、`common/`、`kernels/` 的计算不依赖 OpenCV；回归测试单独使用 OpenCV 作为数值参考。
@@ -24,6 +25,7 @@ OpenCV 用于桌面程序的读图、图像容器、绘制和显示。`algo/`、
 closer2fpga/
   main.cpp                    三图流程与窗口事件循环
   desktop/display.*           绘制与显示容器（OpenCV）
+  desktop/calibration_export.h 角点、参数及IEEE位模式导出（不依赖OpenCV）
   kernels/                    无状态运算核
     color.h                   BGR 灰度化
     gradient.h                Sobel、外积、2×2 张量运算

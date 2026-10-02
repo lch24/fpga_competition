@@ -9,3 +9,17 @@
 tests/build/
 **/corner_results/
 /exports/
+
+# ModelSim / RTL simulation artifacts (M1+).
+work/
+**/work/
+**/work_*/
+transcript
+*.wlf
+vsim.wlf
+*.vstf
+modelsim.ini
+
+# Archived simulation logs (override parent *[Ll]ogs/ and *.log).
+!docs/logs/
+!docs/logs/*.log

@@ -97,7 +97,7 @@ void shi_tomasi_detect(const GrayImage& src, std::vector<Point2f>& corners, f32 
                             is_max = false;
 
             if (is_max)
-                corners.push_back(Point2f((f32)x, (f32)y));
+                corners.push_back(Point2f{(f32)x, (f32)y});
         }
     }
 }

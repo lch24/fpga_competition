@@ -34,6 +34,7 @@
     <ClInclude Include="common\symmetric_eigen.h" />
     <ClInclude Include="common\types.h" />
     <ClInclude Include="desktop\display.h" />
+    <ClInclude Include="desktop\calibration_export.h" />
     <ClInclude Include="kernels\color.h" />
     <ClInclude Include="kernels\distortion.h" />
     <ClInclude Include="kernels\gradient.h" />

@@ -43,6 +43,7 @@
     <ClInclude Include="common\types.h"><Filter>common</Filter></ClInclude>
     <ClCompile Include="desktop\display.cpp"><Filter>desktop</Filter></ClCompile>
     <ClInclude Include="desktop\display.h"><Filter>desktop</Filter></ClInclude>
+    <ClInclude Include="desktop\calibration_export.h"><Filter>desktop</Filter></ClInclude>
     <ClInclude Include="kernels\color.h"><Filter>kernels</Filter></ClInclude>
     <ClInclude Include="kernels\distortion.h"><Filter>kernels</Filter></ClInclude>
     <ClInclude Include="kernels\gradient.h"><Filter>kernels</Filter></ClInclude>

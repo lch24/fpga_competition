@@ -1,0 +1,3 @@
+stage0 physical Brown model, accepted=6 converged=1 cost=1.3047766498510473e-08
+stage1 physical Brown model, accepted=6 converged=1 cost=1.2301736269950515e-08
+stage2 physical Brown model, accepted=6 converged=1 cost=1.212557424325072e-08

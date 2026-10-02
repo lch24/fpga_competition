@@ -1,5 +1,11 @@
 # Undistortion RTL interface
 
+Merged-main integration findings and exact cross-subsystem port mappings:
+[`integration/INTERFACE_REVIEW.md`](../integration/INTERFACE_REVIEW.md).
+The physical DDR adapter is now `hmic_ddr_adapter`; the detector's logical
+`ddr_port_adapter` is a separate module. Shared `sync_fifo` and `reset_sync`
+have one implementation under `algorithom/closer2fpga/rtl/common`.
+
 The authoritative team contract is `main/README.md`. This branch implements the
 work after a successful calibration parameter packet has been received.
 

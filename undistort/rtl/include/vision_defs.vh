@@ -16,7 +16,7 @@
 `define VISION_FP32_ZERO               32'h0000_0000
 `define VISION_FP32_ONE                32'h3f80_0000
 
-// Abstract FP32 service operations. The vendor-IP wrapper owns their latency
+// Abstract FP32 service operations. The RTL service owns their latency
 // and initiation interval; clients use ready/valid and do not assume either.
 `define VISION_FP_OP_ADD               3'd0
 `define VISION_FP_OP_SUB               3'd1

@@ -1,5 +1,9 @@
 # FPGA 相机标定与图像校正分工
 
+> 2026-10-02：三个开发分支已合并到本地 main。当前源码入口、去重结果、逐信号对接表与待解决问题见 [合并与接口检查](integration/INTERFACE_REVIEW.md)。下文保留团队的目标接口约定；与已交付实现不一致处以该检查文档明确标注的实际行为为准，尚未实现整机自动闭环。
+
+当前三个入口：检测 `corner_detect_ddr_top`、标定 `calib_top`、采集/DDR/校正 `camera_system_top`。检测实际读 Gray8，采集/校正实际用 RGB565；需补格式转换与检测帧协议适配，不能直接按下文原 BGR888 规划接线。联合编译和接口回归入口为 `integration/run_checks.ps1`。
+
 目标：摄像头图像写入 DDR → 棋盘角点检测 → 相机参数标定 → 图像校正 → 校正结果写回 DDR。
 
 默认使用同一相机、同一分辨率的 **3 张标定图、5 行 × 8 列内角点、k3 固定为 0**。视图数 V、内角点行数 R 和列数 C 必须由三人共同配置，每图点数 P=R×C；第二部分统一配置入口为 [calib_config.vh](parameter/rtl/common/calib_config.vh)，范围与重新综合要求见 [配置说明](parameter/CONFIGURATION.md)。标定成功后重复使用相机参数，不对每帧重新标定。本文约定协作边界，具体算法参考现有 C++，不代表 RTL 已实现。

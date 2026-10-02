@@ -1,0 +1,16 @@
+1: physical
+2: random_0
+3: random_1
+4: random_2
+5: random_3
+6: random_4
+7: random_5
+8: random_6
+9: random_7
+10: zero
+11: front_parallel
+12: nan_0
+13: nan_13
+14: nan_26
+15: bad_width
+16: bad_height

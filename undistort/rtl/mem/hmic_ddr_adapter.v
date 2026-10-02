@@ -5,7 +5,7 @@
 // Writes stage each complete physical payload BEFORE presenting AWVALID.
 // Completion is axi_wusero_last, matching the Demo. Board integration must
 // confirm its visibility guarantee. Reset jointly with HMIC if in flight.
-module ddr_port_adapter #(parameter ADDR_WIDTH=28) (
+module hmic_ddr_adapter #(parameter ADDR_WIDTH=28) (
     input wire clk,rst_n,ddr_ready,
     input wire rd_valid, output wire rd_ready,
     input wire [31:0] rd_addr,rd_len, input wire [15:0] rd_tag,

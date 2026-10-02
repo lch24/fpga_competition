@@ -56,7 +56,7 @@ module window3x3 #(
     localparam AW = $clog2(IMG_W + 1);
     localparam RAM_DEPTH = (1 << AW);
     localparam FIFO_AW = 3;                       // FIFO 深度 8
-    localparam [FIFO_AW:0] FREEZE_TH = FIFO_AW'(6); // 水位≥6 冻结（在途≤2）
+    localparam [FIFO_AW:0] FREEZE_TH = 6; // 水位≥6 冻结（在途≤2）；兼容 ModelSim 10.1c
 
     //--------------------------------------------------------------------
     // 输出 FIFO（吸收下游背压；count 用于冻结阈值）

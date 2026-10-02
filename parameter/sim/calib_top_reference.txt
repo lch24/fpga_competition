@@ -1,0 +1,16 @@
+seed=0 stage=0 cost=0.32700464552023201 converged=1 accepted_total=7
+seed=0 stage=1 cost=0.067721886512148388 converged=1 accepted_total=15
+seed=0 stage=2 cost=1.2122773869367695e-08 converged=1 accepted_total=24
+seed=1 stage=0 cost=0.32700464552026615 converged=1 accepted_total=8
+seed=1 stage=1 cost=0.067721886512126891 converged=1 accepted_total=16
+seed=1 stage=2 cost=1.212277388130179e-08 converged=1 accepted_total=25
+seed=2 stage=0 cost=0.32700464552023639 converged=1 accepted_total=8
+seed=2 stage=1 cost=0.067721886512138951 converged=1 accepted_total=16
+seed=2 stage=2 cost=1.2122773864556498e-08 converged=1 accepted_total=25
+seed=3 stage=0 cost=0.32700464552025355 converged=1 accepted_total=8
+seed=3 stage=1 cost=0.067721886512150886 converged=1 accepted_total=16
+seed=3 stage=2 cost=1.2122773862968384e-08 converged=1 accepted_total=25
+seed=4 stage=0 cost=0.32700464552026276 converged=1 accepted_total=8
+seed=4 stage=1 cost=0.067721886512141657 converged=1 accepted_total=16
+seed=4 stage=2 cost=1.2122773870598214e-08 converged=1 accepted_total=25
+best_seed=3 accepted=25 rms=1.0051025595666172e-05 valid=1

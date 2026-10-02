@@ -9,7 +9,8 @@
 
 Debug/
 Release/
-sim/
+/sim/
+/integration/build/
 x64/
 x86/
 *[Bb]in/

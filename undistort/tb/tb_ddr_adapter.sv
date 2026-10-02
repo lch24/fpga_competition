@@ -11,7 +11,7 @@ module tb_ddr_adapter;
  reg axi_arready=0,axi_awready=0,axi_rvalid=0,axi_rlast=1,axi_wready=0,axi_wusero_last=0;
  reg [255:0] axi_rdata;wire [255:0] axi_wdata;wire [31:0] axi_wstrb;
  reg [3:0] axi_rid=0,axi_wusero_id=0;
- ddr_port_adapter dut(.*);
+ hmic_ddr_adapter dut(.*);
  reg [7:0] mem[0:255];
  integer ar_delay=-1,aw_delay=-1,done_delay=-1,block_addr,i,n,k;
  reg [255:0] saved_data;reg [31:0] saved_mask;

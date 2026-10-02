@@ -455,7 +455,7 @@ ddr_service arbiter(
   .b_tag(mem_b_tag),
   .b_error(mem_b_error)
  );
-ddr_port_adapter adapter(
+hmic_ddr_adapter adapter(
   .clk(clk),
   .rst_n(rst_n),
   .ddr_ready(ddr_ready),

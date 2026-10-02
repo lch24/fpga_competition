@@ -1,0 +1,9 @@
+1: full_pipeline
+2: zhang_forced_failure
+3: pose_seed2_forced_failure
+4: all_pose_forced_failure
+5: all_repeated
+6: two_repeated
+7: degenerate_view
+8: bad_width
+9: natural_zhang_failure

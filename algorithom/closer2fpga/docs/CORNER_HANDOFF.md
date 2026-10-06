@@ -1,177 +1,62 @@
-# 角点检测子系统（corner 分支）交付交接说明
+# 棋盘角点检测：分层、接口与验证
 
-> 交付人：苏晨（corner 分支）
-> 版本：v1.0，2026-10-01
-> 用途：向队友（刘承昊：相机参数算法；强文韬：采集、DDR 与校正）交接
-> 本模块已完成的功能、输入/输出契约及对接接口。模块级接口以各 `.v/.sv` 文件头部注释为权威。
+检测入口是 [corner_detect_ddr_top.v](../../../rtl/image/features/corner_detect_ddr_top.v)。输入 DDR 中的 Gray8 图像，输出原图坐标下的有序 FP32 角点及检测结果。当前系统在检测前由集成层将 RGB565 转为 Gray8；检测本身不读取 RGB565。
 
----
+板级 `vision_ddr_top` 设置 `REPLAY_RESP=1`：第一遍只统计响应最大值，等待阈值乘法完成后，复位并重新启动同一条灰度/梯度/响应流水线；第二遍直接送行缓存及 NMS，不保存整幅响应图。两遍之间灰度图必须保持不变，第二遍产生的响应不再参与阈值统计。候选流完全排空后才允许筛选器读取共享灰度口。精度、阈值及相等峰值规则保持不变，增加的是一次响应计算扫描。
 
-## 1. 我完成的工作总览（M1–M8）
+`shi_tomasi_replay` 定义在已有 `shi_tomasi_ctrl.sv` 中，无需新增 PDS 源文件。独立检测入口默认 `REPLAY_RESP=0`，保留原存储/响应图导出路径；需要完整响应图导出时使用该模式。重算模式要求 `cfg_resp_dump_en=0`，`detect_ctrl` 对不兼容请求以 `status=11` 拒绝，不会返回伪造的响应图。板级原本就关闭此调试导出功能。灰度图 RAM 尚未改成 DDR 随机访问缓存，当前修改不能保证整板存储资源足够。
 
-在 `algorithom/closer2fpga/` 下独立完成了**棋盘角点检测全链路 RTL**，与 C++ 参考实现（`algo/chessboard`、`algo/shi_tomasi`、`algo/subpixel` 等）逐位对拍一致。里程碑如下：
+## 分层与模块职责
 
-| 里程碑 | 交付内容 | 验证结论 |
-|---|---|---|
-| M1 | 公共库（sync_fifo/dual_port_ram/reset_sync）、DDR 行为模型（ddr_memory_model，11 项自检）、向量导出工具链 | 全部通过 |
-| M2 | 浮点算术库（fp32/fp64 加减乘除、sqrt、hypot、log）、min_eigen 张量核、两遍检测控制 | eigen 4034 例、小图全链位级一致 |
-| M3 | 候选后处理：fp32 除/根/范数、merge5/merge3、nearest、ring | 70021 例、small/texture 全链一致 |
-| M4 | 网格排序：index_sort 归并核、fp32 log_ref、grid_validate、90° 网格排序 | 单元 9/9、log 4010/4010、board5x8 80→40 全链一致 |
-| M5 | 亚像素精化：fp64 加减除、bilinear_core、tensor_solve、subpixel 累加与控制 | 510/407/8/603 例、board5x8 320→40 全链一致 |
-| M6 | 金字塔多尺度（downsample2x/pyramid_ctrl）+ 帧级 detect_ctrl | pyramid 3 场景、big(pyramid)/board5x8(native) 40/40 |
-| M7 | DDR 桥：raster_dma、byte_packer、ddr_port_adapter、gray_fetch（DDR→片上灰度） | 31/31+单元、4 例、集成 40/40 err=0 |
-| M7.3 | 响应图写 DDR：resp_ddr_writer + detect_ctrl ST_DUMP 帧级导出 | 4 例、读回 921600B/104448B err=0 |
-| M8 | **DDR 总线整合**：ddr_port_arbiter（2 读 2 写 round-robin）、frame_task_ctrl（GF→PYR→DET→RESP）、corner_detect_ddr_top 联调顶层 | tb_arbiter 7 例、tb_frame_top 4 帧 40/40、err=0 proto=0 |
-| M8.1 | 连续帧 bug 根治：grid_order S_DONE 再武装、filter 标志清零 | tb_frame_b5x2 双帧 + tb_frame_top 4 帧全过 |
+| 层级 | 模块 | 实现方法与控制 |
+| --- | --- | --- |
+| 帧调度 | frame_task_ctrl、corner_detect_ddr_top | 灰度搬入 → 金字塔 → 检测 → 可选响应图写回 → 完成；同一实例支持连续任务 |
+| DDR | gray_fetch、raster_dma、ddr_port_adapter | 按行读取灰度，将字节事务转换为本地像素；保持行跨度和返回握手 |
+| 仲裁/导出 | ddr_port_arbiter、resp_ddr_writer | 多客户端读写仲裁；响应图写完成后才能报告完成 |
+| 多尺度 | pyramid_ctrl、downsample2x、detect_ctrl | 生成缩图、逐层检测并决定回退；输出坐标恢复到原图尺度 |
+| 响应前端 | window3x3、Sobel/张量核、min_eigen_core、shi_tomasi_ctrl | 梯度与窗口累加得到 Shi-Tomasi 响应；先求全图阈值，再扫描 NMS 候选 |
+| 候选筛选 | candidate_filter_ctrl、merge/nearest、ring_check | 候选合并、近邻尺度估计、圆环亮暗结构检查，逐候选推进 |
+| 网格组织 | index_sort、grid_order_ctrl、grid_validate | 多方向投影、迭代归并排序、按行组织网格并比较代价；保存最佳网格 |
+| 亚像素 | subpixel_ctrl、subpixel_accum、bilinear_core、tensor_solve | 读取局部窗口，累计梯度方程、解位移并迭代，达到收敛或上限后输出 |
+| 整网格精化 | grid_refine_ctrl | 逐点精化并验证最终网格，一致后输出行列序角点 |
+| 公共基础 | rtl/common、rtl/arithmetic | 同步 FIFO、RAM、复位同步及 FP32/FP64 运算；延迟和背压以模块端口契约为准 |
 
-**当前状态**：RTL 完成并通过仿真验证，接口契约已冻结，等待联调。
+目录中已有独立运算/模块测试，历史 M1～M8 报告已合并为本说明。数学原理见 [算法总览](ALGORITHM_OVERVIEW.md)，C++ 到 RTL 的设计思路见 [分层规划](VERILOG_DESIGN_PLAN.md)。
 
----
+## 对外接口
 
-## 2. 模块在系统中的位置与功能
+| 接口 | 契约 |
+| --- | --- |
+| process_frame | busy=0 时单拍启动；配置在启动前稳定并在帧期间保持 |
+| busy / done | busy 表示在处理；done 完成后保持，下次启动清零，不能按通用单拍响应处理 |
+| status / out_grid_ok | 检测内部 status=01 表示处理成功，10 表示子模块错误；是否有可用棋盘还须检查 out_grid_ok 和点数 |
+| cfg_gray_base/stride/w/h | Gray8 的字节基址、行跨度与尺寸，不能传 RGB565 原图基址 |
+| out_valid/out_ready/x/y | 标准握手；背压时坐标保持。x/y 为 FP32，像素中心坐标，x 向右、y 向下 |
+| out_total | 成功网格共 P=ROWS×COLS 点，顺序 row×COLS+col；默认 40 点 |
+| cfg_resp_dump_en/base | 可选的 FP32 响应图导出，当前整机闭环关闭，独立调试可用 |
+| m_* DDR | 模块对系统发出的逻辑 DDR 请求/返回，字节地址及字节长度，32 位数据、4 位 keep、16 位 tag |
+| ext_* DDR | 外部客户端接入检测内部仲裁器的接口，方向与 m_* 不同，不能把两者混用 |
 
-### 2.1 系统链路（README.md 三人分工）
+检测不直接生成标定 job/view/index；[vision_sequence](../../../rtl/control/system/vision_sequence.v) 将点流编号并把原始完成状态转换为系统状态。点数不足、网格无效或失败响应不能作为完整标定视图提交。
 
-```
- 摄像头 → DDR ──(强文韬：采集/DDR 服务/校正)──→ 显示
-                │
-                ├─(我) 角点检测：DDR 灰度 → 40 有序角点 + 响应图
-                │
-                ├─(刘承昊) 相机参数算法：40 点 → 九参数标定
-                │
-                └─(强文韬) 参数存储/建表/插值/校正写回
-```
+ROWS/COLS 来自共享配置。完整链路每图最多 64 点；改变棋盘或图像尺寸需重编译和重测。所有 DDR 区域由系统顶层分配，独立测试中的地址不作为整机默认地址。
 
-### 2.2 我的模块功能
+## 实现时必须保持的规则
 
-**输入**：DDR 中的 L0 灰度图（Gray8，逐行光栅，32 位字节地址 + 行跨度）
-**处理**：灰度取入片上 RAM →（可选）金字塔缩图 → Shi-Tomasi 角点响应 → NMS 候选 → merge/nearest/ring 筛选 → 网格排序 → 亚像素精化 → 有序 40 点
-**输出**：
-- 40 个有序角点流（`out_x/out_y` FP32，原图分辨率，行列序 `row*8+col`）
-- 成功/失败状态（`status`、`out_grid_ok`）
-- 响应图（可选，写回 DDR，供调试/下游）
+- Gray RAM 为同步读，读地址、使能和返回拍必须对应；不能把不同 RAM 的等待周期混用。
+- 排序按 key 比较，平局按原索引；负浮点投影需先做单调位模式转换，不能直接按原始无符号位模式排序。
+- 两遍响应扫描之间要有完整帧屏障；响应导出开启时，写端须先就绪，避免两边互等。
+- GF/PYR 阶段对检测核心做帧级软复位，进入检测前释放。变更此时序必须重跑连续帧测试。
+- 历史连续帧测试曾暴露浮点弹性通路在背压下残留 token/卡住的问题；当前保留帧级复位。现有回归通过不等于所有长期背压组合已证明无死锁，该限制不能随着开发日志删除而遗忘。
+- 方向和高斯权重 ROM 来自 integration/rom；综合与仿真都需要正确加载。
 
-### 2.3 顶层：`corner_detect_ddr_top.v`
+## 验证入口
 
-`rtl/detect/corner_detect_ddr_top.v` 是唯一对外交付顶层，把 M7 各 DMA 客户端收敛为**单组 DDR 端口 + 帧级一键接口**。内部结构：
+从仓库根目录运行：
 
-```
-corner_detect_ddr_top
- ├─ frame_task_ctrl   帧级状态机（GF→PYR→DET→RESP，连续帧复用）
- ├─ ddr_port_arbiter  读写独立 round-robin 仲裁（2 读 2 写，在途单笔）
- │   读 0=gray_fetch  读 1=ext_rd（外部读）
- │   写 0=resp_ddr_writer  写 1=ext_wr（外部写）
- ├─ gray_fetch        DDR 灰度 → 片上 gray RAM
- ├─ pyramid_ctrl      缩图（cfg_pyr_en=1 时）
- ├─ detect_ctrl       检测全链 + 40 点输出 + 响应图导出
- ├─ resp_ddr_writer   响应字流 → DDR
- └─ gray RAM          片上灰度（reg 数组，registered 读 1 拍）
-```
+~~~powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_detection_compat
+~~~
 
----
-
-## 3. 对外接口契约（对接点）
-
-### 3.1 帧命令与状态（上层 → 我）
-
-| 信号 | 方向 | 语义 |
-|---|---|---|
-| `process_frame` | 输入 | busy=0 时单拍脉冲，启动一帧（SV 关键字 `process` 为 ModelSim 保留字，端口名为 `process_frame`，契约语义即 process） |
-| `busy` | 输出 | 电平保持，帧处理期间为 1 |
-| `done` | 输出 | 电平保持，帧完成拉高；下次 process 清零 |
-| `status[1:0]` | 输出 | `01`=成功（有/无角点均正常）、`10`=子模块错误 |
-
-### 3.2 帧级配置（process 前稳定，帧期间不变）
-
-| 信号 | 语义 |
-|---|---|
-| `cfg_gray_base[31:0]` | DDR 灰度区首字节地址 |
-| `cfg_gray_stride[31:0]` | DDR 灰度行跨度（字节） |
-| `cfg_gray_w/h[15:0]` | 灰度图宽/高 |
-| `cfg_ram_base` | 片上 gray RAM 基址（内部用，联调可不关心） |
-| `cfg_resp_base[31:0]` | 响应图写 DDR 首字节地址 |
-| `cfg_resp_dump_en` | 1=帧级导出响应图到 DDR |
-| `cfg_pyr_en` | 1=金字塔路径（DEPTH=2）、0=native 路径（DEPTH=1） |
-
-### 3.3 40 点角点流（我 → 刘承昊标定输入）★核心对接
-
-标准 valid/ready 逐点握手：
-
-| 信号 | 方向 | 语义 |
-|---|---|---|
-| `out_valid` | 输出 | 1 拍有效表示 out_x/out_y 有效 |
-| `out_ready` | 输入 | 1 表示接收方就绪 |
-| `out_x[31:0]` | 输出 | 角点 x（IEEE754 FP32，原图像素） |
-| `out_y[31:0]` | 输出 | 角点 y（IEEE754 FP32，原图像素） |
-| `out_total[15:0]` | 输出 | 总点数=40，帧内保持 |
-| `out_grid_ok` | 输出 | 1=网格验证通过（帧内保持） |
-
-**时序（ST_OUT/O_EMIT）**：`out_valid=1` 且数据就绪 → 等 `out_ready`；`valid&&ready` 同拍接受该点，下一拍出下一点；出满 40 点帧结束（`cfg_resp_dump_en=1` 时先导出响应图再 done）。`out_grid_ok=0` 的帧角点**不可用于标定**，应作废该视图。
-
-> 与 README.md 2.2 节约定一致：`point_index = row*8 + col`（0…39），x/y 已恢复原图分辨率。
-
-### 3.4 DDR 端口（我 ↔ 强文韬 DDR 服务层）★核心对接
-
-顶层对外是**单组 `m_*` DDR 端口**，方向同 `ddr_memory_model`。**强文韬的真实 DDR 控制器就绪后直接替换模型即可，客户端侧接口不变**。协议：
-
-| 通道 | 载荷（valid/ready） |
-|---|---|
-| 读请求 | `addr[31:0], len_bytes[31:0], tag[15:0]` |
-| 读返回 | `data[31:0], keep[3:0], tag[15:0], last, error` |
-| 写请求 | `addr[31:0], len_bytes[31:0], tag[15:0]` |
-| 写数据 | `data[31:0], keep[3:0], last`（请求后发送，不交织） |
-| 写完成 | `tag[15:0], error` |
-
-- 32 位字节地址/长度；非尾事务 keep=4'b1111；首字节在 `data[7:0]` 低位对齐。
-- 每客户端首版最多 1 读 1 写在途；独立客户端口由仲裁器处理（读 0=gray_fetch、读 1=ext_rd、写 0=resp_ddr_writer、写 1=ext_wr）。
-- `ext_rd_*`（外部读）：下游读回响应图用；`ext_wr_*`（外部写）：上游预载灰度用（强文韬摄像头→灰度通路可走此口）。
-
-### 3.5 DDR 地址区划（联调前必须确认）
-
-corner 侧仿真验证已使用的地址（1280×720 主场景）：
-
-| 区 | 基址 | 大小 |
-|---|---|---|
-| 灰度输入 | `0x0000_1000`（stride=1280） | 921,600 B（0xE1000） |
-| 响应图 | `0x0030_0000`（可帧级重锁存） | 640×360×4 = 921,600 B |
-
-**联调提醒**：强文韬的 remap 需访问的灰度/原图区、映射表区、校正输出区，基址**必须避开**灰度区（`0x1000+0xE1000`）与响应图区（`0x300000+0xE1000`），建议正式区划以顶层分配为准。
-
----
-
-## 4. 验证情况（交付即证据）
-
-| 验证项 | 结果 |
-|---|---|
-| 浮点/单元回归（M2–M5） | 70021+4010+510 等全部 PASS，与 C++ 位级一致 |
-| tb_frame_top（M8） | big 帧 A/B/C + board5x8 帧 D，各 40/40，响应读回 921600B×2+104448B err=0，协议违规 0 |
-| tb_frame_b5x2（M8.1） | 连续双帧 40/40，验证连续帧复用 |
-| 向量一致性 | m6_* 权威向量 SHA256 未变，resp_tap 证明 RTL 响应计算 100% 正确 |
-| 仿真串行纪律 | vsim 单 license，仿真须串行执行 |
-
-复现方式（ModelSim 10.6e）：
-```bash
-vlib work
-vlog -sv -work work rtl/.../*.v rtl/.../*.sv sim/*.sv sim/ddr_memory_model.sv
-vsim -c tb_frame_top -do "run -all; quit -f"
-```
-
----
-
-## 5. 交接要点与待办
-
-1. **给刘承昊**：40 点流接口（§3.3）已冻结，可直接按此开发标定输入；`out_grid_ok=0` 帧作废。
-2. **给强文韬**：`m_*` DDR 端口（§3.4）是真实控制器替换点；`ext_wr_*` 可接收摄像头灰度；响应图区地址已占用，remap 区划需避开（§3.5）。
-3. **已知限制**：
-   - 板型参数硬约束：`ROWS=5/COLS=8`（6×9 方格板内角点）；换板需改参数并重新导出向量。
-   - 整板必须完整入画且内角点 ≥40，否则安全失败不输出错误网格。
-   - fp32 弹性模块罕见背压死锁（M8.1 发现）：当前用帧级软复位兜底，根治需波形级深挖（见 M8_REPORT §5/§6）。
-
-## 6. 参考文件
-
-- 顶层：`rtl/detect/corner_detect_ddr_top.v`、`rtl/detect/frame_task_ctrl.v`
-- 检测链：`rtl/detect/detect_ctrl.sv`、`candidate_filter_ctrl.sv`、`grid_order_ctrl.sv`、`subpixel_ctrl.sv` 等
-- DDR：`rtl/mem/ddr_port_arbiter.v`、`gray_fetch.v`、`resp_ddr_writer.v`、`byte_packer.v`、`raster_dma.v`
-- 模型：`sim/ddr_memory_model.sv`
-- 验证：`sim/tb_frame_top.sv`、`sim/tb_frame_b5x2.sv`、`sim/tb_arbiter.sv`
-- 报告：`docs/M1_REPORT.md` … `docs/M8_REPORT.md`、`docs/RTL_GUIDE.md`、`docs/VERILOG_DESIGN_PLAN.md`
+该测试使用三张独立渲染的透视棋盘图，运行真实检测并将 120 个角点与 data/system/detected_corners.csv 逐位比较，检查完成状态和 DDR 协议；不执行后续 LM。
+独立测试保留在 sim，参考向量/导出工具保留在 tests。连续帧重点看 tb_frame_top、tb_frame_b5x2；DDR 仲裁看 tb_arbiter。模块头部注释是具体信号时序的依据。

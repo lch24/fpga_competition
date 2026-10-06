@@ -1,0 +1,11 @@
+{
+  "source": "E:\\fpga\\algorithom\\closer2fpga\\exports\\run_1790731382958_0",
+  "hashes": {
+    "corners.csv": "7c4bfd64020cebde8b22da20334e31d52f236a21d45cc2595d530f6eb76171a3",
+    "calibration.json": "c0d13d28cf81c1ff713ef1afc66d62bea4d7241eeefedba2eabf5a4de0088cc7",
+    "COMPLETE.txt": "d0e2cc3b48a1e9cf9c2a0d38e8e5c90b5812b9cb6c7e1413c040cfde07ad238a"
+  },
+  "width": 1280,
+  "height": 720,
+  "square_size": 1
+}

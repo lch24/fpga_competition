@@ -1,4 +1,4 @@
-// Created by IP Generator (Version 2022.2-SP6.4 build 146967)
+// Created by IP Generator (Version 2025.2 build 211867)
 // Instantiation Template
 //
 // Insert the following codes into your Verilog file.

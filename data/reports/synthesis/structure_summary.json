@@ -1,0 +1,92 @@
+{
+  "probe_detector_fixed": {
+    "lut": 64175,
+    "ff": 33527,
+    "distributed_ram": 3059,
+    "apm": 51.0,
+    "drm": 73.5,
+    "status": "PASS"
+  },
+  "subpixel_accum_fixed": {
+    "lut": 2283,
+    "ff": 931,
+    "distributed_ram": 0,
+    "apm": 4.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "subpixel_accum": {
+    "lut": 4216,
+    "ff": 3403,
+    "distributed_ram": 64,
+    "apm": 0.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "fp32_add": {
+    "lut": 426,
+    "ff": 89,
+    "distributed_ram": 16,
+    "apm": 0.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "fp64_add": {
+    "lut": 855,
+    "ff": 153,
+    "distributed_ram": 32,
+    "apm": 0.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "fp32_div": {
+    "lut": 738,
+    "ff": 214,
+    "distributed_ram": 0,
+    "apm": 0.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "fp32_log": {
+    "lut": 1419,
+    "ff": 602,
+    "distributed_ram": 32,
+    "apm": 2.0,
+    "drm": 0.0,
+    "status": "PASS"
+  },
+  "init_before": {
+    "lut": 25348,
+    "ff": 28009,
+    "distributed_ram": 0,
+    "apm": 2.0,
+    "drm": 12.0,
+    "status": "PASS"
+  },
+  "init_after": {
+    "lut": 22876,
+    "ff": 25525,
+    "distributed_ram": 0,
+    "apm": 2.0,
+    "drm": 8.0,
+    "status": "PASS"
+  },
+  "calib_before_eigen": {
+    "lut": 89715,
+    "ff": 79984,
+    "distributed_ram": 1052,
+    "apm": 25.0,
+    "drm": 39.0,
+    "status": "PASS"
+  },
+  "estimate": {
+    "board_lut": 168988,
+    "capacity": 66600,
+    "multiple": 2.5373573573573576,
+    "target": 133200,
+    "above_target": 35788,
+    "init_delta": 2472,
+    "old_remainder": 17570,
+    "note": "Cross-boundary estimate, NOT a fresh whole-board synthesis."
+  }
+}

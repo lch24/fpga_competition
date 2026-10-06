@@ -75,7 +75,15 @@ localparam INIT_FILE = "NONE" ; // @IPC string
 
 localparam INIT_FORMAT = "BIN" ; // @IPC enum BIN,HEX
 
-localparam RST_VAL_EN = 0 ; // @IPC bool
+localparam ECC_RDEN = 0 ; // @IPC bool
+ 
+localparam ECC_WREN = 0 ; // @IPC bool
+
+localparam S_BIT_EN = 0 ; // @IPC bool
+
+localparam D_BIT_EN = 0 ; // @IPC bool
+
+localparam RST_VAL_EN = 0 ;
 
 
 input  [WR_DATA_WIDTH-1:0]    wr_data        ; //input write data    [WR_DATA_WIDTH-1:0]
@@ -120,6 +128,20 @@ wire [RD_DATA_WIDTH-1 : 0]    rd_data_d;
 reg  [RD_DATA_WIDTH-1 : 0]    fab_reg_invt;
 reg  [RD_DATA_WIDTH-1 : 0]    fab_reg;
 
+wire                          inject_sbiterr;
+wire                          inject_dbiterr;
+
+wire                          ecc_sbiterr_d;
+wire                          ecc_dbiterr_d;
+wire [WR_ADDR_WIDTH-1 : 0]   ecc_addr_d;
+
+reg                          fab_ecc_sbiterr_invt;
+reg                          fab_ecc_dbiterr_invt;
+reg [WR_ADDR_WIDTH-1 : 0]   fab_ecc_addr_invt;    
+reg                          fab_ecc_sbiterr;      
+reg                          fab_ecc_dbiterr;     
+reg [WR_ADDR_WIDTH-1 : 0]   fab_ecc_addr;         
+
 
 assign wr_byte_en_mux      = (WR_BYTE_EN == 1) ? wr_byte_en : {BE_WIDTH{1'b1}}  ;
 assign rd_oce_mux2d        = ((FAB_REG       == 1) && (OUTPUT_REG == 1)) ? 1 :
@@ -130,7 +152,7 @@ assign rd_clk_en_mux       = (RD_CLK_EN  == 1) ? rd_clk_en  : 1'b1 ;
 assign wr_addr_strobe_mux  = (WR_ADDR_STROBE_EN ==1) ? wr_addr_strobe : 1'b0 ;
 assign rd_addr_strobe_mux  = (RD_ADDR_STROBE_EN ==1) ? rd_addr_strobe : 1'b0 ;
 
-ipm2l_sdpram_v1_10_rd_fram_buf #(
+ipm2l_sdpram_v1_12_rd_fram_buf #(
     .c_CAS_MODE             (CAS_MODE               ),
     .c_WR_ADDR_WIDTH        (WR_ADDR_WIDTH          ),
     .c_WR_DATA_WIDTH        (WR_DATA_WIDTH          ),
@@ -149,7 +171,11 @@ ipm2l_sdpram_v1_10_rd_fram_buf #(
     .c_INIT_FILE            ("NONE"                 ),
     .c_INIT_FORMAT          (INIT_FORMAT            ),
     .c_WR_BYTE_EN           (WR_BYTE_EN             ),
-    .c_BE_WIDTH             (BE_WIDTH               )
+    .c_BE_WIDTH             (BE_WIDTH               ),
+    .c_S_BIT_EN             (S_BIT_EN               ),
+    .c_D_BIT_EN             (D_BIT_EN               ),
+    .c_ECC_WREN             (ECC_WREN               ),
+    .c_ECC_RDEN             (ECC_RDEN               )
 ) U_ipm2l_sdpram_rd_fram_buf (
     .wr_data                (wr_data                ),
     .wr_addr                (wr_addr                ),
@@ -168,31 +194,10 @@ ipm2l_sdpram_v1_10_rd_fram_buf #(
     .rd_clk_en              (rd_clk_en_mux          ),
     .rd_rst                 (rd_rst                 ),
     .rd_oce                 (rd_oce_mux2d           ),
-    .rd_addr_strobe         (rd_addr_strobe_mux     )
+    
+    .rd_addr_strobe        (rd_addr_strobe_mux      )
 );
 
 
-generate
-    if (FAB_REG == 1) begin
-
-        assign rd_data = (FAB_REG == 1) ? ((RD_CLK_OR_POL_INV == 1) ? fab_reg_invt : fab_reg) : rd_data_d ;
-        if (RD_CLK_OR_POL_INV == 1) begin
-            always @(negedge rd_clk or posedge rd_rst) begin
-                if (rd_rst)
-                    fab_reg_invt      <= {RD_DATA_WIDTH{1'b0}};
-                else if (rd_oce_mux2f)
-                    fab_reg_invt      <= rd_data_d;
-            end
-        end
-        else begin
-            always @(posedge rd_clk or posedge rd_rst) begin
-                if (rd_rst)
-                    fab_reg           <= {RD_DATA_WIDTH{1'b0}};
-                else if (rd_oce_mux2f)
-                    fab_reg           <= rd_data_d;
-            end
-        end
-    end
-endgenerate
 
 endmodule

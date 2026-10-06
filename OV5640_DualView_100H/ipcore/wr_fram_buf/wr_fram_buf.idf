@@ -4,119 +4,164 @@
         <vendor>Pango</vendor>
         <id>04100202</id>
         <display_name>DRM Based Simple Dual Port RAM</display_name>
-        <name>28nm DRM Based Simple Dual Port RAM</name>
-        <version>1.10</version>
+        <version>1.13</version>
         <instance>wr_fram_buf</instance>
         <family>Logos2</family>
         <device>PG2L100H</device>
-        <package>FBG484</package>
+        <package>FBG676</package>
         <speedgrade>-6</speedgrade>
-        <generator version="2022.2-SP6.4" build="146967">IP Compiler</generator>
+        <generator version="2025.2" build="211867">IP Compiler</generator>
     </header>
     <param_list>
         <param>
-            <name>RD_OCE_EN</name>
-            <value>false</value>
+            <name>BE_WIDTH</name>
+            <type>int</type>
+            <value>1</value>
         </param>
         <param>
-            <name>RD_CLK_EN</name>
-            <value>false</value>
+            <name>BYTE_SIZE</name>
+            <type>enum</type>
+            <value>8</value>
+        </param>
+        <param>
+            <name>CAS_MODE</name>
+            <type>enum</type>
+            <value>36K</value>
         </param>
         <param>
             <name>CAS_MODE_SEL</name>
+            <type>enum</type>
             <value>AUTO</value>
         </param>
         <param>
-            <name>RD_ADDR_STROBE_EN</name>
+            <name>D_BIT_EN</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
-            <name>RST_VAL</name>
-            <value>0</value>
-        </param>
-        <param>
-            <name>RD_DATA_WIDTH</name>
-            <value>256</value>
-        </param>
-        <param>
-            <name>POWER_OPT</name>
+            <name>ECC_RDEN</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
-            <name>RD_CLK_OR_POL_INV</name>
-            <value>false</value>
-        </param>
-        <param>
-            <name>WR_BYTE_EN</name>
+            <name>ECC_WREN</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
             <name>FAB_REG</name>
+            <type>bool</type>
             <value>false</value>
-        </param>
-        <param>
-            <name>WR_ADDR_WIDTH</name>
-            <value>12</value>
-        </param>
-        <param>
-            <name>WR_ADDR_STROBE_EN</name>
-            <value>false</value>
-        </param>
-        <param>
-            <name>WR_DATA_WIDTH</name>
-            <value>32</value>
         </param>
         <param>
             <name>INIT_EN</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
-            <name>BYTE_SIZE</name>
-            <value>8</value>
-        </param>
-        <param>
-            <name>BE_WIDTH</name>
-            <value>1</value>
-        </param>
-        <param>
-            <name>RESET_TYPE</name>
-            <value>ASYNC</value>
-        </param>
-        <param>
-            <name>RST_VAL_EN</name>
-            <value>false</value>
+            <name>INIT_FILE</name>
+            <type>string</type>
+            <value>NONE</value>
         </param>
         <param>
             <name>INIT_FORMAT</name>
+            <type>enum</type>
             <value>BIN</value>
         </param>
         <param>
             <name>OUTPUT_REG</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
-            <name>CAS_MODE</name>
-            <value>36K</value>
+            <name>POWER_OPT</name>
+            <type>bool</type>
+            <value>false</value>
         </param>
         <param>
-            <name>RD_BE_WIDTH</name>
-            <value>1</value>
-        </param>
-        <param>
-            <name>INIT_FILE</name>
-            <value>NONE</value>
+            <name>RD_ADDR_STROBE_EN</name>
+            <type>bool</type>
+            <value>false</value>
         </param>
         <param>
             <name>RD_ADDR_WIDTH</name>
+            <type>int</type>
             <value>9</value>
         </param>
         <param>
+            <name>RD_BE_WIDTH</name>
+            <type>int</type>
+            <value>1</value>
+        </param>
+        <param>
+            <name>RD_CLK_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>RD_CLK_OR_POL_INV</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>RD_DATA_WIDTH</name>
+            <type>int</type>
+            <value>256</value>
+        </param>
+        <param>
+            <name>RD_OCE_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>RESET_TYPE</name>
+            <type>enum</type>
+            <value>ASYNC</value>
+        </param>
+        <param>
+            <name>RST_VAL</name>
+            <type>string</type>
+            <value>0</value>
+        </param>
+        <param>
+            <name>RST_VAL_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
             <name>SAMEWIDTH_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>S_BIT_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>WR_ADDR_STROBE_EN</name>
+            <type>bool</type>
+            <value>false</value>
+        </param>
+        <param>
+            <name>WR_ADDR_WIDTH</name>
+            <type>int</type>
+            <value>12</value>
+        </param>
+        <param>
+            <name>WR_BYTE_EN</name>
+            <type>bool</type>
             <value>false</value>
         </param>
         <param>
             <name>WR_CLK_EN</name>
+            <type>bool</type>
             <value>false</value>
+        </param>
+        <param>
+            <name>WR_DATA_WIDTH</name>
+            <type>int</type>
+            <value>32</value>
         </param>
     </param_list>
     <pin_list>
@@ -182,6 +227,87 @@
             <dir>input</dir>
             <pos>right</pos>
         </pin>
+        <pin>
+            <name>wr_byte_en</name>
+            <text>wr_byte_en</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>left</pos>
+            <msb>0</msb>
+            <lsb>0</lsb>
+        </pin>
+        <pin>
+            <name>wr_clk_en</name>
+            <text>wr_clk_en</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>left</pos>
+        </pin>
+        <pin>
+            <name>wr_addr_strobe</name>
+            <text>wr_addr_strobe</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>left</pos>
+        </pin>
+        <pin>
+            <name>inject_sbiterr</name>
+            <text>inject_sbiterr</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>left</pos>
+        </pin>
+        <pin>
+            <name>inject_dbiterr</name>
+            <text>inject_dbiterr</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>left</pos>
+        </pin>
+        <pin>
+            <name>rd_clk_en</name>
+            <text>rd_clk_en</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>right</pos>
+        </pin>
+        <pin>
+            <name>rd_oce</name>
+            <text>rd_oce</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>right</pos>
+        </pin>
+        <pin>
+            <name>rd_addr_strobe</name>
+            <text>rd_addr_strobe</text>
+            <visible>0</visible>
+            <dir>input</dir>
+            <pos>right</pos>
+        </pin>
+        <pin>
+            <name>ecc_sbiterr</name>
+            <text>ecc_sbiterr</text>
+            <visible>0</visible>
+            <dir>output</dir>
+            <pos>right</pos>
+        </pin>
+        <pin>
+            <name>ecc_dbiterr</name>
+            <text>ecc_dbiterr</text>
+            <visible>0</visible>
+            <dir>output</dir>
+            <pos>right</pos>
+        </pin>
+        <pin>
+            <name>ecc_addr</name>
+            <text>ecc_addr</text>
+            <visible>0</visible>
+            <dir>output</dir>
+            <pos>right</pos>
+            <msb>11</msb>
+            <lsb>0</lsb>
+        </pin>
     </pin_list>
     <synthesis>
         <script><![CDATA[set_option -vlog_std v2001]]></script>
@@ -195,7 +321,7 @@
             <file pathname="wr_fram_buf_tmpl.vhdl" format="vhdl" description="Instantiation Template"/>
         </output>
         <source>
-            <file pathname="rtl/ipm2l_sdpram_v1_10_wr_fram_buf.v"/>
+            <file pathname="rtl/ipm2l_sdpram_v1_12_wr_fram_buf.v"/>
             <file pathname="wr_fram_buf.v"/>
         </source>
     </file_list>

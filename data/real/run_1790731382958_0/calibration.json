@@ -1,0 +1,29 @@
+{
+  "format": "closer2fpga.calibration.v1",
+  "corner_file": "corners.csv",
+  "width": 1280, "height": 720, "rows": 5, "cols": 8,
+  "square_size": 1, "square_size_fp64_hex": "3ff0000000000000",
+  "max_iterations_per_stage": 150, "estimate_k3": false,
+  "calibration_attempted": true, "rtl_input_ready": true,
+  "views": [
+    {"view_id": 0, "path": "E:/fpga/algorithom/test0.jpg", "width": 1280, "height": 720, "image_loaded": true, "board_valid": true, "corner_count": 40},
+    {"view_id": 1, "path": "E:/fpga/algorithom/test1.jpg", "width": 1280, "height": 720, "image_loaded": true, "board_valid": true, "corner_count": 40},
+    {"view_id": 2, "path": "E:/fpga/algorithom/test2.jpg", "width": 1280, "height": 720, "image_loaded": true, "board_valid": true, "corner_count": 40}
+  ],
+  "result": {
+    "camera_valid": true, "converged": true, "weak_geometry": true, "accepted_steps": 37,
+    "metrics_present": true,
+    "message": "Only a few views or small pose variation: provisional parameters; low training RMS does not prove accuracy outside the board.",
+    "camera": {"fx": 1375.424072265625, "fy": 1370.5921630859375, "cx": 661.89544677734375, "cy": 209.18479919433594, "k1": -0.25408077239990234, "k2": 0.040927723050117493, "k3": 0, "p1": 0.010197864845395088, "p2": -0.00072907045250758529},
+    "camera_fp32_hex": {"fx": "44abed92", "fy": "44ab52f3", "cx": "4425794f", "cy": "43512f4f", "k1": "be8216e0", "k2": "3d27a3d4", "k3": "00000000", "p1": "3c2714f2", "p2": "ba3f1f17"},
+    "rms": 0.54258538756323582, "rms_fp64_hex": "3fe15cdc07dbe402",
+    "max_error": 1.3163243056465459, "max_error_fp64_hex": "3ff50faa133ae8bf",
+    "per_view_rms": [0.4999889758504657, 0.56205721549472021, 0.56329336844113909],
+    "per_view_rms_fp64_hex": ["3fdfffd1c2e8d9a5", "3fe1fc5f69e0fb11", "3fe2067fd0704493"],
+    "poses": [
+      {"view_id": 0, "rotation_row_major": [0.88942827935159052, -0.021964372372233219, -0.45654671418811343, 0.050596959544620713, 0.9974372836849813, 0.050584709151739987, 0.45426565308694544, -0.068091346450338236, 0.88826025744939807], "rotation_fp64_hex": ["3fec76324b7e7bf9", "bf967dd414104a16", "bfdd380fb5a23070", "3fa9e7d83d0ad83d", "3fefeb0198279e43", "3fa9e63d2ef802a4", "3fdd12b03eed16ba", "bfb16e6f3a25122a", "3fec6ca0c6829d54"], "translation": [-3.9126810204249369, -0.53413692934784462, 13.702972235677434], "translation_fp64_hex": ["c00f4d2bb4f33d77", "bfe117a6546450bc", "402b67ebfa14760f"]},
+      {"view_id": 1, "rotation_row_major": [0.99797601775200007, 0.0030493837113961392, -0.063518259192459445, -0.0023422911275195147, 0.99993449429028736, 0.011203606593467027, 0.063548262479266329, -0.011032152437666295, 0.99791778716909263], "rotation_fp64_hex": ["3fefef6b66cdfd2e", "3f68fb056a0762a0", "bfb042bb8dee32ef", "bf633023f94b0436", "3fefff769fe3cf87", "3f86f1ea9f545bde", "3fb044b2ed10ea25", "bf8698066f64e438", "3fefeef1487f9d37"], "translation": [-4.6891192218285704, -0.65290759919230767, 15.354131451667151], "translation_fp64_hex": ["c012c1a8782331d9", "bfe4e49e7a3ae824", "402eb550b7b6ca74"]},
+      {"view_id": 2, "rotation_row_major": [0.96821136154045551, -0.077327827120447098, 0.23788057200370058, 0.066029431655275542, 0.99629434944856476, 0.055115183136251217, -0.24126100708415113, -0.037656027534665168, 0.96972942105055771], "rotation_fp64_hex": ["3feefb9664add208", "bfb3cbc1a88d957b", "3fce72dede8e0993", "3fb0e74e09886a89", "3fefe1a4b002471e", "3fac380eaa2a9fb4", "bfcee1a4039cfc6d", "bfa347a69d846f66", "3fef0805feac3275"], "translation": [-4.7964852564807821, -1.2693790235263624, 18.652278436383789], "translation_fp64_hex": ["c0132f99d4c15314", "bff44f60610462e2", "4032a6fbb8382786"]}
+    ]
+  }
+}

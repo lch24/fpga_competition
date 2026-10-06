@@ -63,6 +63,14 @@ localparam INIT_FILE = "NONE" ; // @IPC string
 localparam INIT_FORMAT = "BIN" ; // @IPC enum BIN,HEX
 
 localparam RST_VAL_EN = 0 ; // @IPC bool
+               
+localparam S_BIT_EN = "0" ; // @IPC bool                         
+                   
+localparam D_BIT_EN = 0 ; // @IPC bool                            
+
+localparam ECC_RDEN = 0 ; // @IPC bool
+ 
+localparam ECC_WREN = 0 ; // @IPC bool        
 
 // variable declaration 
 reg                           wr_clk            ;
@@ -91,6 +99,11 @@ reg   [RD_DATA_WIDTH-1:0]     tb_rddata_cnt_dly ;
 reg   [RD_DATA_WIDTH-1:0]     tb_expected_data  ;
 reg                           check_err         ;
 reg   [2:0]                   results_cnt       ;
+reg                           tb_inject_sbiterr ;
+reg                           tb_inject_dbiterr ;
+reg                           tb_ecc_sbiterr    ;
+reg                           tb_ecc_dbiterr    ;
+reg   [WR_ADDR_WIDTH  :0]     tb_ecc_addr       ;
 
 //************************************************************ CGU ****************************************************************************
 initial
@@ -308,7 +321,6 @@ wr_fram_buf U_wr_fram_buf (
     .rd_data        ( tb_rddata                     ),
     .rd_addr        ( tb_rd_addr[RD_ADDR_WIDTH-1:0] ),
     .rd_clk         ( rd_clk                        ),
-
     .rd_rst         ( tb_rd_rst                     )
 ) ;
 

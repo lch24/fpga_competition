@@ -1,0 +1,38 @@
+[
+  {
+    "module": "probe_project_point_before",
+    "lut": 2456,
+    "ff": 3368,
+    "drm": 0.0
+  },
+  {
+    "module": "probe_project_point",
+    "lut": 915,
+    "ff": 1745,
+    "drm": 1.5
+  },
+  {
+    "module": "probe_brown_distort_before",
+    "lut": 906,
+    "ff": 1236,
+    "drm": 0.0
+  },
+  {
+    "module": "probe_brown_distort",
+    "lut": 397,
+    "ff": 738,
+    "drm": 1.0
+  },
+  {
+    "module": "probe_damped_step_before",
+    "lut": 5192,
+    "ff": 4609,
+    "drm": 5.0
+  },
+  {
+    "module": "probe_damped_step",
+    "lut": 5042,
+    "ff": 4478,
+    "drm": 5.0
+  }
+]

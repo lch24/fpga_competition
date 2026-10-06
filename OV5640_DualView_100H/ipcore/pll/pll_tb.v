@@ -18,7 +18,6 @@
 
 module pll_tb ();
 
-    
     localparam real    CLKIN_FREQ      = 27.0; //@IPC float 10.0,500.0 
     
     localparam         INTERNAL_FB     = "CLKOUTF";
@@ -42,14 +41,14 @@ module pll_tb ();
     wire        clkoutphy       ;
     wire        clkoutphy_n     ;
     wire        clkfb =  (EXTERNAL_FB == "DISABLE") ? 1'b0 :
-    	                 (EXTERNAL_FB == "CLKOUT0") ? clkout0 :
-                    	 (EXTERNAL_FB == "CLKOUT1") ? clkout1 :
-                    	 (EXTERNAL_FB == "CLKOUT2") ? clkout2 :
-                    	 (EXTERNAL_FB == "CLKOUT3") ? clkout3 :
-                    	 (EXTERNAL_FB == "CLKOUT4") ? clkout4 :
-                    	 (EXTERNAL_FB == "CLKOUT5") ? clkout5 :
-                    	 (EXTERNAL_FB == "CLKOUT6") ? clkout6 :
-                    	 (EXTERNAL_FB == "CLKOUTF") ? clkoutf : 1'b0;
+                         (EXTERNAL_FB == "CLKOUT0") ? clkout0 :
+                         (EXTERNAL_FB == "CLKOUT1") ? clkout1 :
+                         (EXTERNAL_FB == "CLKOUT2") ? clkout2 :
+                         (EXTERNAL_FB == "CLKOUT3") ? clkout3 :
+                         (EXTERNAL_FB == "CLKOUT4") ? clkout4 :
+                         (EXTERNAL_FB == "CLKOUT5") ? clkout5 :
+                         (EXTERNAL_FB == "CLKOUT6") ? clkout6 :
+                         (EXTERNAL_FB == "CLKOUTF") ? clkoutf : 1'b0;
     wire        lock            ;
     wire        dps_done        ;
     wire [15:0] apb_rdata       ;
@@ -188,10 +187,10 @@ pll U_pll(
     always @( posedge clkin1)
     begin
         if(rst==1'b1)
-	    lock_neg <= 1'b0;
+        lock_neg <= 1'b0;
         else if((lock_ff2==1'b0)&&(lock_ff3==1'b1))
-	    lock_neg <= 1'b1;
-	else ;    
+        lock_neg <= 1'b1;
+    else ;    
     end
     assign chk_ok = lock_ff3 & (~lock_neg);
     
@@ -203,12 +202,12 @@ pll U_pll(
         #50000
         handle = $fopen ("sim_results.log","a");
         $fdisplay(handle,"chk_ok = %b,  $realtime = %-10d",chk_ok,$realtime );
-	$display("Simulation Starts.") ;
-	$display("Simulation is done.") ;
-	if (chk_ok==1'b0)
-	    $display("Simulation Failed due to Error Found.") ;
-	else
-	    $display("Simulation Success.") ;
+    $display("Simulation Starts.") ;
+    $display("Simulation is done.") ;
+    if (chk_ok==1'b0)
+        $display("Simulation Failed due to Error Found.") ;
+    else
+        $display("Simulation Success.") ;
         $finish;
     end
 

@@ -308,11 +308,11 @@ module pll (
     .CLKOUT0N       (               ),
     
     .CLKOUT1        (clkout1        ),
-    	
+        
     .CLKOUT1N       (               ),
     
     .CLKOUT2        (clkout2        ),
-    	
+        
     .CLKOUT2N       (               ),
     
     .CLKOUT3        (               ),
@@ -367,6 +367,5 @@ module pll (
     .APB_WRITE      (apb_write      ),
     .APB_WDATA      (apb_wdata[15:0])   
 );
-
 
 endmodule

@@ -11,6 +11,10 @@ Debug/
 Release/
 /sim/
 /integration/build/
+/logbackup/
+/OV5640_DualView_100H/logbackup/
+/OV5640_DualView_100H/check_pds.pds
+/OV5640_DualView_100H/*.backup_*.pds
 x64/
 x86/
 *[Bb]in/
@@ -35,3 +39,11 @@ x86/
 __pycache__/
 undistort/sim/build/
 *.pdb
+
+# Reproducible test outputs and simulator work libraries
+/build/
+**/build_*/
+*.wlf
+# PDS runtime ROM mirrors; authoritative files live in data/rom.
+/OV5640_DualView_100H/data/rom/
+/OV5640_DualView_100H/integration/rom/

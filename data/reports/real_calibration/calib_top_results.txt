@@ -1,0 +1,27 @@
+LM seed=0 stage=0 cycles=39408219 cost=148.54804598462451 converged=1 accepted=10 status=0
+LM seed=0 stage=1 cycles=84502601 cost=46.499907777186344 converged=1 accepted=11 status=0
+LM seed=0 stage=2 cycles=155929434 cost=35.327868335657797 converged=1 accepted=15 status=0
+LM seed=1 stage=0 cycles=198484054 cost=148.5480459846228 converged=1 accepted=11 status=0
+LM seed=1 stage=1 cycles=243578436 cost=46.499907777186259 converged=1 accepted=11 status=0
+LM seed=1 stage=2 cycles=315005269 cost=35.327868335657662 converged=1 accepted=15 status=0
+LM seed=2 stage=0 cycles=361422628 cost=148.54804598462451 converged=1 accepted=12 status=0
+LM seed=2 stage=1 cycles=406517010 cost=46.499907777186216 converged=1 accepted=11 status=0
+LM seed=2 stage=2 cycles=477943903 cost=35.327868335658351 converged=1 accepted=15 status=0
+LM seed=3 stage=0 cycles=524361012 cost=148.54804598462482 converged=1 accepted=12 status=0
+LM seed=3 stage=1 cycles=569455394 cost=46.499907777185072 converged=1 accepted=11 status=0
+LM seed=3 stage=2 cycles=640882287 cost=35.327868335658046 converged=1 accepted=15 status=0
+LM seed=4 stage=0 cycles=687298566 cost=148.54804598462451 converged=1 accepted=12 status=0
+LM seed=4 stage=1 cycles=732392948 cost=46.49990777718623 converged=1 accepted=11 status=0
+LM seed=4 stage=2 cycles=803819781 cost=35.327868335658593 converged=1 accepted=15 status=0
+camera actual=1375.42407227 expected=1375.42407227 difference=0
+camera actual=1370.59216309 expected=1370.59216309 difference=0
+camera actual=661.895446777 expected=661.895446777 difference=0
+camera actual=209.184799194 expected=209.184799194 difference=0
+camera actual=-0.2540807724 expected=-0.2540807724 difference=0
+camera actual=0.0409277193248 expected=0.0409277230501 difference=3.7252903e-009
+camera actual=0 expected=0 difference=0
+camera actual=0.0101978648454 expected=0.0101978648454 difference=0
+camera actual=-0.000729070452508 expected=-0.000729070452508 difference=0
+C++ accepted=37; RTL seed=1 accepted=37
+case=0 cycles=804280334 reads=1097040 seeds=5 lm_calls=15 status=0 seed=1 steps=37
+RESULT cases=1 errors=0

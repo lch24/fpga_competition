@@ -1,4 +1,4 @@
--- Created by IP Generator (Version 2022.2-SP6.4 build 146967)
+-- Created by IP Generator (Version 2025.2 build 211867)
 -- Instantiation Template
 --
 -- Insert the following codes into your VHDL file.
@@ -8,11 +8,11 @@
 
 COMPONENT pll
   PORT (
-    clkout0 : OUT STD_LOGIC;
-    clkout1 : OUT STD_LOGIC;
-    clkout2 : OUT STD_LOGIC;
+    clkout0 : OUT STD_LOGIC;  -- 37.12500000MHz
+    clkout1 : OUT STD_LOGIC;  -- 9.99519231MHz
+    clkout2 : OUT STD_LOGIC;  -- 24.75000000MHz
     lock : OUT STD_LOGIC;
-    clkin1 : IN STD_LOGIC
+    clkin1 : IN STD_LOGIC  -- 27.00000000MHz
   );
 END COMPONENT;
 

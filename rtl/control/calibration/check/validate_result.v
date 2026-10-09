@@ -214,7 +214,13 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0) (
     reg [3:0] rotation_index;
     integer pc,continuation,destination,j,index,count,point,view,row,pair_a,pair_b;
     reg [15:0] width,height,ix,iy;
-    reg [`PAR_STATE_W-1:0] state_q;reg [63:0] v[0:33],residual[0:`PAR_RESIDUALS-1],pose[0:12*`PAR_VIEWS-1];
+    reg [`PAR_STATE_W-1:0] state_q;reg [63:0] v[0:33],pose[0:12*`PAR_VIEWS-1];
+    // Separate x/y banks infer block RAM, not a 240x64 asynchronous mux.
+    // The stream writes one word/cycle; HYPOT_READ registers both bank outputs.
+    localparam HYPOT_READ=106;
+    reg [63:0] residual_x[0:`PAR_TOTAL_POINTS-1];
+    reg [63:0] residual_y[0:`PAR_TOTAL_POINTS-1];
+    reg [63:0] residual_x_q,residual_y_q;
     reg [63:0] square_size,best_cost,max_error;reg [`PAR_VIEW_RMS_W-1:0] view_rms;reg [287:0] camera;
     reg converged,metrics_valid,usable,map_phase,stream_bad,child_clear;
     wire child_rst_n=rst_n && !child_clear;
@@ -233,6 +239,41 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0) (
     genvar g;generate for(g=0;g<12*`PAR_VIEWS;g=g+1)begin: pack_pose
       assign rsp_poses_fp64[64*g+:64]=metrics_valid?pose[g]:ZERO;
     end endgenerate
+    // Fixed field banks: a view selects V words, never the whole state/pose.
+    wire [63:0] view_state[0:5],view_pose[0:11];
+    wire [63:0] normal_a[0:2],normal_b[0:2];
+    genvar field;
+    generate for(field=0;field<12;field=field+1)begin: select_pose
+      reg [63:0] selected;integer vi;
+      always @* begin
+        selected=0;
+        for(vi=0;vi<`PAR_VIEWS;vi=vi+1)
+          if(view==vi)selected=pose[12*vi+field];
+      end
+      assign view_pose[field]=selected;
+    end
+    for(field=0;field<6;field=field+1)begin: select_state
+      reg [63:0] selected;integer vi;
+      always @* begin
+        selected=0;
+        for(vi=0;vi<`PAR_VIEWS;vi=vi+1)
+          if(view==vi)selected=p[9+6*vi+field];
+      end
+      assign view_state[field]=selected;
+    end
+    for(field=0;field<3;field=field+1)begin: select_normal
+      reg [63:0] sa,sb;integer vi;
+      always @* begin
+        sa=0;sb=0;
+        for(vi=0;vi<`PAR_VIEWS;vi=vi+1)begin
+          if(pair_a==vi)sa=pose[12*vi+3*field+2];
+          if(pair_b==vi)sb=pose[12*vi+3*field+2];
+        end
+      end
+      assign normal_a[field]=sa;assign normal_b[field]=sb;
+    end endgenerate
+    wire [63:0] translation_rx=row==0?view_pose[0]:row==1?view_pose[3]:view_pose[6];
+    wire [63:0] translation_ry=row==0?view_pose[1]:row==1?view_pose[4]:view_pose[7];
     `include "calib_geometry.vh"
     function finite;input [63:0] x;begin finite=x[62:52]!=2047;end endfunction
     function [63:0] magnitude;input [63:0] x;begin magnitude={1'b0,x[62:0]};end endfunction
@@ -270,6 +311,15 @@ assign shared_rsp_ready[0 +: 1] = 0;
     task fail;input [7:0] status;begin rsp_status<=status;metrics_valid<=0;usable<=0;pc<=RESPONSE;end endtask
     task reject;begin rsp_status<=`PAR_CALIB_INVALID;usable<=0;pc<=RESPONSE;end endtask
     wire res_ready,res_valid,res_data_valid,res_last;wire [7:0] res_status;wire [`PAR_RES_BITS-1:0] res_index;wire [63:0] res_value,res_cost;
+    always @(posedge clk) begin
+      if(pc==RES_WAIT && res_data_valid && count<`PAR_RESIDUALS) begin
+        if(count[0])residual_y[count>>1]<=res_value;
+        else residual_x[count>>1]<=res_value;
+      end
+      if(pc==HYPOT_READ)begin
+        residual_x_q<=residual_x[point];residual_y_q<=residual_y[point];
+      end
+    end
     residual_endpoint #(.FP_SHARED(FP_SHARED),.EXTERNAL(SHARE_RESIDUAL)) residual_service(.ext_rst_n(ext_rst_n),.ext_cmd_valid(ext_cmd_valid),.ext_cmd_ready(ext_cmd_ready),.ext_cmd_width(ext_cmd_width),.ext_cmd_height(ext_cmd_height),.ext_cmd_state(ext_cmd_state),.ext_point_rd_en(ext_point_rd_en),.ext_point_rd_view_id(ext_point_rd_view_id),.ext_point_rd_index(ext_point_rd_index),.ext_point_rd_valid(ext_point_rd_valid),.ext_point_rd_x_fp32(ext_point_rd_x_fp32),.ext_point_rd_y_fp32(ext_point_rd_y_fp32),.ext_data_valid(ext_data_valid),.ext_data_ready(ext_data_ready),.ext_data_index(ext_data_index),.ext_data_fp64(ext_data_fp64),.ext_data_last(ext_data_last),.ext_rsp_valid(ext_rsp_valid),.ext_rsp_ready(ext_rsp_ready),.ext_rsp_status(ext_rsp_status),.ext_rsp_cost_fp64(ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[2 +: 4]),.shared_req_ready(shared_req_ready[2 +: 4]),.shared_req_op(shared_req_op[10 +: 20]),.shared_req_a(shared_req_a[128 +: 256]),.shared_req_b(shared_req_b[128 +: 256]),.shared_active(shared_active[2 +: 4]),.shared_rsp_valid(shared_rsp_valid[2 +: 4]),.shared_rsp_ready(shared_rsp_ready[2 +: 4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(child_rst_n),.cmd_valid(rst_n && pc==RES_CMD),.cmd_ready(res_ready),
       .cmd_width(width),.cmd_height(height),.cmd_state(state_q),
       .point_rd_en(point_rd_en),.point_rd_view_id(point_rd_view_id),.point_rd_index(point_rd_index),
@@ -278,7 +328,7 @@ assign shared_rsp_ready[0 +: 1] = 0;
       .rsp_valid(res_valid),.rsp_ready(rst_n && pc==RES_WAIT),.rsp_status(res_status),.rsp_cost_fp64(res_cost));
     wire rot_ready,rot_valid;wire [7:0] rot_status;wire [575:0] rot_matrix;
     rotation #(.FP_SHARED(FP_SHARED)) rot(.shared_req_valid(shared_req_valid[1 +: 1]),.shared_req_ready(shared_req_ready[1 +: 1]),.shared_req_op(shared_req_op[5 +: 5]),.shared_req_a(shared_req_a[64 +: 64]),.shared_req_b(shared_req_b[64 +: 64]),.shared_active(shared_active[1 +: 1]),.shared_rsp_valid(shared_rsp_valid[1 +: 1]),.shared_rsp_ready(shared_rsp_ready[1 +: 1]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(child_rst_n),.cmd_valid(rst_n && pc==ROT_CMD),.cmd_ready(rot_ready),.cmd_mode(1'b0),
-      .cmd_rotvec_fp64({p[11+6*view],p[10+6*view],p[9+6*view]}),.cmd_r_fp64(576'b0),
+      .cmd_rotvec_fp64({view_state[2],view_state[1],view_state[0]}),.cmd_r_fp64(576'b0),
       .rsp_valid(rot_valid),.rsp_ready(rst_n && pc==ROT_WAIT),.rsp_status(rot_status),.rsp_rotvec_fp64(),.rsp_r_fp64(rot_matrix));
     always @(posedge clk or negedge rst_n)begin
       if(!rst_n)begin pc<=IDLE;rsp_status<=0;usable<=0;metrics_valid<=0;map_phase<=0;stream_bad<=0;
@@ -317,17 +367,18 @@ assign shared_rsp_ready[0 +: 1] = 0;
         RES_CMD: begin if(res_ready)begin count<=0;stream_bad<=0;pc<=RES_WAIT;end end
         RES_WAIT: begin if(res_data_valid)begin
           if(count>=`PAR_RESIDUALS || res_index!=count || res_last!=(count==(`PAR_RESIDUALS-1)) || !finite(res_value))stream_bad<=1;
-          if(count<`PAR_RESIDUALS)begin residual[count]<=res_value;count<=count+1;end
+          if(count<`PAR_RESIDUALS)begin count<=count+1;end
         end
         if(res_valid)begin
           if(res_status!=0)fail(res_status);
           else if(stream_bad || count!=`PAR_RESIDUALS || res_data_valid)fail(`PAR_BAD_CONFIG);
           else if(!finite(res_cost))fail(`PAR_CALIB_INVALID);
-          else begin point<=0;view<=0;v[22]<=0;max_error<=0;pc<=HYPOT_START;end
+          else begin point<=0;view<=0;v[22]<=0;max_error<=0;pc<=HYPOT_READ;end
         end end
+        HYPOT_READ: pc<=HYPOT_START;
         HYPOT_START: begin // 缩放hypot，避免直接du*du+dv*dv产生不必要的溢出/下溢。
-        if(magnitude(residual[2*point])>=magnitude(residual[2*point+1]))begin v[18]<=magnitude(residual[2*point]);v[19]<=magnitude(residual[2*point+1]);end
-        else begin v[18]<=magnitude(residual[2*point+1]);v[19]<=magnitude(residual[2*point]);end
+        if(magnitude(residual_x_q)>=magnitude(residual_y_q))begin v[18]<=magnitude(residual_x_q);v[19]<=magnitude(residual_y_q);end
+        else begin v[18]<=magnitude(residual_y_q);v[19]<=magnitude(residual_x_q);end
         pc<=HYPOT_CHECK; end
         HYPOT_CHECK: begin if(v[18]==0)begin v[21]<=0;pc<=ERROR_ACC_0;end else pc<=HYPOT_0; end
         HYPOT_0: begin calculate(DIV,v[19],v[18],20,HYPOT_1); end
@@ -339,12 +390,12 @@ assign shared_rsp_ready[0 +: 1] = 0;
         ERROR_ACC_1: begin calculate(ADD,v[22],v[20],22,NEXT_POINT); end
         NEXT_POINT: begin if(v[21]>max_error)max_error<=v[21];
         if(point==((view+1)*`PAR_POINTS-1))pc<=VIEW_RMS_0;
-        else begin point<=point+1;pc<=HYPOT_START;end end
+        else begin point<=point+1;pc<=HYPOT_READ;end end
         VIEW_RMS_0: begin calculate(DIV,v[22],u16(`PAR_POINTS),20,VIEW_RMS_1); end
         VIEW_RMS_1: begin calculate(SQRT,v[20],ZERO,20,SAVE_VIEW_RMS); end
         SAVE_VIEW_RMS: begin view_rms[64*view+:64]<=v[20];
         if(view==(`PAR_VIEWS-1))begin view<=0;pc<=ROT_CMD;end
-        else begin view<=view+1;point<=point+1;v[22]<=0;pc<=HYPOT_START;end end
+        else begin view<=view+1;point<=point+1;v[22]<=0;pc<=HYPOT_READ;end end
         ROT_CMD: begin if(rot_ready)pc<=ROT_WAIT; end
         ROT_WAIT: begin if(rot_valid)begin
         if(rot_status!=0)fail(rot_status);
@@ -355,21 +406,21 @@ assign shared_rsp_ready[0 +: 1] = 0;
           if(rotation_index==8)pc<=TZ;
           else rotation_index<=rotation_index+1'b1;
         end
-        TZ: begin calculate(EXP,p[14+6*view],ZERO,24,TRANSLATION_START); end
+        TZ: begin calculate(EXP,view_state[5],ZERO,24,TRANSLATION_START); end
         TRANSLATION_START: begin row<=0;pc<=TRANSLATION_0; end
-        TRANSLATION_0: begin calculate(MUL,pose[12*view+3*row],board_half(`PAR_BOARD_COLS-1),18,TRANSLATION_1); end
-        TRANSLATION_1: begin calculate(SUB,(row==2)?v[24]:p[12+6*view+row],v[18],18,TRANSLATION_2); end
-        TRANSLATION_2: begin calculate(MUL,pose[12*view+3*row+1],board_half(`PAR_BOARD_ROWS-1),19,TRANSLATION_3); end
+        TRANSLATION_0: begin calculate(MUL,translation_rx,board_half(`PAR_BOARD_COLS-1),18,TRANSLATION_1); end
+        TRANSLATION_1: begin calculate(SUB,(row==2)?v[24]:(row==0?view_state[3]:view_state[4]),v[18],18,TRANSLATION_2); end
+        TRANSLATION_2: begin calculate(MUL,translation_ry,board_half(`PAR_BOARD_ROWS-1),19,TRANSLATION_3); end
         TRANSLATION_3: begin calculate(SUB,v[18],v[19],18,TRANSLATION_4); end
         TRANSLATION_4: begin calculate(MUL,v[18],square_size,18,SAVE_TRANSLATION); end
         SAVE_TRANSLATION: begin pose[12*view+9+row]<=v[18];
         if(row<2)begin row<=row+1;pc<=TRANSLATION_0;end
         else if(view<(`PAR_VIEWS-1))begin view<=view+1;pc<=ROT_CMD;end
         else begin pair_a<=1;pair_b<=0;v[26]<=0;pc<=ANGLE_0;end end
-        ANGLE_0: begin calculate(MUL,pose[12*pair_a+2],pose[12*pair_b+2],18,ANGLE_1); end
-        ANGLE_1: begin calculate(MUL,pose[12*pair_a+5],pose[12*pair_b+5],19,ANGLE_2); end
+        ANGLE_0: begin calculate(MUL,normal_a[0],normal_b[0],18,ANGLE_1); end
+        ANGLE_1: begin calculate(MUL,normal_a[1],normal_b[1],19,ANGLE_2); end
         ANGLE_2: begin calculate(ADD,v[18],v[19],18,ANGLE_3); end
-        ANGLE_3: begin calculate(MUL,pose[12*pair_a+8],pose[12*pair_b+8],19,ANGLE_4); end
+        ANGLE_3: begin calculate(MUL,normal_a[2],normal_b[2],19,ANGLE_4); end
         ANGLE_4: begin calculate(ADD,v[18],v[19],18,ANGLE_5); end
         ANGLE_5: begin calculate(ACOS,(magnitude(v[18])>ONE)?ONE:magnitude(v[18]),ZERO,18,NEXT_PAIR); end
         NEXT_PAIR: begin if(v[18]>v[26])v[26]<=v[18];

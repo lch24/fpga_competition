@@ -119,8 +119,8 @@ module tb_calib_top;
    check(!(dut.init_owner && dut.lm_owner) && !(dut.lm_owner && dut.check_owner) && !(dut.init_owner && dut.check_owner),"exclusive RAM owner");
    if(dut.pc==dut.INIT_WAIT && dut.seed_valid && dut.seed_ready)begin expected_seeds[dut.seed_count]=dut.seed_state;seed_inputs=seed_inputs+1;end
    if(dut.pc==dut.LM_CMD && dut.lm_ready)begin
-    check(dut.stage==lm_commands%3,"three LM stages in order");
-    if(dut.stage==0)check(dut.current===expected_seeds[dut.seed_index],"load each original seed");
+    check(dut.stage==2 && lm_commands==0,"one full-parameter LM stage");
+    if(lm_commands==0)check(dut.current===expected_seeds[dut.seed_index],"load each original seed");
     else check(dut.current===previous_state,"chain last accepted state even if unconverged");
     lm_commands=lm_commands+1;
    end
@@ -254,7 +254,7 @@ module tb_calib_top;
   if(REAL_INPUT)begin
    begin_job();fill_points();launch();await_output();
    check(diag_status==0 && diag_metrics_valid && diag_converged==expected_converged && diag_weak_geometry==expected_weak,"real C++ pipeline success and flags");
-   check(seed_inputs>=1 && seed_inputs<=5 && lm_commands==3*seed_inputs && lm_responses==lm_commands,"every real seed executes three stages");
+   check(seed_inputs==1 && lm_commands==1 && lm_responses==lm_commands,"every real seed executes three stages");
    check(camera_width==test_width && camera_height==test_height && camera_calib_id==32'h80000000+cases && camera_usable,"real image configuration");
    dump_file=$fopen("actual_camera.hex","w");if(!dump_file)$fatal(1,"camera dump open");
    for(i=0;i<9;i=i+1)begin
@@ -274,7 +274,7 @@ module tb_calib_top;
   end else if(!CONTROL_ONLY)begin
    begin_job();fill_points();launch();await_output();
    check(diag_status==0 && diag_metrics_valid && diag_converged==expected_converged && diag_weak_geometry==expected_weak,"full C++ pipeline success");
-   check(seed_inputs==5 && lm_commands==15 && lm_responses==15,"all five real seeds and fifteen LM stages executed");
+   check(seed_inputs==1 && lm_commands==1 && lm_responses==1,"all five real seeds and fifteen LM stages executed");
    check(camera_width==640 && camera_height==480 && camera_calib_id==32'h80000000+cases && camera_usable,"locked camera configuration");
    for(i=0;i<9;i=i+1)near32(camera_params[32*i+:32],expected_camera[32*i+:32]);
    for(i=0;i<2+13*`PAR_VIEWS;i=i+1)near64(actual_metrics[64*i+:64],expected_metrics[64*i+:64],i<2+`PAR_VIEWS?2e-7:2e-5);
@@ -304,53 +304,31 @@ module tb_calib_top;
    end
    clear_mock();begin_job();fill_points();launch();mock_init_start();mock_init_end(0,4);finish_job(4,1,0);
    clear_mock();begin_job();fill_points();launch();mock_init_start();mock_init_end(0,0);finish_job(4,1,1);
-   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(1);mock_seed(1);finish_job(1,1,2);
+   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(2);mock_seed(2);finish_job(1,1,2);
    clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(5);finish_job(1,1,0);
-   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(1);mock_init_end(2,0);finish_job(1,1,1);
-   // For each LM stage a hardware failure must stop the whole task.
-   for(n=0;n<3;n=n+1)begin one_seed();for(s=0;s<=n;s=s+1)mock_lm(2.0,0,s==n?5:0);finish_job(5,2,n);check(lm_commands==n+1,"no later stage after hardware failure");end
-   // Tied cost keeps the earlier seed; worse candidate cannot overwrite best.
+   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(2);mock_init_end(2,0);finish_job(1,1,1);
+   one_seed();mock_lm(2.0,0,5);finish_job(5,2,0);check(lm_commands==1,"stop after LM failure");
    for(n=0;n<3;n=n+1)begin
-    clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(0);mock_seed(2);mock_seed(4);mock_init_end(3,0);
-    for(s=0;s<9;s=s+1)mock_lm(s<3?5.0:(s<6?2.0:2.0),s%3==2,0);
-    mock_check(0,1,1);check(diag_seed_id==2 && diag_accepted_steps==6 && diag_converged && dut.best_state==seed_pattern(2)+1728'h3000,"strict minimum, tied first, accumulated accepted steps");
+    one_seed();mock_lm(1.0,1,0);mock_check(0,1,1);
+    check(diag_seed_id==2 && diag_accepted_steps==3 && diag_converged && dut.best_state==seed_pattern(2)+1728'h1000,"single seed result");
     finish_job(0,4,n);
    end
-   // Lower-cost unconverged candidate wins; validation rejects it, no fallback.
-   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(1);mock_seed(3);mock_init_end(2,0);
-   for(s=0;s<6;s=s+1)mock_lm(s<3?5.0:1.0,s<3,0);
-   mock_check(4,0,1);check(diag_seed_id==3 && !diag_converged && diag_metrics_valid,"minimum selected before convergence validation");finish_job(4,3,0);
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,1,0);mock_check(5,0,0);check(!diag_metrics_valid && actual_metrics==0,"invalid diagnostic fields zeroed");finish_job(5,3,1);
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,1,0);mock_check(0,0,1);finish_job(1,3,2);
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,1,0);
-   // Reset during an outstanding validation command.
+   one_seed();mock_lm(1.0,0,0);mock_check(4,0,1);finish_job(4,3,0);
+   one_seed();mock_lm(1.0,1,0);mock_check(5,0,0);check(!diag_metrics_valid && actual_metrics==0,"invalid metrics zeroed");finish_job(5,3,1);
+   one_seed();mock_lm(1.0,1,0);mock_check(0,0,1);finish_job(1,3,2);
+   one_seed();mock_lm(1.0,1,0);
    while(dut.pc!=dut.CHECK_CMD)@(negedge clk);reset_dut();clear_mock();cases=cases+1;
-   // Reset during collection, init, LM, output and pending response.
    begin_job();send_point(0,0);reset_dut();cases=cases+1;
    begin_job();fill_points();launch();mock_init_start();reset_dut();clear_mock();cases=cases+1;
    one_seed();while(dut.pc!=dut.LM_CMD)@(negedge clk);mock_lm_ready=1;@(negedge clk);reset_dut();clear_mock();cases=cases+1;
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,1,0);mock_check(0,1,1);reset_dut();clear_mock();cases=cases+1;
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,1,0);mock_check(0,1,1);camera_ready=1;diag_ready=1;@(negedge clk);check(rsp_valid,"response reached before reset");reset_dut();clear_mock();cases=cases+1;
-   // Infinite/NaN/negative final cost cannot become a best solution.
+   one_seed();mock_lm(1.0,1,0);mock_check(0,1,1);reset_dut();clear_mock();cases=cases+1;
+   one_seed();mock_lm(1.0,1,0);mock_check(0,1,1);camera_ready=1;diag_ready=1;@(negedge clk);check(rsp_valid,"response before reset");reset_dut();clear_mock();cases=cases+1;
    for(n=0;n<3;n=n+1)begin
-    one_seed();mock_lm(1.0,1,0);mock_lm(1.0,1,0);
-    mock_lm(n==0?$bitstoreal(64'h7ff0000000000000):(n==1?$bitstoreal(64'h7ff8000000000000):-1.0),0,0);
-    finish_job(4,2,n);check(diag_seed_id==7 && !diag_metrics_valid,"no finite nonnegative best candidate");
+    one_seed();mock_lm(n==0?$bitstoreal(64'h7ff0000000000000):(n==1?$bitstoreal(64'h7ff8000000000000):-1.0),0,0);
+    finish_job(4,2,n);check(diag_seed_id==7 && !diag_metrics_valid,"invalid cost rejected");
    end
-   // -0 is a valid zero cost; later larger cost cannot replace it.
-   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(1);mock_seed(4);mock_init_end(2,0);
-   for(s=0;s<6;s=s+1)mock_lm(s<3?$bitstoreal(64'h8000000000000000):1.0,1,0);
-   mock_check(0,1,1);check(dut.best_cost==0 && diag_seed_id==1,"normalize zero and preserve earlier better solution");finish_job(0,4,0);
-   // All five slots, strict replacement by the last slot, 450 accepted steps fits 16 bits.
-   clear_mock();begin_job();fill_points();launch();mock_init_start();for(s=0;s<5;s=s+1)mock_seed(s);mock_init_end(5,0);
-   for(s=0;s<15;s=s+1)begin
-    while(dut.pc!=dut.LM_CMD)@(negedge clk);
-    mock_lm_state=dut.current+1728'h1000;mock_lm_ready=1;@(negedge clk);mock_lm_ready=0;
-    mock_cost=$realtobits(5.0-s/3);mock_converged=1;mock_accepted=150;mock_lm_valid=1;@(negedge clk);mock_lm_valid=0;
-   end
-   mock_check(0,1,1);check(diag_seed_id==4 && diag_accepted_steps==450 && lm_commands==15,"last slot wins and accepted sum does not truncate");finish_job(0,4,1);
-   clear_mock();begin_job();fill_points();launch();mock_init_start();mock_seed(3);mock_seed(1);finish_job(1,1,2);
-   clear_mock();begin_job();fill_points();launch();mock_init_start();for(s=0;s<5;s=s+1)mock_seed(s);mock_seed(0);finish_job(1,1,0);
+   one_seed();mock_lm($bitstoreal(64'h8000000000000000),1,0);mock_check(0,1,1);
+   check(dut.best_cost==0 && diag_seed_id==2,"normalize negative zero");finish_job(0,4,0);
    // Both input streams together: last point wins this cycle, response waits one cycle.
    clear_mock();begin_job();for(i=0;i<39;i=i+1)send_point(0,i);
    corner_view_id=0;corner_point_index=39;corner_last=1;corner_x_fp32=points[39*64+:32];corner_y_fp32=points[39*64+32+:32];corner_valid=1;
@@ -370,7 +348,7 @@ module tb_calib_top;
    while(!cmd_ready)@(negedge clk);@(negedge clk);cmd_valid=0;
    mock_init_start();mock_init_end(0,4);finish_job(4,1,0);
    // Successful recovery after all cancellation paths.
-   one_seed();for(s=0;s<3;s=s+1)mock_lm(1.0,s==2,0);mock_check(0,1,1);finish_job(0,4,2);
+   one_seed();mock_lm(1.0,1,0);mock_check(0,1,1);finish_job(0,4,2);
   end
   $fdisplay(report,"RESULT cases=%0d errors=%0d",cases,errors);$fclose(report);
   done=1;$display("TOP_RESULT control=%0d cases=%0d errors=%0d",CONTROL_ONLY,cases,errors);

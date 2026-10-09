@@ -5,13 +5,10 @@
 using namespace calibration;
 
 CameraCalibrationResult calibrate_camera(const std::vector<std::vector<Point2f>>& points, int width,
-                                         int height, int rows, int cols, double square_size,
-                                         const CameraCalibrationOptions& options) {
+                                         int height, int rows, int cols, double square_size) {
     CameraCalibrationResult result;
-    result.k3_estimated = options.estimate_k3;
     if (points.size() < 3 || points.size() > 100 || width < 2 || height < 2 || rows < 3 || cols < 3 ||
-        rows > 100 || cols > 100 || !std::isfinite(square_size) || square_size <= 0 ||
-        options.max_iterations < 1) {
+        rows > 100 || cols > 100 || !std::isfinite(square_size) || square_size <= 0) {
         result.message = "Need at least three views, valid image/board dimensions and positive square size.";
         return result;
     }
@@ -42,49 +39,26 @@ CameraCalibrationResult calibrate_camera(const std::vector<std::vector<Point2f>>
         result.message = "Repeated views do not constrain camera intrinsics.";
         return result;
     }
-    std::vector<std::array<double, 4>> seeds;
-    std::array<double, 4> zhang;
-    if (zhang_intrinsics(hom, width, height, zhang))
-        seeds.push_back(zhang);
-    for (double factor : {.6, 1., 1.8, 3.})
-        seeds.push_back({width * factor, width * factor, (width - 1) * .5, (height - 1) * .5});
-    State best;
-    double best_cost = infinity;
-    bool best_converged = false;
-    int best_iterations = 0;
-    for (const auto& seed : seeds) {
-        State state;
-        if (!initialize(hom, seed, width, height, state))
-            continue;
-        std::vector<int> active{0, 1, 2, 3};
-        for (int i = 9; i < int(state.size()); ++i)
-            active.push_back(i);
-        int iterations = 0;
-        optimize(state, points, width, height, rows, cols, active, options.max_iterations, iterations);
-        active.push_back(4);
-        optimize(state, points, width, height, rows, cols, active, options.max_iterations, iterations);
-        active.insert(active.end(), {5, 6, 7});
-        bool converged =
-            optimize(state, points, width, height, rows, cols, active, options.max_iterations, iterations);
-        if (options.estimate_k3) {
-            active.push_back(8);
-            converged = optimize(state, points, width, height, rows, cols, active, options.max_iterations,
-                                 iterations);
-        }
-        std::vector<double> residual;
-        double cost = residuals(state, points, width, height, rows, cols, residual);
-        if (cost < best_cost) {
-            best_cost = cost;
-            best = std::move(state);
-            best_converged = converged;
-            best_iterations = iterations;
-        }
+    // One rough intrinsic seed. Pose initialization remains essential for LM.
+    const std::array<double, 4> intrinsics{
+        double(width), double(width), (width - 1) * .5, (height - 1) * .5};
+    State state;
+    if (!initialize(hom, intrinsics, width, height, state)) {
+        result.message = "Pose initialization failed.";
+        return result;
     }
-    if (best.empty()) {
+    // k3 stays zero; all views share the other eight camera parameters.
+    int iterations = 0;
+    bool converged = optimize(state, points, width, height, rows, cols,
+                              iterations, result.work);
+    std::vector<double> residual;
+    double cost = residuals(state, points, width, height, rows, cols, residual);
+    ++result.work.residual_passes;
+    if (!std::isfinite(cost)) {
         result.message = "Calibration optimization failed.";
         return result;
     }
-    finish_result(best, points, width, height, rows, cols, square_size, best_cost, best_converged,
-                  best_iterations, result);
+    finish_result(state, points, width, height, rows, cols, square_size, cost,
+                  converged, iterations, result, residual);
     return result;
 }

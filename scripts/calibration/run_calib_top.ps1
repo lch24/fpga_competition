@@ -26,9 +26,9 @@ try {
   }
   if (!(Test-Path -LiteralPath work)) { & "$ModelSimBin\vlib.exe" work; if ($LASTEXITCODE -ne 0) { throw 'vlib failed' } }
   # Compile the exact public manifest, rewriting only its relative path prefix.
-  $manifest=Get-Content ../../../parameter/files.f | ForEach-Object { if($_ -match '^\+incdir\+') { $_ -replace '^\+incdir\+','+incdir+../../../parameter/' } else { '../../../parameter/'+$_ } }
+  $manifest=Get-Content ../../../rtl/files.f | ForEach-Object { if($_ -match '^\+incdir\+') { $_ -replace '^\+incdir\+','+incdir+../../../' } else { '../../../'+$_ } }
   Set-Content -LiteralPath rtl.f -Value $manifest -Encoding ASCII
-  & "$ModelSimBin\vlog.exe" -work work @defines -f rtl.f
+  & "$ModelSimBin\vlog.exe" -sv -work work @defines -f rtl.f
   if ($LASTEXITCODE -ne 0) { throw 'RTL compilation failed' }
   & "$ModelSimBin\vlog.exe" -sv -work work @defines +incdir+../../../rtl/include ../../../tb/calibration/tb_calib_top.sv
   if ($LASTEXITCODE -ne 0) { throw 'TB compilation failed' }
@@ -61,14 +61,14 @@ try {
     if($line -match '^LM seed=(\d+) stage=(\d+) cycles=(\d+) cost=(\S+) converged=(\d+) accepted=(\d+) status=(\d+)$') {
      $seedNumber=[int]$Matches[1]; $stageNumber=[int]$Matches[2]
      $costValue=[double]::Parse($Matches[4],[Globalization.CultureInfo]::InvariantCulture)
-     if([int]$Matches[7] -ne 0 -or $seedNumber -ne [math]::Floor($callCount/3) -or $stageNumber -ne ($callCount%3)) { throw 'Unexpected full RTL stage sequence/status' }
+     if([int]$Matches[7] -ne 0 -or $seedNumber -ne 2 -or $stageNumber -ne 2 -or $callCount -ne 0) { throw 'Unexpected full RTL stage sequence/status' }
      if($stageNumber -eq 0) { $totalSteps=0 }
      $totalSteps += [int]$Matches[6]; $callCount++
      if($stageNumber -eq 2 -and $costValue -lt $bestCost) { $bestCost=$costValue; $bestSeed=$seedNumber; $bestSteps=$totalSteps }
     }
     if($line -match '^case=0 .* status=0 seed=(\d+) steps=(\d+)$') { $reportedSeed=[int]$Matches[1]; $reportedSteps=[int]$Matches[2] }
    }
-   if($callCount -ne 15 -or $reportedSeed -ne $bestSeed -or $reportedSteps -ne $bestSteps) { throw 'Published best seed/accepted count does not match RTL candidate history' }
+   if($callCount -ne 1 -or $reportedSeed -ne $bestSeed -or $reportedSteps -ne $bestSteps) { throw 'Published best seed/accepted count does not match RTL candidate history' }
    Write-Output "RTL_SELECTION_PASS seed=$bestSeed accepted=$bestSteps cost=$bestCost"
   }
   Get-Content -LiteralPath $resultFile

@@ -1,26 +1,12 @@
 `include "calib_defs.vh"
 
-/*
-配置：统一见 rtl/include/calib_config.vh；下文具体计数例子以默认3张5×8为例，
-实际容量、循环边界和端口位宽由PAR_*派生，修改配置后须重新编译/综合。
-作用：拥有240x26的J RAM及`PAR_RESIDUALS项基准残差RAM，计算N=J^TJ和g=J^Tr。
-cmd清除本轮载入标志并锁存stage；随后接收r流和列序J流，可交错但各流内部有序。
-两流收齐后逐项求N下三角和g，各点积内部按t=0..(`PAR_RESIDUALS-1)累加；上三角由step补齐。
-遍历改为输出元素外层、t内层，保持C++每个累加器的顺序，省去完整N缓存。
-先输出N的下三角（row外层，col=0..row），再输出g[0..n-1]。
-未收齐时若父模块发现雅可比失败，使用abort握手丢弃本轮，返回CALIB_INVALID。
-abort接受后停止接收r/J并取消未握手的N/g（取消是背压保持规则的例外）；
-输出部分N/g若已发出，下游必须通过abort清理。
-正常rsp给max_abs(g)供LM判断，不保存阻尼，不破坏上轮的current状态。
-
-共同契约：
-- 已实现串行FP64控制；数组不复位，每次使用前完整写入。尚未进行综合/时序验证。
-- valid && ready 才传输；背压时 valid 和对应全部载荷保持不变。
-- 除另有说明，一次一项任务，rsp 被接收前不接受新 cmd；不假设固定延迟。
-- cmd_* 随命令锁存；rsp_* 随响应有效。失败仍须发完成响应，不能无声挂起。
-- 非零状态通常使结果载荷无效；本模块明确说明的诊断有效位例外。
-- 复位取消在途数据；复位后所有生产端 valid 清零。实现时禁止 real 运算。
-*/
+// Sparse bundle normal equations. Input remains the ordered column stream,
+// but off-view pose derivatives must be zero and are never stored. Camera
+// columns span all views; pose columns span one view. Cross-view pose blocks
+// are emitted as zero without invoking the FP64 engine. One synchronous J
+// read port avoids duplicated block RAM; dot products retain row order.
+// Abort cancels partial loading/output; a successful load initializes all
+// locations that will be read. RAM contents are never globally reset.
 module normal_equation #(parameter FP_SHARED=0) (
     // Optional shared FP64 service; local mode keeps standalone compatibility.
     output wire [0:0] shared_req_valid,
@@ -117,14 +103,37 @@ assign shared_rsp_ready[0 +: 1] = 0;
     // 首版采用显式读取寄存器，N不再整块保存，算完一个元素即发送。
     // pc0加载两路RAM；1初始化点积；2寄存读数；3乘法；4累加；
     // 5遍历t；6更新梯度诊断；7等待N/g握手。v0=累加器，v1=乘积。
-    reg [63:0] jram[0:`PAR_RESIDUALS*`PAR_ACTIVE_N-1],rram[0:(`PAR_RESIDUALS-1)];
+    reg [63:0] jram[0:`PAR_RESIDUALS*14-1],rram[0:(`PAR_RESIDUALS-1)];
     reg [63:0] operand_a,operand_b,max_gradient;
-    integer n,rc,jc,jr,a,b,t;reg kind;
-    // One physical J read port. Reading both columns in one cycle duplicated
-    // this 49 KiB array in PDS. Two read cycles preserve each dot product's
-    // accumulation order and add only two cycles per multiply/add pair.
-    wire [$clog2(`PAR_RESIDUALS*`PAR_ACTIVE_N)-1:0] j_read_address=
-        ((pc==2)?a:b)*`PAR_RESIDUALS+t;
+    integer n,rc,jc,jr,a,b,t,limit;reg kind;
+    // Structural sparsity: eight camera columns plus six local pose columns.
+    // A pose column is stored only in its owning view's rows. Thus storage is
+    // 14*residuals, independent of the number of poses in the state vector.
+    // Constant lookup decoding avoids variable divide/modulo in address logic.
+    function integer pose_view;
+      input integer col; integer view_id,axis;
+      begin
+        pose_view=-1;
+        for(view_id=0;view_id<`PAR_VIEWS;view_id=view_id+1)
+          for(axis=0;axis<6;axis=axis+1)
+            if(col==4+6*view_id+axis)pose_view=view_id;
+      end
+    endfunction
+    function integer packed_column;
+      input integer col; integer view_id,axis;
+      begin
+        packed_column=col-6*`PAR_VIEWS;
+        if(col<4)packed_column=col;
+        for(view_id=0;view_id<`PAR_VIEWS;view_id=view_id+1)
+          for(axis=0;axis<6;axis=axis+1)
+            if(col==4+6*view_id+axis)packed_column=8+axis;
+      end
+    endfunction
+    wire write_local=pose_view(jc)>=0;
+    wire write_owned=!write_local ||
+      (jr>=pose_view(jc)*(2*`PAR_POINTS) && jr<(pose_view(jc)+1)*(2*`PAR_POINTS));
+    wire [$clog2(`PAR_RESIDUALS*14)-1:0] j_read_address=
+        packed_column((pc==2)?a:b)*`PAR_RESIDUALS+t;
     reg [63:0] j_read_data;
     always @(posedge clk)
         if(pc==2 || pc==8) j_read_data<=jram[j_read_address];
@@ -162,17 +171,27 @@ assign shared_rsp_ready[0 +: 1] = 0;
           if(j_valid && j_ready)begin
             if(j_row!=jr || j_col!=jc || j_last!=(jc==n-1 && jr==(`PAR_RESIDUALS-1)))fail(`PAR_BAD_CONFIG);
             else if(!finite(j_fp64))fail(`PAR_CALIB_INVALID);
-            else begin jram[jc*`PAR_RESIDUALS+jr]<=j_fp64;if(jr==(`PAR_RESIDUALS-1))begin jr<=0;jc<=jc+1;end else jr<=jr+1;end
+            else if(!write_owned && j_fp64[62:0]!=0)fail(`PAR_BAD_CONFIG);
+            else begin if(write_owned)jram[packed_column(jc)*`PAR_RESIDUALS+jr]<=j_fp64;if(jr==(`PAR_RESIDUALS-1))begin jr<=0;jc<=jc+1;end else jr<=jr+1;end
           end
           if(rc==`PAR_RESIDUALS && jc==n)begin a<=0;b<=0;kind<=0;pc<=1;end
         end
-        1:begin t<=0;v[0]<=0;pc<=2;end
+        1:begin
+          v[0]<=0;
+          if(!kind && pose_view(a)>=0 && pose_view(b)>=0 && pose_view(a)!=pose_view(b))pc<=6;
+          else begin
+            if(pose_view(a)>=0)begin t<=pose_view(a)*(2*`PAR_POINTS);limit<=(pose_view(a)+1)*(2*`PAR_POINTS)-1;end
+            else if(!kind && pose_view(b)>=0)begin t<=pose_view(b)*(2*`PAR_POINTS);limit<=(pose_view(b)+1)*(2*`PAR_POINTS)-1;end
+            else begin t<=0;limit<=`PAR_RESIDUALS-1;end
+            pc<=2;
+          end
+        end
         2:pc<=8;
         8:begin operand_a<=j_read_data;pc<=9;end
         9:begin operand_b<=kind?rram[t]:j_read_data;pc<=3;end
         3:calculate(MUL,operand_a,operand_b,1,4);
         4:calculate(ADD,v[0],v[1],0,5);
-        5:if(t==(`PAR_RESIDUALS-1))pc<=6;else begin t<=t+1;pc<=2;end
+        5:if(t==limit)pc<=6;else begin t<=t+1;pc<=2;end
         6:begin if(kind && magnitude(v[0])>max_gradient)max_gradient<=magnitude(v[0]);pc<=7;end
         7:if(ng_ready && !abort_valid)begin
           if(kind)begin if(a==n-1)pc<=RESPONSE;else begin a<=a+1;pc<=1;end end

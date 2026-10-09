@@ -1,5 +1,7 @@
-﻿#include "internal.h"
+#include "internal.h"
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -24,47 +26,94 @@ void merge_duplicates(std::vector<Point2f>& points, float radius) {
     }
     points = std::move(out);
 }
-float nearest_distance(const std::vector<Point2f>& points, size_t i) {
-    float result = std::numeric_limits<float>::max();
-    for (size_t j = 0; j < points.size(); ++j)
-        if (i != j)
-            result = std::min(result, distance(points[i], points[j]));
-    return result;
+static void harris(const GrayImage& img, std::vector<Point2f>& points) {
+    int w = img.w, h = img.h;
+    std::vector<int> gx(w * h), gy(w * h);
+    auto at = [&](int x, int y) { return int(img.get(std::clamp(x, 0, w - 1), std::clamp(y, 0, h - 1))); };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            gx[y * w + x] = -at(x - 1, y - 1) + at(x + 1, y - 1) - 2 * at(x - 1, y) + 2 * at(x + 1, y) -
+                            at(x - 1, y + 1) + at(x + 1, y + 1);
+            gy[y * w + x] = -at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1) + at(x - 1, y + 1) +
+                            2 * at(x, y + 1) + at(x + 1, y + 1);
+        }
+    std::vector<int64_t> score(w * h);
+    int64_t maximum = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            int64_t a = 0, b = 0, c = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    int xx = x + dx, yy = y + dy;
+                    if (xx < 0 || yy < 0 || xx >= w || yy >= h)
+                        continue;
+                    int64_t ix = gx[yy * w + xx], iy = gy[yy * w + xx];
+                    a += ix * ix;
+                    b += ix * iy;
+                    c += iy * iy;
+                }
+            // k=1/25. Exact integer score, bounded well inside signed 64 bits.
+            int64_t s = 25 * (a * c - b * b) - (a + c) * (a + c);
+            score[y * w + x] = s;
+            maximum = std::max(maximum, s);
+        }
+    if (maximum <= 0)
+        return;
+    for (int y = 2; y < h - 2; ++y)
+        for (int x = 2; x < w - 2; ++x) {
+            int64_t s = score[y * w + x];
+            // Shi response scales with contrast^2; Harris with contrast^4.
+            // Fixed relative threshold: 0.08 squared = 4/625.
+            if (s <= 0 || 625 * s < 4 * maximum)
+                continue;
+            bool peak = true;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if (score[(y + dy) * w + x + dx] > s)
+                        peak = false;
+            if (peak)
+                points.push_back({float(x), float(y)});
+        }
 }
-
-// A ring around a four-cell junction has four brightness transitions.
-// Unlike image-axis quadrants, this test does not assume horizontal edges.
-// Smoothing and minimum sector lengths reject isolated texture/noise responses.
-bool alternating_ring(const GrayImage& img, Point2f p, float radius) {
-    if (p.x < radius + 1 || p.y < radius + 1 || p.x >= img.w - radius - 1 || p.y >= img.h - radius - 1)
+static bool ring(const GrayImage& img, Point2f p, int radius) {
+    int cx = int(std::lround(p.x)), cy = int(std::lround(p.y));
+    if (cx < radius + 1 || cy < radius + 1 || cx >= img.w - radius - 1 || cy >= img.h - radius - 1)
         return false;
-    float values[32], smooth[32];
+    // Constant-offset ROMs, initialized once, not coordinate trig per candidate.
+    static const auto rom = []() {
+        std::array<std::array<std::array<int, 2>, 32>, 3> table{};
+        for (int r = 0; r < 3; ++r)
+            for (int k = 0; k < 32; ++k) {
+                double a = 2 * 3.14159265358979323846 * k / 32;
+                table[r][k] = {int(std::lround((4 + 2 * r) * std::cos(a))),
+                               int(std::lround((4 + 2 * r) * std::sin(a)))};
+            }
+        return table;
+    }();
+    int values[32], smooth[32], lo = 1020, hi = 0;
     for (int k = 0; k < 32; ++k) {
-        float a = 2 * pi * k / 32;
-        values[k] = float(img.get(int(std::lround(p.x + radius * std::cos(a))),
-                                  int(std::lround(p.y + radius * std::sin(a)))));
+        auto o = rom[(radius - 4) / 2][k];
+        values[k] = img.get(cx + o[0], cy + o[1]);
     }
-    float lo = 255, hi = 0;
     for (int k = 0; k < 32; ++k) {
-        smooth[k] = (values[(k + 31) % 32] + 2 * values[k] + values[(k + 1) % 32]) / 4;
+        smooth[k] = values[(k + 31) % 32] + 2 * values[k] + values[(k + 1) % 32];
         lo = std::min(lo, smooth[k]);
         hi = std::max(hi, smooth[k]);
     }
-    if (hi - lo < 20)
+    if (hi - lo < 80)
         return false;
-    float threshold = (hi + lo) * 0.5f;
-    std::vector<int> transitions;
-    float opposite_error = 0;
+    std::vector<int> changes;
+    int opposite = 0;
     for (int k = 0; k < 32; ++k) {
-        if ((smooth[k] > threshold) != (smooth[(k + 31) % 32] > threshold))
-            transitions.push_back(k);
-        opposite_error += std::fabs(smooth[k] - smooth[(k + 16) % 32]);
+        if ((2 * smooth[k] > hi + lo) != (2 * smooth[(k + 31) % 32] > hi + lo))
+            changes.push_back(k);
+        opposite += std::abs(smooth[k] - smooth[(k + 16) % 32]);
     }
-    if (transitions.size() != 4 || opposite_error > 32 * (hi - lo) * 0.28f)
+    if (changes.size() != 4 || 25 * opposite > 32 * (hi - lo) * 7)
         return false;
     for (int k = 0; k < 4; ++k) {
-        int length = (transitions[(k + 1) % 4] - transitions[k] + 32) % 32;
-        if (length < 3 || length > 13)
+        int n = (changes[(k + 1) % 4] - changes[k] + 32) % 32;
+        if (n < 3 || n > 13)
             return false;
     }
     return true;
@@ -77,7 +126,7 @@ ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
     if (!gray.data || gray.w < 16 || gray.h < 16 || rows < 2 || cols < 2 || rows > 100 || cols > 100)
         return info;
     std::vector<Point2f> candidates;
-    shi_tomasi_detect(gray, candidates, 0.08f, 3);
+    harris(gray, candidates);
     // Bound quadratic candidate work on unrelated, heavily textured inputs.
     if (candidates.size() > 12000 || candidates.size() < size_t(rows * cols))
         return info;
@@ -86,11 +135,7 @@ ChessboardInfo detect_native(const GrayImage& gray, int rows, int cols) {
     merge_duplicates(candidates, 3.0f);
     std::vector<Point2f> inner;
     for (size_t i = 0; i < candidates.size(); ++i) {
-        float spacing = nearest_distance(candidates, i);
-        float radius = std::clamp(spacing * 0.22f, 4.0f, 18.0f);
-        if (alternating_ring(gray, candidates[i], radius) &&
-            (alternating_ring(gray, candidates[i], radius * 0.75f) ||
-             alternating_ring(gray, candidates[i], radius * 1.25f)))
+        if (ring(gray, candidates[i], 6) && (ring(gray, candidates[i], 4) || ring(gray, candidates[i], 8)))
             inner.push_back(candidates[i]);
     }
     if (inner.size() < size_t(rows * cols))

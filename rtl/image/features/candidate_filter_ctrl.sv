@@ -1,32 +1,8 @@
 `timescale 1ns / 1ps
-//==============================================================================
-// candidate_filter_ctrl.sv — M3/M5 候选后处理主控（MERGE→SUBPIXEL→MERGE→NEAREST→RING）
-//------------------------------------------------------------------------------
-// 编排 detect_native 的候选段（M5 起 subpixel 真实接入）：
-//   NMS 候选（整数坐标流）→ 存 A（fp32）
-//   → MERGE(r=5)：读 A 写 B
-//   → SUBPIXEL：调 subpixel_ctrl（half_win=7），读 B 写 A（坐标亚像素精定位）
-//   → MERGE(r=3)：读 A 写 B
-//   → NEAREST：读 B，逐点 {spacing,radius}，radius 顺序写 radius RAM
-//   → RING：逐点 i 读 B 点 + radius RAM，对 ring_check 按
-//            pass0(r) && (passA(0.75r) || passB(1.25r)) 短路调用（C++ 语义），
-//            pass 点输出 inner 流（fp32 坐标）。
-//   → DONE（status 01）；候选 <MIN_CAND 或 >MAX_CAND → 失败（10/11）。
-//
-// 存储相位（A/B 双缓冲轮换）：
-//   S_CAP    phase=0：写 A（收候选）
-//   S_MERGE5 phase=1：读 A 写 B
-//   S_SUBPX  phase=0：读 B（subpixel 输入）写 A（subpixel 输出，先清写侧回卷）
-//   S_MERGE3 phase=1：读 A 写 B
-//   S_NEAR/RING phase=0：读 B（merge3 结果）
-//
-// 存储共享：candidate_store 单读口由 merge / nearest / RING / subpixel 四方
-//   时复用（4 选 1 多路，阶段互斥）；gray 读口由 ring_check / subpixel 复用
-//   （2 选 1，阶段互斥）。
-//
-// 对拍探针：ring 阶段每点输出 d0 中间量 + 综合 pass（m3 向量用）；
-//   m5 全链对拍见 tb_filter（merge5/subpixel/merge3 输出流 + inner 流）。
-//==============================================================================
+// Candidate pipeline: capture -> merge(5) -> subpixel(7) -> merge(3)
+// -> fixed integer ring(6) AND (ring(4) OR ring(8)). Merge and subpixel
+// time-share the candidate store; the ring reads one coordinate at a time.
+// No nearest-neighbor radius search or per-candidate radius RAM.
 module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter DDR_CANDIDATES=0, parameter VARIABLE_SCALE=0, parameter SHARED_SUBPIXEL=0,
     parameter IMG_W       = 1280,
     parameter IMG_H       = 720,
@@ -96,8 +72,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
 
     localparam C_R5    = 32'h40a00000;   // 5.0f（merge5）
     localparam C_R3    = 32'h40400000;   // 3.0f（merge3）
-    localparam C_R075  = 32'h3f400000;   // 0.75f
-    localparam C_R125  = 32'h3fa00000;   // 1.25f
 
     //--------------------------------------------------------------------
     // 主阶段状态
@@ -107,7 +81,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     localparam S_MERGE5 = 4'd2;   // merge 读 A 写 B（phase=1）
     localparam S_SUBPX  = 4'd3;   // subpixel：读 B 写 A（phase=0），half_win=7
     localparam S_MERGE3 = 4'd4;   // merge 读 A 写 B（phase=1）
-    localparam S_NEAR   = 4'd5;   // nearest 读 B → radius RAM
     localparam S_RING   = 4'd6;   // 逐点 ring 判定（读 B）
     localparam S_DONE   = 4'd7;
     reg [3:0] state;
@@ -120,8 +93,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     // ring 子状态
     localparam RG_RDPT = 4'd0;   // 发读请求（store + radram）
     localparam RG_WPT  = 4'd1;   // 锁存点 + r0
-    localparam RG_MUL  = 4'd2;   // 启动 mul(r0, 0.75/1.25)
-    localparam RG_MULW = 4'd3;   // 等 mul 结果
     localparam RG_CALL = 4'd4;   // 喂 ring 一次调用
     localparam RG_WAIT = 4'd5;   // 等 ring 结果 → 短路判定
     localparam RG_END  = 4'd6;   // 输出 probe（+inner）
@@ -133,11 +104,10 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     //--------------------------------------------------------------------
     reg [15:0] cnt_cand;
     reg [15:0] N_reg;            // 当前列表点数
-    reg [15:0] near_i;           // NEAREST 已写 radius RAM 数
     reg [15:0] ring_i;           // RING 当前点索引
-    reg        m5_started, m3_started, near_started;
-    reg [1:0]  rsel;             // 0=r0 1=0.75r 2=1.25r
-    reg [31:0] ring_x_reg, ring_y_reg, r0_reg, r075_reg, r125_reg;
+    reg        m5_started, m3_started;
+    reg [1:0]  rsel;             // 0=6 pixels, 1=4 pixels, 2=8 pixels
+    reg [31:0] ring_x_reg, ring_y_reg;
     reg        rg_pass;
     reg [31:0] d0_hi, d0_lo, d0_thr, d0_ntrans, d0_opp_err;
     reg        d0_sector_ok;
@@ -154,20 +124,12 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     wire        merge_busy, merge_done;
     wire        merge_rd_en;
     wire [N_ADDR_W-1:0] merge_rd_addr;
-    wire        near_out_valid, near_out_ready;
-    wire [31:0] near_out_radius;
-    wire        near_busy, near_done;
-    wire        near_rd_en;
-    wire [N_ADDR_W-1:0] near_rd_addr;
     wire        ring_in_ready, ring_out_valid;
     wire [31:0] ring_out_hi, ring_out_lo, ring_out_thr, ring_out_ntrans;
     wire [31:0] ring_out_opp_err;
     wire        ring_out_sector_ok, ring_out_pass;
-    wire        mul_rdy, mul_v;
-    wire [31:0] mul_r;
     wire        c2fx_v, c2fy_v, c2fx_rdy, c2fy_rdy;
     wire [31:0] c2fx_r, c2fy_r;
-    wire [31:0] rad_rd_data;
     // subpixel_ctrl 互连
     wire        spx_busy, spx_done;
     wire        spx_pt_rd_en;
@@ -185,24 +147,19 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     wire        phase_sel, cand_fire;
     wire        spx_start, store_clr;
     wire [31:0] merge_radius;
-    wire        merge_start, near_start;
-    wire        rad_wr_en, rad_rd_en;
-    wire [N_ADDR_W-1:0] rad_wr_addr, rad_rd_addr;
-    wire [31:0] rad_wr_data;
-    wire        ring_fire, mul_fire;
-    wire [31:0] ring_in_x, ring_in_y, ring_in_radius, mul_b;
+    wire        merge_start;
+    wire        ring_fire;
+    wire [31:0] ring_in_x, ring_in_y, ring_in_radius;
 
     // 阶段互斥的 store 读口多路（subpixel / merge / nearest / RING）
     wire ctrl_rd_en = (rg_sub == RG_RDPT);
     wire [N_ADDR_W-1:0] ctrl_rd_addr = ring_i[N_ADDR_W-1:0];
     wire        store_rd_en = (state == S_SUBPX) ? spx_pt_rd_en :
                               (state == S_RING) ? ctrl_rd_en :
-                              (state == S_NEAR) ? near_rd_en :
                               (((state == S_MERGE5) || (state == S_MERGE3)) && merge_rd_en);
     wire [N_ADDR_W-1:0] store_rd_addr =
         (state == S_SUBPX) ? spx_pt_rd_addr :
-        (state == S_RING) ? ctrl_rd_addr :
-        (state == S_NEAR) ? near_rd_addr : merge_rd_addr;
+        (state == S_RING) ? ctrl_rd_addr : merge_rd_addr;
 
     // 阶段互斥的 gray 读口多路（subpixel / ring_check）；端口已声明，仅 assign 驱动
     assign gray_rd_en = (state == S_SUBPX) ? spx_gray_rd_en : ring_gray_rd_en;
@@ -241,24 +198,18 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
         .out_r (c2fy_r)
     );
 
-    // MERGE5/MERGE3 and NEAREST are mutually exclusive. Both children
-    // drain their outstanding distances before reporting done, so switching
-    // this owner never reroutes an in-flight result. Ring/subpixel keep their
-    // own arithmetic; no simultaneous computation is forcibly serialized.
-    wire md_valid,nd_valid,md_ready,nd_ready,md_rvalid,nd_rvalid;
-    wire md_rready,nd_rready;
-    wire [31:0] md_x,md_y,nd_x,nd_y,distance_result;
+    // One distance engine serves both merge passes; ring uses integers.
+    wire md_valid,md_ready,md_rvalid;
+    wire md_rready;
+    wire [31:0] md_x,md_y,distance_result;
     wire distance_ready,distance_valid;
     wire merge_owner=(state==S_MERGE5 || state==S_MERGE3);
-    wire near_owner=(state==S_NEAR);
     assign md_ready=merge_owner && distance_ready;
-    assign nd_ready=near_owner && distance_ready;
     assign md_rvalid=merge_owner && distance_valid;
-    assign nd_rvalid=near_owner && distance_valid;
     fp32_hypot #(.USE_CE(USE_CE)) shared_distance(.ce(ce),.clk(clk),.rst_n(rst_n),
-        .in_valid((merge_owner && md_valid)||(near_owner && nd_valid)),
-        .in_ready(distance_ready),.in_a(near_owner?nd_x:md_x),.in_b(near_owner?nd_y:md_y),
-        .out_valid(distance_valid),.out_ready((merge_owner&&md_rready)||(near_owner&&nd_rready)),
+        .in_valid(merge_owner && md_valid),
+        .in_ready(distance_ready),.in_a(md_x),.in_b(md_y),
+        .out_valid(distance_valid),.out_ready(merge_owner&&md_rready),
         .out_r(distance_result));
 
     candidate_merge #(.SHARED_DISTANCE(1),.USE_CE(USE_CE),.N_ADDR_W(N_ADDR_W)) u_merge (.ce(ce),
@@ -275,34 +226,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
         .res_valid (merge_res_valid), .res_ready (merge_res_ready),
         .res_x (merge_res_x), .res_y (merge_res_y),
         .res_count ()
-    );
-
-    nearest_spacing #(.SHARED_DISTANCE(1),.USE_CE(USE_CE),.N_ADDR_W(N_ADDR_W)) u_near (.ce(ce),
-
-        .distance_valid(nd_valid),.distance_ready(nd_ready),
-        .distance_x(nd_x),.distance_y(nd_y),
-        .distance_result_valid(nd_rvalid),.distance_result_ready(nd_rready),
-        .distance_result(distance_result),
-        .clk (clk), .rst_n (rst_n),
-        .start (near_start), .busy (near_busy), .done (near_done),
-        .n_in (N_reg),
-        .rd_en (near_rd_en), .rd_addr (near_rd_addr),
-        .rd_x (store_rd_x), .rd_y (store_rd_y),
-        .out_valid (near_out_valid), .out_ready (near_out_ready),
-        .out_spacing (), .out_radius (near_out_radius)
-    );
-
-    dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(32), .ADDR_WIDTH(N_ADDR_W)) u_radram (.ce(ce),
-        .clk (clk), .rst_n (rst_n),
-        .wr_en (rad_wr_en), .wr_addr (rad_wr_addr), .wr_data (rad_wr_data),
-        .rd_en (rad_rd_en), .rd_addr (rad_rd_addr), .rd_data (rad_rd_data)
-    );
-
-    fp32_mul #(.USE_CE(USE_CE)) u_mul (.ce(ce),
-        .clk (clk), .rst_n (rst_n),
-        .in_valid (mul_fire), .in_ready (mul_rdy),
-        .in_a (r0_reg), .in_b (mul_b),
-        .out_valid (mul_v), .out_ready (1'b1), .out_r (mul_r)
     );
 
     ring_check #(.VARIABLE_SCALE(VARIABLE_SCALE),.USE_CE(USE_CE),
@@ -386,20 +309,11 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                          ((state == S_MERGE3) && !m3_started);
     assign merge_res_ready = (((state == S_MERGE5) || (state == S_MERGE3)) &&
                               store_wr_ready);
-    assign near_start = (state == S_NEAR) && !near_started;
-    assign near_out_ready = (state == S_NEAR);
-    assign rad_wr_en = (state == S_NEAR) && near_out_valid && near_out_ready;
-    assign rad_wr_addr = near_i[N_ADDR_W-1:0];
-    assign rad_wr_data = near_out_radius;
-    assign rad_rd_en = (state == S_RING) && (rg_sub == RG_RDPT);
-    assign rad_rd_addr = ring_i[N_ADDR_W-1:0];
     // ring 调用
     assign ring_fire = (state == S_RING) && (rg_sub == RG_CALL) && ring_in_ready;
     assign ring_in_x  = ring_x_reg;
     assign ring_in_y  = ring_y_reg;
-    assign ring_in_radius = (rsel == 2'd0) ? r0_reg : (rsel == 2'd1) ? r075_reg : r125_reg;
-    assign mul_fire = (state == S_RING) && (rg_sub == RG_MUL) && mul_rdy;
-    assign mul_b = (rsel == 2'd1) ? C_R075 : C_R125;
+    assign ring_in_radius = (rsel == 2'd0) ? 32'h40c00000 : (rsel == 2'd1) ? 32'h40800000 : 32'h41000000;
     assign cand_ready = (state == S_CAP) && c2fx_rdy && c2fy_rdy &&
                         (cnt_cand <= MAX_CAND[15:0]);
 
@@ -469,13 +383,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                 S_MERGE3: begin
                     if (m3_started && merge_done && !merge_busy) begin
                         N_reg <= store_count;   // cnt_b（merge3 写 B）
-                        state <= S_NEAR;
-                    end
-                end
-
-                S_NEAR: begin
-                    if (near_started && near_done && !near_busy) begin
-                        state  <= S_RING;
+                        state <= S_RING;
                     end
                 end
 
@@ -507,9 +415,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
             ring_i       <= 16'd0;
             ring_x_reg   <= 32'd0;
             ring_y_reg   <= 32'd0;
-            r0_reg       <= 32'd0;
-            r075_reg     <= 32'd0;
-            r125_reg     <= 32'd0;
             rsel         <= 2'd0;
             rg_pass      <= 1'b0;
             d0_hi        <= 32'd0;
@@ -529,7 +434,8 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
             probe_valid <= 1'b0;
             inner_valid <= 1'b0;
             // Keep all ring-substate writes in this clocked process.
-            if (state == S_NEAR && near_started && near_done && !near_busy) begin
+            if (state == S_MERGE3 && m3_started && merge_done && !merge_busy) begin
+                ring_i <= 0;
                 rg_sub <= RG_RDPT;
                 rsel <= 2'd0;
             end
@@ -546,7 +452,6 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                     RG_WPT: begin
                         ring_x_reg <= store_rd_x;
                         ring_y_reg <= store_rd_y;
-                        r0_reg     <= rad_rd_data;
                         rsel       <= 2'd0;
                         rg_sub     <= RG_CALL;
                     end
@@ -565,7 +470,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                                 d0_sector_ok <= ring_out_sector_ok;
                                 if (ring_out_pass) begin
                                     rsel   <= 2'd1;
-                                    rg_sub <= RG_MUL;
+                                    rg_sub <= RG_CALL;
                                 end else begin
                                     rg_pass   <= 1'b0;
                                     inner_arm <= 1'b0;
@@ -578,27 +483,13 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                                     rg_sub    <= RG_END;
                                 end else begin
                                     rsel   <= 2'd2;
-                                    rg_sub <= RG_MUL;
+                                    rg_sub <= RG_CALL;
                                 end
                             end else begin
                                 rg_pass   <= ring_out_pass;
                                 inner_arm <= ring_out_pass;
                                 rg_sub    <= RG_END;
                             end
-                        end
-                    end
-                    RG_MUL: begin
-                        if (mul_rdy) begin
-                            rg_sub <= RG_MULW;
-                        end
-                    end
-                    RG_MULW: begin
-                        if (mul_v) begin
-                            if (rsel == 2'd1)
-                                r075_reg <= mul_r;
-                            else
-                                r125_reg <= mul_r;
-                            rg_sub <= RG_CALL;
                         end
                     end
                     RG_END: begin
@@ -647,26 +538,13 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
         if (!rst_n) begin
             m5_started   <= 1'b0;
             m3_started   <= 1'b0;
-            near_started <= 1'b0;
         end else if(!USE_CE || ce) begin begin
             if (state == S_MERGE5) m5_started <= 1'b1;
             if (state == S_MERGE3) m3_started <= 1'b1;
-            if (state == S_NEAR)   near_started <= 1'b1;
             if (state == S_SUBPX)  m5_started <= 1'b0;
-            if (state == S_NEAR)   m3_started <= 1'b0;   // M8.1：m3_started 从不清零会残留
+            if (state == S_RING)   m3_started <= 1'b0;   // M8.1：m3_started 从不清零会残留
                 // 到下一帧——帧 2 的 S_MERGE3 merge_start=0、merge3 永不启动，filter 卡死
-            if (state == S_NEAR && near_done && !near_busy)
-                near_started <= 1'b0;
         end
-    end // synchronous clock enable
-    end
-
-    always @(posedge clk) begin
-        if (!rst_n)
-            near_i <= 16'd0;
-        else if(!USE_CE || ce) begin if (state == S_NEAR)
-            if (near_out_valid && near_out_ready)
-                near_i <= near_i + 16'd1;
     end // synchronous clock enable
     end
 

@@ -12,9 +12,9 @@ struct CameraPose {
     std::array<f64, 3> translation{};
 };
 
-struct CameraCalibrationOptions {
-    int max_iterations = 150; // per optimization stage
-    bool estimate_k3 = false; // keep the highest radial term fixed for sparse data
+struct CalibrationWork {
+    int jacobians = 0, residual_passes = 0, linear_solves = 0;
+    int max_active = 0;
 };
 
 struct CameraCalibrationResult {
@@ -26,10 +26,9 @@ struct CameraCalibrationResult {
     int iterations = 0;
     bool converged = false;
     bool weak_geometry = false;
-    bool k3_estimated = false;
     std::string message;
+    CalibrationWork work; // LM work counters for profiling
 };
 
 CameraCalibrationResult calibrate_camera(const std::vector<std::vector<Point2f>>& image_points, int width,
-                                         int height, int rows, int cols, f64 square_size = 1.0,
-                                         const CameraCalibrationOptions& options = {});
+                                         int height, int rows, int cols, f64 square_size = 1.0);

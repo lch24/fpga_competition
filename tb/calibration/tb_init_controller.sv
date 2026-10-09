@@ -35,7 +35,6 @@ module tb_init_controller;
         .rd_en(read_en),.rd_view_id(read_view),.rd_point_index(read_index),.rd_valid(read_valid),.rd_x_fp32(read_x),.rd_y_fp32(read_y));
     // 定向错误注入保留真实子核计算与握手，只覆盖完成状态，验证父模块的跳过规则。
     always @(negedge clk) begin
-        if(mode==1)force dut.z_status=8'd4;else release dut.z_status;
         if(mode==3 || (mode==2 && dut.seed==2))force dut.p_status=8'd4;else release dut.p_status;
     end
     task check;input condition;input [511:0] label;
@@ -70,7 +69,12 @@ module tb_init_controller;
     end
     task load_vector;
         begin rc=$fscanf(fd,"%d %d %d %d %d %h %h %h %h %h %h %d\n",expected_status,width,height,mode,expected_count,points,
-            expected[0],expected[1],expected[2],expected[3],expected[4],expected_mask);end
+            expected[0],expected[1],expected[2],expected[3],expected[4],expected_mask);
+            if(rc==12)begin
+                if(mode==2 || mode==3)begin expected_status=4;expected_count=0;expected_mask=0;end
+                else if(expected_status==0)begin expected_count=1;expected_mask=4;end
+            end
+        end
     endtask
     task reset_dut;
         begin @(negedge clk);monitor=0;rst_n=0;cmd_valid=0;rsp_ready=0;seed_ready=0;corner_valid=0;view_rsp_valid=0;clear=0;mode=0;

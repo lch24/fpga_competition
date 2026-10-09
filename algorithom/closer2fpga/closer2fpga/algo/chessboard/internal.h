@@ -1,6 +1,5 @@
 #pragma once
 #include "../chessboard.h"
-#include "../shi_tomasi.h"
 #include "../subpixel.h"
 #include <cmath>
 

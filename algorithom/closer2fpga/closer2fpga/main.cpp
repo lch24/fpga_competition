@@ -21,7 +21,6 @@ int main() {
     };
     constexpr int rows = 5, cols = 8;
     constexpr double square_size = 1.0;
-    const CameraCalibrationOptions options{}; // Matches RTL: 150 iterations/stage, k3 fixed.
     const char* export_root = "E:/fpga/algorithom/closer2fpga/exports";
     std::vector<CalibrationExportView> export_views(3);
     CameraCalibrationResult calibration{};
@@ -78,14 +77,14 @@ int main() {
     if (failures == 0) {
         // The square's physical length is unnecessary for intrinsics/distortion.
         // With size=1, reported translations are in board-square units.
-        calibration = calibrate_camera(image_points, width, height, rows, cols, square_size, options);
+        calibration = calibrate_camera(image_points, width, height, rows, cols, square_size);
         calibration_attempted = true;
     }
     // Export the exact observed FP32 coordinates and THIS invocation's result,
     // before remapping/window display. Failed/skipped calibrations are recorded too.
     try {
         const auto exported = export_calibration_run(export_root, export_views, image_points,
-            width, height, rows, cols, square_size, options,
+            width, height, rows, cols, square_size,
             calibration_attempted ? &calibration : nullptr);
         std::printf("\nCalibration export: %s\n", exported.string().c_str());
         std::printf("Files: corners.csv, calibration.json, COMPLETE.txt\n");

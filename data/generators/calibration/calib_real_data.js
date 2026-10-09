@@ -75,20 +75,12 @@ if(mode==='prepare') {
  metricNames.forEach((n,i)=>compare(n,metrics[i],rawMetrics[i],8,i<views+2?2e-7:2e-5));
  const log=fs.readFileSync(path.join(build,'calib_top_results.txt'),'utf8');
  const stages=[...log.matchAll(/^LM seed=(\d+) stage=(\d+) cycles=(\d+) cost=(\S+) converged=(\d+) accepted=(\d+) status=(\d+)$/gm)];
- assert.ok(stages.length>=3&&stages.length<=15&&stages.length%3===0,'missing LM stages');
- let best=null,total=0,lastSeed=-1;
- stages.forEach((m,i)=>{
-  const seed=+m[1],stage=+m[2];assert.equal(stage,i%3);assert.equal(+m[7],0);
-  if(stage===0){assert.ok(seed>lastSeed&&seed<=4);lastSeed=seed;total=0;}else assert.equal(seed,lastSeed);
-  total+=+m[6];
-  // A numerically unusable seed may legitimately return +Inf with status=OK;
-  // calib_top skips it while continuing the other seeds.
-  const cost=/^(?:\+?inf(?:inity)?|1\.#inf)$/i.test(m[4])?Infinity:Number(m[4]);
-  assert.ok(!Number.isNaN(cost)&&cost>=0,'invalid cost log');
-  if(stage===2&&Number.isFinite(cost)&&(!best||cost<best.cost))best={seed,cost,total};
- });
+ assert.equal(stages.length,1,'single-seed RTL must issue one LM job');
+ const m=stages[0];assert.equal(+m[1],2);assert.equal(+m[2],2);assert.equal(+m[7],0);
+ const cost=Number(m[4]);assert.ok(Number.isFinite(cost)&&cost>=0,'invalid cost log');
+ const best={seed:2,cost,total:+m[6]};
  const final=log.match(/^case=0 cycles=(\d+) reads=(\d+) seeds=(\d+) lm_calls=(\d+) status=(\d+) seed=(\d+) steps=(\d+)$/m);
- assert.ok(final,'no completed task');assert.equal(+final[5],0);assert.equal(+final[3],stages.length/3);assert.equal(+final[4],stages.length);
+ assert.ok(final,'no completed task');assert.equal(+final[5],0);assert.equal(+final[3],1);assert.equal(+final[4],stages.length);
  assert.ok(best,'no finite best result');assert.equal(+final[6],best.seed);assert.equal(+final[7],best.total);
  const summary=log.match(/^RESULT cases=1 errors=(\d+)$/m);assert.ok(summary,'simulation not completed');
  if(+summary[1]!==0)++failures;

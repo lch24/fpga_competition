@@ -11,7 +11,7 @@ set failures [examine -radix unsigned /tb_calib_top/errors]
 set cases [examine -radix unsigned /tb_calib_top/cases]
 set control [examine -radix unsigned /tb_calib_top/CONTROL_ONLY]
 set real_input [examine -radix unsigned /tb_calib_top/REAL_INPUT]
-set expected [expr {$real_input ? 1 : ($control ? 45 : 2)}]
+set expected [expr {$real_input ? 1 : ($control ? 40 : 2)}]
 if {$completed != 1 || $failures != 0 || $cases != $expected} {echo "FAIL done=$completed errors=$failures cases=$cases expected=$expected";quit -code 1 -f}
 echo "CALIB_TOP_PASS control=$control cases=$cases errors=$failures"
 quit -code 0 -f

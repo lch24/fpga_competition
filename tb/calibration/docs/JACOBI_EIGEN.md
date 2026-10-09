@@ -1,6 +1,6 @@
 # jacobi_eigen 实现与验证
 
-实现：[jacobi_eigen.v](../../../rtl/compute/linalg/jacobi_eigen.v)。测试：[tb_jacobi_eigen.sv](../../compute/tb_jacobi_eigen.sv)。参考算法：[C++ symmetric_eigen.cpp](../../../algorithom/closer2fpga/closer2fpga/common/symmetric_eigen.cpp)。
+实现：[jacobi_eigen.v](../../../rtl/compute/linalg/jacobi_eigen.v)。测试：[tb_jacobi_eigen.sv](../../compute/tb_jacobi_eigen.sv)。旧 C++ 特征值参考已移除；此 RTL 模块及已有测试向量仍保留。
 
 支持6×6和9×9实对称FP64矩阵，分别用于Zhang初始化和DLT。输出最小特征向量以及最小、次小、最大特征值。它不构造DLT/Zhang约束矩阵，也不判断棋盘几何是否退化。
 

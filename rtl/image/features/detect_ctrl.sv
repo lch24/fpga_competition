@@ -7,7 +7,7 @@
 //   层 d（generate 槽位，d=0..DEPTH-1，W_d=W0>>d, H_d=H0>>d）：
 //     gray_reader（灰度 RAM 光栅读器，registered 读、2 拍/像素、反压安全）
 //       → window3x3(CH=1,DW=8,CLAMP=1) → sobel_core → tensor_core
-//       → tensor_window_sum → s32_to_f32×3 → min_eigen_core
+//       → tensor_window_sum → harris_response (integer, shared multiplier)
 //       → resp sync_fifo → shi_tomasi_ctrl(d)（thr 由 detect_ctrl 共享 rmax 链）
 //       → cand 流 → candidate_filter_ctrl(d)（gray_rd 相对 base_d）
 //       → inner 流 → grid_order_ctrl(d) → 40 点流 → corner RAM_d（写口 1）
@@ -29,7 +29,7 @@
 //
 //   thr 计算：对喂给 shi_tomasi_ctrl(d) 的 resp 流（fifo out 握手）逐拍 max
 //     （位变换无符号比较，与 response_store_max 同算法）；每层 native 收满
-//     PIXELS_d 个后 fp32_mul(rmax, 0x3DA3D70A) 闩存 thr（活动层互斥，共享一套）。
+//     PIXELS_d 个后 fp32_mul(rmax, 0x3BD1B717) 闩存 thr（活动层互斥，共享一套）。
 //
 //   gray_rd 汇总：所有槽位 gray_rd 经 2 级选通（活动层 + 活动阶段：
 //     native 期间 reader / filter 互斥，refine 期间 refine），
@@ -172,7 +172,7 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
     //--------------------------------------------------------------------
     localparam [31:0] C_2F   = 32'h40000000;   // 2.0f（map x2）
     localparam [31:0] C_HALF = 32'h3F000000;   // 0.5f（map +0.5）
-    localparam [31:0] C_008  = 32'h3DA3D70A;   // 0.08f（thr 链）
+    localparam [31:0] C_008  = 32'h3BD1B717;   // 0.0064f（thr 链）
     localparam [31:0] NEGINF = 32'hFF800000;   // -inf（rmax 初值）
 
     // 层尺寸（可折叠常数函数）
@@ -485,7 +485,6 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
             wire        sv_, srdy; wire [15:0] sgx, sgy; wire [10:0] sx, sy;
             wire        tv, trdy;  wire [31:0] txx, txy, tyy; wire [10:0] tx, ty;
             wire        av, mrdy;  wire [31:0] s_a, s_b_, s_c;
-            wire        fa_v, fb_v, fc_v; wire [31:0] fa_r, fb_r, fc_r;
             wire        me_v, me_rdy; wire [31:0] me_resp;
             wire        fv, frdy;  wire [31:0] fd;
             //---- shi→filter→order→refine ----
@@ -547,25 +546,12 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
                 .out_valid(av), .out_ready(mrdy), .out_a(s_a), .out_b(s_b_),
                 .out_c(s_c), .out_x(), .out_y()
             );
-            s32_to_f32 #(.USE_CE(USE_CE)) u_fa (.ce(ce),
-                .clk(clk), .rst_n(front_rst_n), .in_valid(av), .in_ready(), .in_data(s_a),
-                .out_valid(fa_v), .out_ready(mrdy), .out_r(fa_r)
-            );
-            s32_to_f32 #(.USE_CE(USE_CE)) u_fb (.ce(ce),
-                .clk(clk), .rst_n(front_rst_n), .in_valid(av), .in_ready(), .in_data(s_b_),
-                .out_valid(fb_v), .out_ready(mrdy), .out_r(fb_r)
-            );
-            s32_to_f32 #(.USE_CE(USE_CE)) u_fc (.ce(ce),
-                .clk(clk), .rst_n(front_rst_n), .in_valid(av), .in_ready(), .in_data(s_c),
-                .out_valid(fc_v), .out_ready(mrdy), .out_r(fc_r)
-            );
-            min_eigen_core #(.USE_CE(USE_CE)) u_me (.ce(ce),
+            harris_response #(.USE_CE(USE_CE)) u_harris (.ce(ce),
                 .clk(clk), .rst_n(front_rst_n),
-                .in_valid(fa_v), .in_ready(mrdy),
-                .in_a(fa_r), .in_b(fb_r), .in_c(fc_r),
+                .in_valid(av), .in_ready(mrdy),
+                .in_a(s_a), .in_b(s_b_), .in_c(s_c),
                 .out_valid(me_v), .out_ready(me_rdy), .out_resp(me_resp)
             );
-            // me → ctrl 桥接 FIFO（同 tb_resp 接线：out_ready 反驱 me）
             sync_fifo #(.USE_CE(USE_CE),.DATA_WIDTH(32), .ADDR_WIDTH(5)) u_fifo (.ce(ce),
                 .clk(clk), .rst_n(front_rst_n),
                 .in_valid(me_v), .in_ready(me_rdy), .in_data(me_resp),
@@ -760,7 +746,7 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
     assign gray_rd_en = |gray_ens;
 
     //--------------------------------------------------------------------
-    // thr 链：fp32_mul(rmax, 0.08f) 闩存 thr
+    // thr 链：fp32_mul(rmax, 0.0064f) 闩存 thr
     //--------------------------------------------------------------------
     fp32_mul #(.USE_CE(USE_CE)) u_thrmul (.ce(ce),
         .clk(clk), .rst_n(rst_n),

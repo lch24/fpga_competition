@@ -71,6 +71,7 @@ rtl/image/features/subpixel_ctrl.sv
 rtl/image/kernels/bgr_to_gray.v
 rtl/image/kernels/bilinear_core.v
 rtl/image/kernels/bilinear_rgb565.v
+rtl/image/kernels/harris_response.v
 rtl/image/kernels/min_eigen_core.v
 rtl/image/kernels/sobel_core.v
 rtl/image/kernels/tensor_core.v
@@ -86,6 +87,7 @@ rtl/image/remap/output_writer.v
 rtl/image/remap/sample_coord.v
 rtl/memory/ddr/ddr_service.v
 rtl/memory/ddr/hmic_ddr_adapter.v
+rtl/memory/ddr/vision_clock_bridge.v
 rtl/memory/image/byte_packer.v
 rtl/memory/image/ddr_port_adapter.v
 rtl/memory/image/ddr_port_arbiter.v

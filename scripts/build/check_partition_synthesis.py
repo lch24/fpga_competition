@@ -1,5 +1,6 @@
 """Isolated PDS synthesis diagnostics with process-tree memory and time limits.
 Leaves board project and production RTL untouched; writes build/system only.
+Optional --constraints runs timing with a copied FDC in the isolated project.
 """
 import argparse
 import ctypes
@@ -145,6 +146,11 @@ endmodule
         wrapper=case/'wrapper.v'
         wrapper.write_text(header+'\nddr_service #(.CLIENTS(3)) dut(.*);\nendmodule\n')
         script.append(f'add_design -verilog {quote(wrapper)}')
+    if args.constraints:
+        constraint=case/'probe.fdc'
+        shutil.copy2(args.constraints,constraint)
+        script.append(f'add_constraint {quote(constraint)}')
+
     includes = [case / 'source' / p for p in ('rtl/include', 'rtl/compute/float', 'rtl/include')]
     script += ['set_option include_path [list ' + ' '.join(map(quote, includes)) + '] [get_filesets design_1]',
                f'compile -top_module {top} -fsm_compiler FALSE']
@@ -236,6 +242,7 @@ if __name__ == '__main__':
     parser.add_argument('--resource-sharing', choices=['default','true','false'], default='default')
     parser.add_argument('--partition', action='store_true')
     parser.add_argument('--extra-source', nargs='*', default=[])
+    parser.add_argument('--constraints', type=Path)
     args = parser.parse_args()
     batch = ROOT / 'build/system' / ('partition_pds_' + str(int(time.time())))
     batch.mkdir(parents=True)
@@ -247,3 +254,6 @@ if __name__ == '__main__':
         print('START ' + top, flush=True)
         results.append(run_one(top, batch, args))
         (batch / 'results.json').write_text(json.dumps(results, indent=2))
+
+    if any(result["status"] != "PASS" for result in results):
+        raise SystemExit(1)

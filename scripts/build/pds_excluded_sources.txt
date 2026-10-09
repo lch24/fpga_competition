@@ -1,0 +1,16 @@
+# Standalone/reference modules not instantiated by calibrated_view_top.
+rtl/compute/float/stream/fp32_sqrt.v
+rtl/control/calibration/init/zhang.v
+rtl/control/frame/camera_system_top.v
+rtl/control/frame/frame_manager.v
+rtl/image/features/gray_scan.v
+rtl/image/features/nearest_spacing.sv
+rtl/image/kernels/bgr_to_gray.v
+rtl/image/kernels/min_eigen_core.v
+rtl/image/remap/map_build_ctrl.v
+rtl/include/lround_pkg.sv
+rtl/memory/image/byte_packer.v
+rtl/memory/parameters/camera_param_store.v
+rtl/top/vision_camera_top.v
+rtl/video/dma/capture_dma.v
+rtl/video/dma/display_dma.v

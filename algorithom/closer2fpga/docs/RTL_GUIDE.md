@@ -47,7 +47,7 @@ flowchart LR
 | `algo/calibration/lm.cpp`                | 数值雅可比、法方程、阻尼搜索          | 多层迭代状态机与矩阵 RAM                  |
 | `algo/calibration/report.cpp`            | 参数转换、误差与映射有效性检查        | 归约/网格扫描、结果提交                   |
 | `common/math3.*`                         | 三维点积、叉积、矩阵乘、旋转转换      | 定长运算可展开；也可复用 MAC 串行执行     |
-| `common/symmetric_eigen.*`、`matrix.*` | Jacobi 特征分解、高斯消元             | 有读后写依赖的迭代运算单元                |
+| `common/math3.*`、`matrix.*` | 旋转矩阵、高斯消元             | 有读后写依赖的迭代运算单元                |
 | `algo/remap_table.cpp`                   | 输出整数坐标 → 源浮点坐标表          | 栅格扫描 + 畸变运算流水                   |
 | `algo/undistort.cpp`                     | 查表、边界、四点读取、插值、写回      | 访存控制 + 插值流水                       |
 | `main.cpp`、`desktop/`                 | 文件读取、三图流程、绘制/窗口         | 桌面验证层，不是 RTL 参考计算核           |

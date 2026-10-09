@@ -68,19 +68,22 @@ module calibrated_view_top#(
 localparam WIDTH=1280,HEIGHT=720;
 localparam [31:0] RAW_BASE=0,DST_BASE=32'h01000000;
 localparam TH_1S=33000000;
-wire cfg_clk,clk_25M,locked,init_over_rx,initial_en,core_clk;
+wire cfg_clk,clk_25M,locked,init_over_rx,initial_en,core_clk,clk_125Mhz;
 wire pll_lock,phy_pll_lock,gpll_lock,rst_gpll_lock,ddrphy_cpd_lock;
 reg [15:0] rstn_1ms=0;reg [26:0] cnt;
 wire board_rst_n,core_rst_n,pixel_rst_n,camera_rst_n;
+wire algorithm_clk,algorithm_locked,algorithm_rst_n;
+algorithm_clock algorithm_clock_gen(.clkin(clk_125Mhz),.clkout(algorithm_clk),.locked(algorithm_locked));
+reset_sync ar(.clk(algorithm_clk),.arst_n(rstn_out&&ddr_init_done&&algorithm_locked),.rst_n(algorithm_rst_n));
 reset_sync br(.clk(sys_clk),.arst_n(locked),.rst_n(board_rst_n));
-reset_sync cr(.clk(core_clk),.arst_n(rstn_out&&ddr_init_done),.rst_n(core_rst_n));
-reset_sync pr(.clk(pix_clk),.arst_n(rstn_out&&ddr_init_done),.rst_n(pixel_rst_n));
+reset_sync cr(.clk(core_clk),.arst_n(rstn_out&&ddr_init_done&&algorithm_locked),.rst_n(core_rst_n));
+reset_sync pr(.clk(pix_clk),.arst_n(rstn_out&&ddr_init_done&&algorithm_locked),.rst_n(pixel_rst_n));
 wire cam_clk=CAMERA_SELECT==1?cmos1_pclk:cmos2_pclk;
 wire cam_vs=CAMERA_SELECT==1?cmos1_vsync:cmos2_vsync;
 wire cam_href=CAMERA_SELECT==1?cmos1_href:cmos2_href;
 wire [7:0] cam_data=CAMERA_SELECT==1?cmos1_data:cmos2_data;
 wire cam_configured=CAMERA_SELECT==1?cmos_init_done[0]:cmos_init_done[1];
-reset_sync camr(.clk(cam_clk),.arst_n(rstn_out&&ddr_init_done),.rst_n(camera_rst_n));
+reset_sync camr(.clk(cam_clk),.arst_n(rstn_out&&ddr_init_done&&algorithm_locked),.rst_n(camera_rst_n));
 reg [1:0] ready_sync /* synthesis PAP_ASYNC_REG=1 */;
 always @(posedge core_clk or negedge core_rst_n)
  if(!core_rst_n)ready_sync<=0;else ready_sync<={ready_sync[0],cam_configured};
@@ -221,40 +224,151 @@ board_capture_hmic #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.BASE(RAW_BASE)) capture(
  .cmd_valid(cap_cmd_valid),.cmd_ready(cap_cmd_ready),.rsp_valid(cap_rsp_valid),.rsp_ready(cap_rsp_ready),.rsp_status(cap_status),
  .axi_awaddr(cap_awaddr),.axi_awlen(cap_awlen),.axi_awuser_id(cap_awid),.axi_awvalid(cap_awvalid),.axi_awready(axi_awready&&capture_owner),
  .axi_wdata(cap_wdata),.axi_wstrb(cap_wstrb),.axi_wready(axi_wready&&capture_owner),.axi_wusero_last(axi_wusero_last&&capture_owner),.axi_wusero_id(axi_wusero_id));
+// Independent 40 MHz algorithm domain; board/DDR remain at 125 MHz.
+wire a_start_valid;
+wire a_start_ready;
+wire a_frame_valid;
+wire a_frame_ready;
+wire [7:0] a_frame_status;
+wire a_release_valid;
+wire a_release_ready;
+wire a_rsp_valid;
+wire a_rsp_ready;
+wire [7:0] a_rsp_status;
+wire a_rd_valid;
+wire a_rd_ready;
+wire [31:0] a_rd_addr;
+wire [31:0] a_rd_len;
+wire [15:0] a_rd_tag;
+wire a_r_valid;
+wire a_r_ready;
+wire [31:0] a_r_data;
+wire [3:0] a_r_keep;
+wire [15:0] a_r_tag;
+wire a_r_last;
+wire a_r_error;
+wire a_wr_valid;
+wire a_wr_ready;
+wire [31:0] a_wr_addr;
+wire [31:0] a_wr_len;
+wire [15:0] a_wr_tag;
+wire a_w_valid;
+wire a_w_ready;
+wire [31:0] a_w_data;
+wire [3:0] a_w_keep;
+wire a_w_last;
+wire a_b_valid;
+wire a_b_ready;
+wire [15:0] a_b_tag;
+wire a_b_error;
+vision_clock_bridge algorithm_cdc(.core_clk(core_clk),.core_rst_n(core_rst_n),
+ .algorithm_clk(algorithm_clk),.algorithm_rst_n(algorithm_rst_n),
+ .a_start_valid(a_start_valid),
+ .start_valid(start_valid),
+ .a_start_ready(a_start_ready),
+ .start_ready(start_ready),
+ .a_frame_valid(a_frame_valid),
+ .frame_valid(frame_valid),
+ .a_frame_ready(a_frame_ready),
+ .frame_ready(frame_ready),
+ .a_frame_status(a_frame_status),
+ .frame_status(frame_status),
+ .a_release_valid(a_release_valid),
+ .release_valid(release_valid),
+ .a_release_ready(a_release_ready),
+ .release_ready(release_ready),
+ .a_rsp_valid(a_rsp_valid),
+ .rsp_valid(rsp_valid),
+ .a_rsp_ready(a_rsp_ready),
+ .rsp_ready(rsp_ready),
+ .a_rsp_status(a_rsp_status),
+ .rsp_status(rsp_status),
+ .a_rd_valid(a_rd_valid),
+ .rd_valid(rd_valid),
+ .a_rd_ready(a_rd_ready),
+ .rd_ready(rd_ready),
+ .a_rd_addr(a_rd_addr),
+ .rd_addr(rd_addr),
+ .a_rd_len(a_rd_len),
+ .rd_len(rd_len),
+ .a_rd_tag(a_rd_tag),
+ .rd_tag(rd_tag),
+ .a_r_valid(a_r_valid),
+ .r_valid(r_valid),
+ .a_r_ready(a_r_ready),
+ .r_ready(r_ready),
+ .a_r_data(a_r_data),
+ .r_data(r_data),
+ .a_r_keep(a_r_keep),
+ .r_keep(r_keep),
+ .a_r_tag(a_r_tag),
+ .r_tag(r_tag),
+ .a_r_last(a_r_last),
+ .r_last(r_last),
+ .a_r_error(a_r_error),
+ .r_error(r_error),
+ .a_wr_valid(a_wr_valid),
+ .wr_valid(wr_valid),
+ .a_wr_ready(a_wr_ready),
+ .wr_ready(wr_ready),
+ .a_wr_addr(a_wr_addr),
+ .wr_addr(wr_addr),
+ .a_wr_len(a_wr_len),
+ .wr_len(wr_len),
+ .a_wr_tag(a_wr_tag),
+ .wr_tag(wr_tag),
+ .a_w_valid(a_w_valid),
+ .w_valid(w_valid),
+ .a_w_ready(a_w_ready),
+ .w_ready(w_ready),
+ .a_w_data(a_w_data),
+ .w_data(w_data),
+ .a_w_keep(a_w_keep),
+ .w_keep(w_keep),
+ .a_w_last(a_w_last),
+ .w_last(w_last),
+ .a_b_valid(a_b_valid),
+ .b_valid(b_valid),
+ .a_b_ready(a_b_ready),
+ .b_ready(b_ready),
+ .a_b_tag(a_b_tag),
+ .b_tag(b_tag),
+ .a_b_error(a_b_error),
+ .b_error(b_error));
 vision_ddr_top #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
- .clk(core_clk),.rst_n(core_rst_n),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(SQUARE_SIZE_FP64),
- .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(RAW_BASE),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(frame_status),
- .frame_release_valid(release_valid),.frame_release_ready(release_ready),
- .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),
+ .clk(algorithm_clk),.rst_n(algorithm_rst_n),.start_valid(a_start_valid),.start_ready(a_start_ready),.square_size_fp64(SQUARE_SIZE_FP64),
+ .frame_valid(a_frame_valid),.frame_ready(a_frame_ready),.frame_base(RAW_BASE),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(a_frame_status),
+ .frame_release_valid(a_release_valid),.frame_release_ready(a_release_ready),
+ .rsp_valid(a_rsp_valid),.rsp_ready(a_rsp_ready),.rsp_status(a_rsp_status),
  .debug_view(debug_view),.debug_phase(debug_phase),
  .result_base(),.result_stride(),.result_width(),.result_height(),
  .result_params(),.result_rms(),.debug_job(),.busy(),
- .rd_valid(rd_valid),
- .rd_ready(rd_ready),
- .rd_addr(rd_addr),
- .rd_len(rd_len),
- .rd_tag(rd_tag),
- .r_valid(r_valid),
- .r_ready(r_ready),
- .r_data(r_data),
- .r_keep(r_keep),
- .r_tag(r_tag),
- .r_last(r_last),
- .r_error(r_error),
- .wr_valid(wr_valid),
- .wr_ready(wr_ready),
- .wr_addr(wr_addr),
- .wr_len(wr_len),
- .wr_tag(wr_tag),
- .w_valid(w_valid),
- .w_ready(w_ready),
- .w_data(w_data),
- .w_keep(w_keep),
- .w_last(w_last),
- .b_valid(b_valid),
- .b_ready(b_ready),
- .b_tag(b_tag),
- .b_error(b_error));
+ .rd_valid(a_rd_valid),
+ .rd_ready(a_rd_ready),
+ .rd_addr(a_rd_addr),
+ .rd_len(a_rd_len),
+ .rd_tag(a_rd_tag),
+ .r_valid(a_r_valid),
+ .r_ready(a_r_ready),
+ .r_data(a_r_data),
+ .r_keep(a_r_keep),
+ .r_tag(a_r_tag),
+ .r_last(a_r_last),
+ .r_error(a_r_error),
+ .wr_valid(a_wr_valid),
+ .wr_ready(a_wr_ready),
+ .wr_addr(a_wr_addr),
+ .wr_len(a_wr_len),
+ .wr_tag(a_wr_tag),
+ .w_valid(a_w_valid),
+ .w_ready(a_w_ready),
+ .w_data(a_w_data),
+ .w_keep(a_w_keep),
+ .w_last(a_w_last),
+ .b_valid(a_b_valid),
+ .b_ready(a_b_ready),
+ .b_tag(a_b_tag),
+ .b_error(a_b_error));
 wire algorithm_owner=!capture_owner&&!display_enable;
 hmic_ddr_adapter adapter(.clk(core_clk),.rst_n(core_rst_n),.ddr_ready(ddr_init_done&&algorithm_owner),
  .rd_valid(rd_valid),
@@ -330,7 +444,7 @@ always @(posedge pix_clk)begin
 end
 // Configuration LED remains the original HDMI-configured indicator.
 assign hdmi_int_led=init_over_tx;
-wire clk_125Mhz ;
+
 
 GTP_INBUFGDS #(
     .IOSTANDARD("DEFAULT"),

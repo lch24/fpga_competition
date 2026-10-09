@@ -79,7 +79,7 @@ inline std::filesystem::path export_calibration_run(
     const std::vector<CalibrationExportView>& views,
     const std::vector<std::vector<Point2f>>& points,
     int width, int height, int rows, int cols, double square_size,
-    const CameraCalibrationOptions& options, const CameraCalibrationResult* result) {
+    const CameraCalibrationResult* result) {
     using namespace export_detail;
     if (views.size() != points.size()) throw std::invalid_argument("export view count mismatch");
     std::filesystem::create_directories(root);
@@ -94,8 +94,7 @@ inline std::filesystem::path export_calibration_run(
     csv << "view_id,point_index,x,y,x_fp32_hex,y_fp32_hex\n";
     bool rtl_ready = result && views.size() == 3 && rows == 5 && cols == 8 &&
         width >= 2 && height >= 2 && width <= 65535 && height <= 65535 &&
-        std::isfinite(square_size) && square_size > 0 &&
-        !options.estimate_k3 && options.max_iterations == 150;
+        std::isfinite(square_size) && square_size > 0;
     for (size_t v = 0; v < points.size(); ++v) {
         rtl_ready = rtl_ready && views[v].image_loaded && views[v].board_valid &&
             views[v].width == width && views[v].height == height && points[v].size() == 40;
@@ -110,13 +109,14 @@ inline std::filesystem::path export_calibration_run(
     csv.close();
     auto json = file(dir / "calibration.json");
     json << "{\n  \"format\": \"closer2fpga.calibration.v1\",\n"
+         << "  \"algorithm\": \"single_seed_schur_hybrid_lm_v2\", \"rtl_algorithm_matches\": false,\n"
          << "  \"corner_file\": \"corners.csv\",\n"
          << "  \"width\": " << width << ", \"height\": " << height
          << ", \"rows\": " << rows << ", \"cols\": " << cols << ",\n"
          << "  \"square_size\": "; number(json, square_size);
     json << ", \"square_size_fp64_hex\": " << quote(bits(square_size)) << ",\n"
-         << "  \"max_iterations_per_stage\": " << options.max_iterations
-         << ", \"estimate_k3\": " << options.estimate_k3 << ",\n"
+         << "  \"max_iterations_per_stage\": " << 60
+         << ", \"estimate_k3\": " << false << ",\n"
          << "  \"calibration_attempted\": " << (result != nullptr)
          << ", \"rtl_input_ready\": " << rtl_ready << ",\n  \"views\": [\n";
     for (size_t v = 0; v < views.size(); ++v) {

@@ -1,5 +1,7 @@
 # closer2fpga
 
+当前只保留单初值、单阶段 LM、8 元单应求解及单边差分。接口与验证见 [标定实现说明](docs/CALIBRATION_SIMPLIFICATION.md)。
+
 纯 C++ 相机标定与去畸变参考实现，用于指导 FPGA Verilog 模块划分。处理边界为 DDR 输入图像到 DDR 输出图像。
 
 当前流程：读取三张图片 → 灰度化 → 内角点检测和亚像素定位 → 联合求解内参、姿态和畸变 → 生成一次映射表 → 彩色双线性去畸变。
@@ -45,7 +47,6 @@ closer2fpga/
     image.h / image_view.h    拥有内存的图像 / 借用的行跨度视图
     types.h                   点与相机参数
     math3.*                   三维运算与旋转转换
-    symmetric_eigen.*         对称特征分解与外积累加
     matrix.*                  小矩阵与高斯消元
 ```
 

@@ -15,10 +15,10 @@ if($LASTEXITCODE -ne 0){throw 'Fixture generation failed'}
 Push-Location $build
 try {
  if(!(Test-Path work)){ & "$ModelSimBin\vlib.exe" work; if($LASTEXITCODE -ne 0){throw 'vlib failed'} }
- $manifest=Get-Content ../../../parameter/files.f | ForEach-Object {if($_ -match '^\+incdir\+'){$_ -replace '^\+incdir\+','+incdir+../../../parameter/'}else{'../../../parameter/'+$_}}
+ $manifest=Get-Content ../../../rtl/files.f | ForEach-Object {if($_ -match '^\+incdir\+'){$_ -replace '^\+incdir\+','+incdir+../../../'}else{'../../../'+$_}}
  Set-Content rtl.f $manifest -Encoding ASCII
  $defines="+define+PAR_VIEWS=$Views+PAR_BOARD_ROWS=$Rows+PAR_BOARD_COLS=$Cols+PAR_LM_MAX_ITERS=$MaxIterations+PAR_LM_MAX_TRIES=$MaxTries"
- & "$ModelSimBin\vlog.exe" -work work $defines -f rtl.f
+ & "$ModelSimBin\vlog.exe" -sv -work work $defines -f rtl.f
  if($LASTEXITCODE -ne 0){throw 'RTL compilation failed'}
  $tb=if($TopOnly){'tb_configurable_top'}else{'tb_configurable'}
  & "$ModelSimBin\vlog.exe" -sv -work work $defines +incdir+../../../rtl/include "../../../tb/calibration/$tb.sv"

@@ -14,6 +14,9 @@ dirs.forEach((dir,caseId)=>{
   const j=JSON.parse(fs.readFileSync(path.join(dir,'calibration.json'),'utf8'));
   assert.equal(j.format,'closer2fpga.calibration.v1');
   assert.equal(j.rtl_input_ready,caseId<2);
+  assert.equal(j.algorithm,"single_seed_schur_hybrid_lm_v2");
+  assert.equal(j.rtl_algorithm_matches,false);
+  assert.equal(j.max_iterations_per_stage,60);
   assert.equal(j.calibration_attempted,caseId!==2);
   assert.equal(j.views[0].path,'E:/测试/quoted"name\\line\n.jpg');
   pair(j.square_size,j.square_size_fp64_hex,8);

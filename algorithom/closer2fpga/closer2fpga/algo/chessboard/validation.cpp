@@ -1,40 +1,35 @@
-﻿#include "internal.h"
+#include "internal.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
 namespace chessboard {
-// Validate both lattice directions, convex cells, and smoothly varying spacing.
-// All tolerances are relative to observed spacing, not fixed pixel distances.
+// Squared geometry gates and rational spacing score avoid sqrt/log here.
 float grid_cost(const std::vector<Point2f>& g, int rows, int cols) {
-    float cost = 0, sign = 0;
+    double cost = 0, sign = 0;
     for (int r = 0; r < rows; ++r)
         for (int c = 0; c < cols; ++c) {
             Point2f p = g[r * cols + c];
             for (int axis = 0; axis < 2; ++axis) {
-                int step = axis ? cols : 1;
-                int pos = axis ? r : c, count = axis ? rows : cols;
+                int step = axis ? cols : 1, pos = axis ? r : c, count = axis ? rows : cols;
                 if (pos + 2 >= count)
                     continue;
-                Point2f a = g[r * cols + c + step], b = g[r * cols + c + 2 * step];
-                float dx1 = a.x - p.x, dy1 = a.y - p.y;
-                float dx2 = b.x - a.x, dy2 = b.y - a.y;
-                float l1 = std::hypot(dx1, dy1), l2 = std::hypot(dx2, dy2);
-                if (l1 < 4 || l2 < 4 || l2 / l1 < 0.55f || l2 / l1 > 1.8f)
+                auto a = g[r * cols + c + step], b = g[r * cols + c + 2 * step];
+                double x = a.x - p.x, y = a.y - p.y, u = b.x - a.x, v = b.y - a.y;
+                double d1 = x * x + y * y, d2 = u * u + v * v, dot = x * u + y * v, prod = d1 * d2;
+                if (d1 < 16 || d2 < 16 || d2 < .3025 * d1 || d2 > 3.24 * d1 || dot < 0 ||
+                    dot * dot < .81 * prod)
                     return 1e30f;
-                float cosine = (dx1 * dx2 + dy1 * dy2) / (l1 * l2);
-                if (cosine < 0.90f)
-                    return 1e30f;
-                float change = std::log(l2 / l1);
-                cost += (1 - cosine) + change * change;
+                // No sqrt/log. Approximate smooth-spacing ranking, same squared gates.
+                cost += 1 - dot * dot / prod + 4 * (d2 - d1) * (d2 - d1) / ((d1 + d2) * (d1 + d2));
             }
             if (r + 1 < rows && c + 1 < cols) {
                 Point2f q[4] = {p, g[r * cols + c + 1], g[(r + 1) * cols + c + 1], g[(r + 1) * cols + c]};
                 for (int k = 0; k < 4; ++k) {
-                    Point2f a = q[k], b = q[(k + 1) % 4], d = q[(k + 2) % 4];
-                    float cross = (b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x);
-                    float lengths = distance(a, b) * distance(b, d);
-                    if (lengths < 16 || std::fabs(cross) < lengths * 0.2f)
+                    auto a = q[k], b = q[(k + 1) % 4], d = q[(k + 2) % 4];
+                    double x = b.x - a.x, y = b.y - a.y, u = d.x - b.x, v = d.y - b.y;
+                    double cross = x * v - y * u, prod = (x * x + y * y) * (u * u + v * v);
+                    if (prod < 256 || cross * cross < .04 * prod)
                         return 1e30f;
                     if (sign == 0)
                         sign = cross;
@@ -43,7 +38,7 @@ float grid_cost(const std::vector<Point2f>& g, int rows, int cols) {
                 }
             }
         }
-    return cost;
+    return float(cost);
 }
 
 bool refine_grid(const GrayImage& gray, ChessboardInfo& board) {

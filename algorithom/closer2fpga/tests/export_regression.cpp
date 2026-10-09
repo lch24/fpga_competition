@@ -19,10 +19,9 @@ int main() {
         for(int i=0;i<9;++i)r.poses[v].rotation[i]=(i%4==0)?1.0:0.0;
         r.poses[v].translation={v+.12345678901234567,-.0,25.0+v};
     }
-    CameraCalibrationOptions options{};
     std::ofstream list("export_fixture_paths.txt");
     auto save=[&](const CameraCalibrationResult* result) {
-        auto dir=desktop::export_calibration_run("export_fixture",views,points,640,480,5,8,25.,options,result);
+        auto dir=desktop::export_calibration_run("export_fixture",views,points,640,480,5,8,25.,result);
         list<<dir.string()<<'\n';
     };
     save(&r);
@@ -33,7 +32,7 @@ int main() {
     list.close();
     // A regular file cannot be used as the export root; failures must throw.
     bool failed=false;
-    try { desktop::export_calibration_run("export_fixture_paths.txt",views,points,640,480,5,8,25.,options,&r); }
+    try { desktop::export_calibration_run("export_fixture_paths.txt",views,points,640,480,5,8,25.,&r); }
     catch(const std::exception&) { failed=true; }
     if(!failed)return 1;
     std::cout<<"EXPORT_FIXTURE_WRITTEN cases=4 io_failure_checked=1\n";

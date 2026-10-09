@@ -72,12 +72,16 @@ module fp_operator #(parameter FP_W=64,
                EXP_REDUCE=23, EXP_ACC=24, LOG_RATIO=25, LOG_ACC=26,
                TRIG_MUL=27, TRIG_SHIFT=28, TRIG_INIT=29, TRIG_MUL_END=30,
                FIX_MUL=31, FIX_DONE=32, EXP_RANGE_DONE=33, EXP_TERM_DONE=34,
-               LOG_SQUARE_DONE=35, LOG_TERM_DONE=36, LOG_SCALE_DONE=37, TRIG_ANGLE_DONE=38, PACK_FLOAT=39, FIX_CARRY=40;
+               LOG_SQUARE_DONE=35, LOG_TERM_DONE=36, LOG_SCALE_DONE=37, TRIG_ANGLE_DONE=38, PACK_FLOAT=39, FIX_CARRY=40, CORDIC_STEP=41;
     reg [5:0] state;
     reg [6:0] iteration;
     reg [4:0] operation;
     reg [63:0] saved_a, atan_y, atan_x, temp_float;
-    reg signed [191:0] fx_x,fx_y,fx_z,term,sum,power2;
+    // Q16.128 is sufficient for these bounded working values: EXP input is
+    // screened to |x|<4096, reduced EXP/LOG terms stay below 4, and CORDIC
+    // normalized coordinates/angles stay below 8. Keep all 128 fraction bits.
+    // General products, range reduction and packing retain their full widths.
+    reg signed [143:0] fx_x,fx_y,fx_z,term,sum,power2;
     reg signed [191:0] work_q,work_next;
     reg signed [383:0] product;
     reg [1343:0] phase_product;
@@ -130,6 +134,13 @@ module fp_operator #(parameter FP_W=64,
     endfunction
     wire [11:0] int_four=divide_four_bits(int_remainder[7:0],int_quotient[383:380],int_denominator[6:0]);
 
+    // Rotation and vectoring are mutually exclusive. Share the 144-bit
+    // shifters and three add/sub datapaths; register shifts before additions.
+    reg cordic_vector,cordic_sub;
+    reg signed [143:0] cordic_dx,cordic_dy,cordic_da;
+    wire signed [143:0] cordic_x_next = fx_x + (cordic_dx ^ {144{cordic_sub}}) + {{143{1'b0}},cordic_sub};
+    wire signed [143:0] cordic_y_next = fx_y + (cordic_dy ^ {144{!cordic_sub}}) + {{143{1'b0}},!cordic_sub};
+    wire signed [143:0] cordic_z_next = fx_z + (cordic_da ^ {144{cordic_sub}}) + {{143{1'b0}},cordic_sub};
     reg [129:0] phase;
     reg [1:0] quadrant;
     reg sin_negative, atan_negative_x, atan_negative_y;
@@ -180,6 +191,7 @@ module fp_operator #(parameter FP_W=64,
         end
     endtask
     fp_divsqrt #(.FP_W(FP_W)) divsqrt (
+        .ce(1'b1),
         .clk(clk),.rst_n(rst_n),.req_valid(rst_n && state==SEQ_REQ),.req_ready(seq_req_ready),
         .req_sqrt(seq_sqrt),.req_a(seq_a),.req_b(seq_b),.rsp_valid(seq_rsp_valid),
         .rsp_ready(rst_n && state==SEQ_WAIT),.rsp_result(seq_result),.rsp_flags(seq_flags)
@@ -465,34 +477,9 @@ module fp_operator #(parameter FP_W=64,
                 fx_x<=FX_GAIN;fx_y<=0;iteration<=0;state<=TRIG_ITER;
             end
             TRIG_ITER: if (ENABLE_SINCOS) begin
-                if (fx_z>=0) begin
-                    fx_x<=fx_x-(fx_y>>>iteration);
-                    fx_y<=fx_y+(fx_x>>>iteration);
-                    fx_z<=fx_z-cordic_angle(iteration);
-                    work_q=fx_x-(fx_y>>>iteration); work_next=fx_y+(fx_x>>>iteration);
-                end else begin
-                    fx_x<=fx_x+(fx_y>>>iteration);
-                    fx_y<=fx_y-(fx_x>>>iteration);
-                    fx_z<=fx_z+cordic_angle(iteration);
-                    work_q=fx_x+(fx_y>>>iteration); work_next=fx_y-(fx_x>>>iteration);
-                end
-                if (iteration==127) begin
-                    if (operation==`PAR_FP_SIN) begin
-                        case (quadrant)
-                        0: work_q=work_next;
-                        1: work_q=work_q;
-                        2: work_q=-work_next;
-                        3: work_q=-work_q;
-                        endcase
-                        if (sin_negative) work_q=-work_q;
-                    end else case (quadrant)
-                        0: work_q=work_q;
-                        1: work_q=-work_next;
-                        2: work_q=-work_q;
-                        3: work_q=work_next;
-                    endcase
-                    start_pack(work_q,0,1,0);
-                end else iteration<=iteration+1'b1;
+                cordic_vector<=0;cordic_sub<=fx_z>=0;
+                cordic_dx<=fx_y>>>iteration;cordic_dy<=fx_x>>>iteration;
+                cordic_da<=cordic_angle(iteration);state<=CORDIC_STEP;
             end
             ACOS_SUB: if (ENABLE_ATAN_ACOS) begin
                 computed=eval_result;
@@ -544,19 +531,35 @@ module fp_operator #(parameter FP_W=64,
                 end
             end
             ATAN_ITER: if (ENABLE_ATAN_ACOS) begin
-                if (fx_y>0) begin
-                    fx_x<=fx_x+(fx_y>>>iteration); fx_y<=fx_y-(fx_x>>>iteration);
-                    work_q=fx_z+cordic_angle(iteration);
-                end else begin
-                    fx_x<=fx_x-(fx_y>>>iteration); fx_y<=fx_y+(fx_x>>>iteration);
-                    work_q=fx_z-cordic_angle(iteration);
-                end
-                fx_z<=work_q;
-                if (iteration==127) begin
-                    if (atan_negative_x) work_q=FX_PI-work_q;
-                    if (atan_negative_y) work_q=-work_q;
+                cordic_vector<=1;cordic_sub<=!(fx_y>0);
+                cordic_dx<=fx_y>>>iteration;cordic_dy<=fx_x>>>iteration;
+                cordic_da<=cordic_angle(iteration);state<=CORDIC_STEP;
+            end
+            CORDIC_STEP: if (ENABLE_SINCOS || ENABLE_ATAN_ACOS) begin
+                fx_x<=cordic_x_next;fx_y<=cordic_y_next;fx_z<=cordic_z_next;
+                if(iteration==127)begin
+                    if(cordic_vector)begin
+                        work_q=cordic_z_next;
+                        if(atan_negative_x)work_q=FX_PI-work_q;
+                        if(atan_negative_y)work_q=-work_q;
+                    end else begin
+                        if(operation==`PAR_FP_SIN)begin
+                            case(quadrant)
+                            0:work_q=cordic_y_next;
+                            1:work_q=cordic_x_next;
+                            2:work_q=-cordic_y_next;
+                            3:work_q=-cordic_x_next;
+                            endcase
+                            if(sin_negative)work_q=-work_q;
+                        end else case(quadrant)
+                            0:work_q=cordic_x_next;
+                            1:work_q=-cordic_y_next;
+                            2:work_q=-cordic_x_next;
+                            3:work_q=cordic_y_next;
+                        endcase
+                    end
                     start_pack(work_q,0,1,0);
-                end else iteration<=iteration+1'b1;
+                end else begin iteration<=iteration+1'b1;state<=cordic_vector?ATAN_ITER:TRIG_ITER;end
             end
             PACK_FLOAT: begin
                 computed=fixed_pack(pack_value,pack_scale,FP_W);

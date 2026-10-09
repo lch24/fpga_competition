@@ -14,9 +14,9 @@ $backup=$project+'.before_calibrated.bak'
 if(!(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $project -Destination $backup}
 $constraintsHash=(Get-FileHash (Join-Path $projectDir 'DualView_OV5640.fdc')).Hash
 $inputs=$before.SelectNodes('//task[@name="DESIGN_SET"]/action[@name="design"]/inputs/item[@type="FILE"]')
-$excluded=Get-Content (Join-Path $root 'integration/board/excluded_sources.txt') | Where-Object {$_ -and ! $_.StartsWith('#')}
+$excluded=Get-Content (Join-Path $root 'scripts/build/pds_excluded_sources.txt') | Where-Object {$_ -and ! $_.StartsWith('#')}
 $common=Get-Content (Join-Path $root 'rtl/files.f') | Where-Object {$_ -and ! $_.StartsWith('+') -and $_ -notin $excluded}
-$board=@('rtl/video/board/board_ms72xx_ctl.v','rtl/video/board/board_power_on_delay.v','rtl/top/calibrated_view_top.v')
+$board=@('rtl/clock/algorithm_clock.v','rtl/video/board/board_ms72xx_ctl.v','rtl/video/board/board_power_on_delay.v','rtl/top/calibrated_view_top.v')
 $legacy=@('sync_vg','ms7200_ctl','ms7210_ctl','iic_dri','i2c_com','reg_config') | ForEach-Object {'rtl/video/board/'+$_+'.v'}
 $all=@($common)+$board+$legacy
 foreach($f in $all){if(!(Test-Path -LiteralPath (Join-Path $root $f))){throw "Missing source $f"}}

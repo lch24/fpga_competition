@@ -2,7 +2,7 @@ param([string]$ModelSimBin=$env:MODELSIM_BIN,[string]$OnlyTest='', [string]$Conf
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../common/tools.ps1')
 $ModelSimBin=Resolve-ToolDirectory $ModelSimBin 'vsim.exe' 'MODELSIM_BIN'
-if($OnlyTest -eq 'tb_reg_config_clock' -and !$Board){throw 'tb_reg_config_clock requires -Board'}
+if($OnlyTest -in @('tb_reg_config_clock','tb_algorithm_clock') -and !$Board){throw 'tb_reg_config_clock requires -Board'}
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $build=Join-Path $root 'build/system'
 $defines=@()
@@ -55,6 +55,9 @@ if($Board){
     $legacyBoardFiles+=Join-Path $root ('rtl/video/board/'+$name+'.v')
   }
   $sources+=Get-Item (Join-Path $root 'rtl/top/calibrated_view_top.v')
+  $sources+=Get-Item (Join-Path $root 'rtl/clock/algorithm_clock.v')
+  $pdsHome=if($env:PDS_HOME){$env:PDS_HOME}else{'D:/pango/PDS_2025.2-ads'}
+  $sources+=Get-Item (Join-Path $pdsHome 'arch/vendor/pango/verilog/simulation/GTP_GPLL.v')
   $sources+=Get-Item (Join-Path $root 'rtl/video/board/board_ms72xx_ctl.v')
   $sources+=Get-Item (Join-Path $root 'rtl/video/board/board_power_on_delay.v')
   $sources+=Get-Item $stubPath
@@ -81,7 +84,7 @@ $testFiles+=Join-Path $root 'tb/calibration/tb_calib_top.sv'
 $tests+=@('tb_corner_store','tb_calib_top')
 $integrationPaths=Get-Content (Join-Path $PSScriptRoot 'integration_tests.json') -Raw | ConvertFrom-Json
 $integrationTests=@(($integrationPaths | ForEach-Object {Get-Item (Join-Path $root $_)}) | Where-Object {
-  $_.BaseName -notin @('tb_accum_fixed','tb_add_pipeline','tb_tensor_shared','tb_bilinear_fixed','tb_resource_math','tb_gray_cache','tb_fp_pool','tb_ddr_pyramid','tb_ddr_recovery','tb_calib_geometry')
+  ($Board -or $_.BaseName -ne 'tb_algorithm_clock') -and $_.BaseName -notin @('tb_accum_fixed','tb_add_pipeline','tb_tensor_shared','tb_bilinear_fixed','tb_resource_math','tb_gray_cache','tb_fp_pool','tb_ddr_pyramid','tb_ddr_recovery','tb_calib_geometry')
 }) # These tests have independent vector generation in tools/check_resource_units.py.
 $testFiles+=@($integrationTests.FullName)
 $tests+=@($integrationTests.BaseName)
@@ -121,7 +124,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $build 'run.do'),"onerror {quit -code 1 -f}`nonbreak {quit -code 1 -f}`nrun -all`nquit -code 0 -f`n",[Text.Encoding]::ASCII)
     $simArgs=@('-c',('work.'+$test),'-do','run.do')
     # Check completion counters in Tcl as well as HDL diagnostics on ModelSim 10.1c.
-    if($test -in @('tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
+    if($test -in @('tb_board_flow_cdc','tb_algorithm_clock','tb_vision_clock_bridge','tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
       $doName=$test.Replace('tb_','run_')+'.do'
       $simArgs=@('-c','-voptargs=+acc',('work.'+$test),'-do',(Find-DoFile $doName))
       if($test -eq 'tb_vision_numeric'){$simArgs=@('-c','-voptargs=+acc=rn+tb_vision_numeric -O5',('work.'+$test),'-do',(Find-DoFile $doName))}

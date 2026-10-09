@@ -1,30 +1,10 @@
 `include "calib_defs.vh"
 
-/*
-配置：统一见 rtl/include/calib_config.vh；下文具体计数例子以默认3张5×8为例，
-实际容量、循环边界和端口位宽由PAR_*派生，修改配置后须重新编译/综合。
-作用：第二部分唯一对外顶层，从三组角点得到相机参数；没有 DDR 端口。
-组成：corner_store、init_controller、lm_controller、validate_result，全部使用真实RTL子模块。
-控制：COLLECT -> WAIT_CMD -> INITIALIZE -> 各seed的3阶段LM -> SELECT_BEST -> VALIDATE -> OUTPUT -> RESP。
-collect 后接收120点及3个视图成功响应，才允许接受同 job 的标定命令。
-collect握手后向corner_store发一拍clear；该拍不接收角点/视图响应，下一拍开始转发。
-任务号只在本顶层锁存和检查，不传入缓存；非法job/view在转发前拒绝并报BAD_CONFIG。
-查看缓存view_done/status/point_count/format_error/usable，不再等待缓存的整任务rsp。
-收集阶段失败也输出 diag/rsp（无需等待 cmd），禁止本任务标定，停止转发后续输入。
-失败时保留缓存各图状态用于调试；dbg_view_*直到下次collect/复位才清除，无需握手。
-缓存全部有效 seed（最多5份），严格依次优化；按最终 cost 最小选择，再检查收敛。
-保存 best_state/best_cost/best_converged/best_accepted_steps，trial 不能覆盖 best。
-成功发一笔 camera 和一笔 diag；失败只发 diag。两条输出独立握手，都结束后发 rsp。
-只有 camera_valid=1 且成功 rsp 完成才允许外部切换参数。诊断 pose 不是校正输入。
-错误后的上游旧流须停止/排空，下一 collect 前保证旧任务不会再发送。
-
-共同契约：
-- valid && ready 才传输；背压时 valid 和对应全部载荷保持不变。
-- 除另有说明，一次一项任务，rsp 被接收前不接受新 cmd；不假设固定延迟。
-- cmd_* 随命令锁存；rsp_* 随响应有效。失败仍须发完成响应，不能无声挂起。
-- 非零状态通常使结果载荷无效；本模块明确说明的诊断有效位例外。
-- 复位取消在途数据；复位后所有生产端 valid 清零。实现时禁止 real 运算。
-*/
+// Collect committed corner views -> one width-based seed -> full-parameter
+// LM (stage 2, k3 fixed) -> validation -> camera/diagnostic publication.
+// The initializer fills current state one word per cycle under backpressure.
+// Jobs still identify external transactions; reset cancels work and output
+// backpressure preserves the result until both consumers acknowledge it.
 module calib_top (
     input wire clk, // core_clk，同一时钟域
     input wire rst_n, // 低有效复位，同步释放；取消全部在途事务
@@ -76,7 +56,7 @@ module calib_top (
 
     output wire [63:0] diag_max_error_fp64, // 最大角点欧氏误差
     output wire [`PAR_POSES_W-1:0] diag_poses_fp64, // 三视图R和t；平移恢复首角点原点并乘square_size
-    output wire [2:0] diag_seed_id, // 0=Zhang，1..4=固定种子；无best时7
+    output wire [2:0] diag_seed_id, // 2=width-based seed; 7=no valid result
     output wire [15:0] diag_accepted_steps, // 最佳seed三阶段已接受更新总数
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
@@ -103,19 +83,17 @@ module calib_top (
     reg [`PAR_VIEW_RMS_W-1:0] view_rms_q;
     reg [`PAR_POSES_W-1:0] poses_q;
 
-    // 最多5份初值；数组不复位，seed_count界定本任务已写入的有效范围。
+    // Single seed only.
     // Store one FP64 word per cycle. Upstream holds seed_state under
     // backpressure; publish the seed only after its final word is stored.
     localparam SEED_WORD_BITS=$clog2(`PAR_STATE_N+1);
-    localparam SEED_ADDR_BITS=$clog2(5*`PAR_STATE_N);
-    reg [63:0] seed_memory[0:5*`PAR_STATE_N-1];
     reg [SEED_WORD_BITS-1:0] seed_word;
-    reg [63:0] seed_read;
-    reg [2:0] seed_ids[0:4];
+    reg [2:0] seed_ids[0:0];
     reg [2:0] seed_count,seed_index;
     reg [4:0] seed_seen;
     reg [1:0] stage;
-    reg [`PAR_STATE_W-1:0] current,best_state;
+    reg [`PAR_STATE_W-1:0] current;
+    wire [`PAR_STATE_W-1:0] best_state=current;
     reg [63:0] best_cost;
     reg best_valid,best_converged;
     reg [2:0] best_id;
@@ -135,14 +113,6 @@ module calib_top (
     wire [2:0] seed_id,init_count;
     wire [`PAR_STATE_W-1:0] seed_state;
     wire seed_ready=rst_n && pc==INIT_WAIT && seed_word==`PAR_STATE_N-1;
-    wire [SEED_ADDR_BITS-1:0] seed_write_address=seed_count*`PAR_STATE_N+seed_word;
-    wire [SEED_ADDR_BITS-1:0] seed_read_address=seed_index*`PAR_STATE_N+seed_word;
-    always @(posedge clk) begin
-        if(rst_n && pc==INIT_WAIT && seed_valid && seed_count<5 && seed_id<5)
-            seed_memory[seed_write_address]<=seed_state[64*seed_word+:64];
-        if(rst_n && pc==SEED_FETCH) seed_read<=seed_memory[seed_read_address];
-    end
-
     wire lm_ready,lm_valid,lm_converged;
     wire [7:0] lm_status,lm_accepted;
     wire [`PAR_STATE_W-1:0] lm_state;
@@ -328,8 +298,8 @@ module calib_top (
             pc<=IDLE;job<=0;width<=0;height<=0;square_size<=0;status<=0;phase<=0;
             camera_pending<=0;diag_pending<=0;metrics<=0;weak_geometry<=0;
             camera_q<=0;rms_q<=0;view_rms_q<=0;max_error_q<=0;poses_q<=0;
-            seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=0;current<=0;
-            best_state<=0;best_cost<=64'h7ff0000000000000;best_valid<=0;
+            seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=2;current<=0;
+            best_cost<=64'h7ff0000000000000;best_valid<=0;
             best_converged<=0;best_id<=7;accepted<=0;best_accepted<=0;
         end else case(pc)
             IDLE: if(collect_valid) begin
@@ -337,7 +307,7 @@ module calib_top (
                 status<=0;phase<=0;metrics<=0;weak_geometry<=0;
                 camera_pending<=0;diag_pending<=0;camera_q<=0;
                 rms_q<=0;view_rms_q<=0;max_error_q<=0;poses_q<=0;
-                seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=0;accepted<=0;
+                seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=2;accepted<=0;
                 best_valid<=0;best_converged<=0;best_id<=7;best_accepted<=0;
                 best_cost<=64'h7ff0000000000000;
             end
@@ -360,11 +330,12 @@ module calib_top (
             INIT_WAIT: begin
                 // 正常协议的rsp在最后一份seed之后；数量/ID异常直接终止，不让数组越界。
                 if(seed_valid) begin
-                    if(seed_count>=5 || seed_id>=5) fail(`PAR_BAD_CONFIG,1);
-                    else if(seed_seen[seed_id] || (seed_count!=0 && seed_id<=seed_ids[seed_count-1])) fail(`PAR_BAD_CONFIG,1);
+                    if(seed_count!=0 || seed_id!=2) fail(`PAR_BAD_CONFIG,1);
+
                     else begin
+                        current[64*seed_word+:64]<=seed_state[64*seed_word+:64];
                         if(seed_ready) begin
-                            seed_ids[seed_count]<=seed_id;
+                            seed_ids[0]<=seed_id;
                             seed_seen[seed_id]<=1;seed_count<=seed_count+1'b1;seed_word<=0;
                         end else seed_word<=seed_word+1'b1;
                     end
@@ -373,29 +344,21 @@ module calib_top (
                     if(init_status!=0) fail(init_status,1);
                     else if(seed_valid || init_count!=seed_count) fail(`PAR_BAD_CONFIG,1);
                     else if(seed_count==0) fail(`PAR_CALIB_INVALID,1);
-                    else begin seed_index<=0;phase<=2;pc<=LOAD_SEED;end
+                    else begin seed_index<=0;phase<=2;pc<=LM_CMD;end
                 end
-            end
-            LOAD_SEED: begin seed_word<=0;stage<=0;accepted<=0;pc<=SEED_FETCH;end
-            SEED_FETCH: pc<=SEED_LATCH;
-            SEED_LATCH: begin
-                current[64*seed_word+:64]<=seed_read;
-                if(seed_word==`PAR_STATE_N-1) pc<=LM_CMD;
-                else begin seed_word<=seed_word+1'b1;pc<=SEED_FETCH;end
             end
             LM_CMD: if(lm_ready) pc<=LM_WAIT;
             LM_WAIT: if(lm_valid) begin
                 if(lm_status!=0) fail(lm_status,2);
                 else begin
                     current<=lm_state;accepted<=accepted+{8'b0,lm_accepted};
-                    if(stage<2) begin stage<=stage+1'b1;pc<=LM_CMD;end
-                    else begin
+                    begin
                         // 对非负有限FP64，去掉符号后的无符号位序就是数值序。
                         // +Inf/NaN无资格成为best；-0按+0处理。相等cost保留较早seed。
                         if((!lm_cost[63] || lm_cost[62:0]==0) && lm_cost[62:52]!=11'h7ff &&
                            (!best_valid || {1'b0,lm_cost[62:0]}<best_cost)) begin
-                            best_state<=lm_state;best_cost<={1'b0,lm_cost[62:0]};best_valid<=1;
-                            best_converged<=lm_converged;best_id<=seed_ids[seed_index];
+                            best_cost<={1'b0,lm_cost[62:0]};best_valid<=1;
+                            best_converged<=lm_converged;best_id<=seed_ids[0];
                             best_accepted<=accepted+{8'b0,lm_accepted};
                         end
                         pc<=NEXT_SEED;
@@ -403,8 +366,7 @@ module calib_top (
                 end
             end
             NEXT_SEED: begin
-                if(seed_index+1'b1<seed_count) begin seed_index<=seed_index+1'b1;pc<=LOAD_SEED;end
-                else if(!best_valid) fail(`PAR_CALIB_INVALID,2);
+                if(!best_valid) fail(`PAR_CALIB_INVALID,2);
                 else begin phase<=3;pc<=CHECK_CMD;end
             end
             CHECK_CMD: if(check_ready) pc<=CHECK_WAIT;

@@ -6,9 +6,10 @@ namespace calibration {
 bool mapping_is_regular(const CameraParams& k, int w, int h) {
     // Require positive Jacobian determinant throughout the output field to
     // reject folding maps caused by extrapolated high-order radial coefficients.
-    for (int iy = 0; iy <= 24; ++iy)
-        for (int ix = 0; ix <= 32; ++ix) {
-            double x = ((w - 1) * ix / 32. - k.cx) / k.fx, y = ((h - 1) * iy / 24. - k.cy) / k.fy;
+    constexpr int nx = 32, ny = 24;
+    for (int iy = 0; iy <= ny; ++iy)
+        for (int ix = 0; ix <= nx; ++ix) {
+            double x = ((w - 1.) * ix / nx - k.cx) / k.fx, y = ((h - 1.) * iy / ny - k.cy) / k.fy;
             double r2 = x * x + y * y, radial = 1 + k.k1 * r2 + k.k2 * r2 * r2 + k.k3 * r2 * r2 * r2;
             double dr = k.k1 + 2 * k.k2 * r2 + 3 * k.k3 * r2 * r2;
             double a = radial + 2 * x * x * dr + 2 * k.p1 * y + 6 * k.p2 * x;
@@ -22,7 +23,7 @@ bool mapping_is_regular(const CameraParams& k, int w, int h) {
 
 void finish_result(const State& best, const Points& points, int width, int height, int rows, int cols,
                    double square_size, double best_cost, bool best_converged, int best_iterations,
-                   CameraCalibrationResult& result) {
+                   CameraCalibrationResult& result, const std::vector<double>& residual) {
     auto& k = result.camera;
     k.fx = float(std::exp(best[0]));
     k.fy = float(std::exp(best[1]));
@@ -35,8 +36,6 @@ void finish_result(const State& best, const Points& points, int width, int heigh
     k.k3 = float(best[8]);
     result.converged = best_converged;
     result.iterations = best_iterations;
-    std::vector<double> residual;
-    residuals(best, points, width, height, rows, cols, residual);
     result.rms = std::sqrt(best_cost / (points.size() * rows * cols));
     for (size_t i = 0; i < points.size(); ++i) {
         double cost = 0;

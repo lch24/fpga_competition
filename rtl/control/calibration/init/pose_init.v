@@ -63,6 +63,19 @@ module pose_init #(parameter FP_SHARED=0) (
     // 临时区[70:73]随PAR_STATE_N后移，避免与增加的输出外参重叠。默认：
     // [30:32]=t, [33:39]=范数/尺度/临时量, [40:66]=27项输出, [70:73]=临时量。
     reg [63:0] hom[0:9*`PAR_VIEWS-1];integer view;
+    // Select each homography element only across views. Explicit constant
+    // bank addresses avoid nine general 9*VIEWS-word dynamic read muxes.
+    wire [63:0] view_h[0:8];
+    genvar hk;
+    generate for(hk=0;hk<9;hk=hk+1)begin: h_by_view
+      reg [63:0] selected;integer hv;
+      always @* begin
+        selected=0;
+        for(hv=0;hv<`PAR_VIEWS;hv=hv+1)
+          if(view==hv)selected=hom[9*hv+hk];
+      end
+      assign view_h[hk]=selected;
+    end endgenerate
     wire r_ready,r_valid;wire [7:0] r_status;wire [191:0] r_vec;
     rotation #(.FP_SHARED(FP_SHARED)) rot(.shared_req_valid(shared_req_valid[1 +: 1]),.shared_req_ready(shared_req_ready[1 +: 1]),.shared_req_op(shared_req_op[5 +: 5]),.shared_req_a(shared_req_a[64 +: 64]),.shared_req_b(shared_req_b[64 +: 64]),.shared_active(shared_active[1 +: 1]),.shared_rsp_valid(shared_rsp_valid[1 +: 1]),.shared_rsp_ready(shared_rsp_ready[1 +: 1]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(rst_n),.cmd_valid(rst_n && pc==82),.cmd_ready(r_ready),.cmd_mode(1'b1),
         .cmd_rotvec_fp64(192'b0),.cmd_r_fp64({v[28],v[25],v[22],v[27],v[24],v[21],v[26],v[23],v[20]}),
@@ -147,27 +160,27 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 3: begin calculate(DIV, v[2], v[4], 42, 4); end
                 4: begin calculate(DIV, v[3], v[5], 43, 5); end
                 // 逐视图计算 K^-1 H 的三列
-                5: begin calculate(MUL, v[2], hom[view*9+6], `PAR_STATE_N+43, 6); end
-                6: begin calculate(SUB, hom[view*9+0], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 7); end
+                5: begin calculate(MUL, v[2], view_h[6], `PAR_STATE_N+43, 6); end
+                6: begin calculate(SUB, view_h[0], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 7); end
                 7: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 10, 8); end
-                8: begin calculate(MUL, v[3], hom[view*9+6], `PAR_STATE_N+44, 9); end
-                9: begin calculate(SUB, hom[view*9+3], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 10); end
+                8: begin calculate(MUL, v[3], view_h[6], `PAR_STATE_N+44, 9); end
+                9: begin calculate(SUB, view_h[3], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 10); end
                 10: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 11, 11); end
-                11: begin v[12]<=hom[view*9+6];pc<=12; end
-                12: begin calculate(MUL, v[2], hom[view*9+7], `PAR_STATE_N+43, 13); end
-                13: begin calculate(SUB, hom[view*9+1], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 14); end
+                11: begin v[12]<=view_h[6];pc<=12; end
+                12: begin calculate(MUL, v[2], view_h[7], `PAR_STATE_N+43, 13); end
+                13: begin calculate(SUB, view_h[1], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 14); end
                 14: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 13, 15); end
-                15: begin calculate(MUL, v[3], hom[view*9+7], `PAR_STATE_N+44, 16); end
-                16: begin calculate(SUB, hom[view*9+4], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 17); end
+                15: begin calculate(MUL, v[3], view_h[7], `PAR_STATE_N+44, 16); end
+                16: begin calculate(SUB, view_h[4], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 17); end
                 17: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 14, 18); end
-                18: begin v[15]<=hom[view*9+7];pc<=19; end
-                19: begin calculate(MUL, v[2], hom[view*9+8], `PAR_STATE_N+43, 20); end
-                20: begin calculate(SUB, hom[view*9+2], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 21); end
+                18: begin v[15]<=view_h[7];pc<=19; end
+                19: begin calculate(MUL, v[2], view_h[8], `PAR_STATE_N+43, 20); end
+                20: begin calculate(SUB, view_h[2], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 21); end
                 21: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 16, 22); end
-                22: begin calculate(MUL, v[3], hom[view*9+8], `PAR_STATE_N+44, 23); end
-                23: begin calculate(SUB, hom[view*9+5], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 24); end
+                22: begin calculate(MUL, v[3], view_h[8], `PAR_STATE_N+44, 23); end
+                23: begin calculate(SUB, view_h[5], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 24); end
                 24: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 17, 25); end
-                25: begin v[18]<=hom[view*9+8];pc<=26; end
+                25: begin v[18]<=view_h[8];pc<=26; end
                 26: begin calculate(MUL, v[10], v[10], `PAR_STATE_N+43, 27); end
                 27: begin calculate(MUL, v[11], v[11], `PAR_STATE_N+44, 28); end
                 28: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], `PAR_STATE_N+43, 29); end

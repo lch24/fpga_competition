@@ -26,7 +26,7 @@ const packed=fs.readFileSync(path.join(build,'real_vectors.txt'),'utf8').trim().
 assert.equal(packed[9],[...points].reverse().join(''));assert.equal(packed[8],[...m].reverse().join(''));
 fs.writeFileSync(path.join(build,'actual_camera.hex'),cam.map(hex32).join('\n')+'\n');
 fs.writeFileSync(path.join(build,'actual_metrics.hex'),m.join('\n')+'\n');
-fs.writeFileSync(path.join(build,'calib_top_results.txt'),[0,1,2].map(s=>`LM seed=0 stage=${s} cycles=${s+1} cost=${3-s} converged=1 accepted=1 status=0`).join('\n')+'\ncase=0 cycles=100 reads=350 seeds=1 lm_calls=3 status=0 seed=0 steps=3\nRESULT cases=1 errors=0\n');
+fs.writeFileSync(path.join(build,'calib_top_results.txt'),'LM seed=2 stage=2 cycles=99 cost=1 converged=1 accepted=3 status=0\ncase=0 cycles=100 reads=350 seeds=1 lm_calls=1 status=0 seed=2 steps=3\nRESULT cases=1 errors=0\n');
 result=invoke('compare');assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/fields=76/);
 const wrong=[...cam];wrong[0]+=1;fs.writeFileSync(path.join(build,'actual_camera.hex'),wrong.map(hex32).join('\n')+'\n');
 result=invoke('compare');assert.equal(result.status,1);assert.match(result.stdout,/numerical_failures=1/);

@@ -26,8 +26,6 @@
     <ClCompile Include="algo\grayscale.cpp"><Filter>algo</Filter></ClCompile>
     <ClInclude Include="algo\grayscale.h"><Filter>algo</Filter></ClInclude>
     <ClCompile Include="algo\remap_table.cpp"><Filter>algo</Filter></ClCompile>
-    <ClCompile Include="algo\shi_tomasi.cpp"><Filter>algo</Filter></ClCompile>
-    <ClInclude Include="algo\shi_tomasi.h"><Filter>algo</Filter></ClInclude>
     <ClCompile Include="algo\subpixel.cpp"><Filter>algo</Filter></ClCompile>
     <ClInclude Include="algo\subpixel.h"><Filter>algo</Filter></ClInclude>
     <ClCompile Include="algo\undistort.cpp"><Filter>algo</Filter></ClCompile>
@@ -38,8 +36,6 @@
     <ClInclude Include="common\math3.h"><Filter>common</Filter></ClInclude>
     <ClCompile Include="common\matrix.cpp"><Filter>common</Filter></ClCompile>
     <ClInclude Include="common\matrix.h"><Filter>common</Filter></ClInclude>
-    <ClCompile Include="common\symmetric_eigen.cpp"><Filter>common</Filter></ClCompile>
-    <ClInclude Include="common\symmetric_eigen.h"><Filter>common</Filter></ClInclude>
     <ClInclude Include="common\types.h"><Filter>common</Filter></ClInclude>
     <ClCompile Include="desktop\display.cpp"><Filter>desktop</Filter></ClCompile>
     <ClInclude Include="desktop\display.h"><Filter>desktop</Filter></ClInclude>

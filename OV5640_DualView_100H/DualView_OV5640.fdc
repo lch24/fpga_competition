@@ -975,3 +975,13 @@ define_attribute {p:iic_tx_scl} {PAP_IO_STANDARD} {LVCMOS33}
 define_attribute {p:iic_tx_scl} {PAP_IO_DRIVE} {4}
 define_attribute {p:iic_tx_scl} {PAP_IO_NONE} {TRUE}
 define_attribute {p:iic_tx_scl} {PAP_IO_SLEW} {FAST}
+
+# Dedicated algorithm PLL: 125 MHz reference -> 40 MHz, 25 ns period.
+create_generated_clock -name {algorithm_clk} -source [get_ports {clk_p}] [get_pins {algorithm_clock_gen/u_gpll:CLKOUT0}] -master_clock [get_clocks {ref_clk}] -multiply_by 8 -divide_by 25
+# Do not put algorithm_clk and ddrphy_sysclk in a false-path clock group:
+# preserve physical bounds on Gray pointers and bundled FIFO data. Bound every
+# crossing by the shorter (8 ns) clock period; synchronizers handle phase.
+set_max_delay -datapath_only 8.0 -from [get_clocks {algorithm_clk}] -to [get_clocks {ddrphy_sysclk}]
+set_max_delay -datapath_only 8.0 -from [get_clocks {ddrphy_sysclk}] -to [get_clocks {algorithm_clk}]
+# Board configuration and camera/video domains are asynchronous to the algorithm.
+set_clock_groups -name algorithm_external_async -asynchronous -group [get_clocks {algorithm_clk}] -group [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c_clk cam2_i2c_clk cmos1_pclk cmos2_pclk}]

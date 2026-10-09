@@ -1,4 +1,4 @@
-﻿#include <opencv2/opencv.hpp>
+#include <opencv2/opencv.hpp>
 #include <cstdio>
 #include <cmath>
 #include <limits>
@@ -54,21 +54,6 @@ int main(int argc,char** argv) {
     auto noisy_fit=calibrate_camera(noisy,1280,720,5,8);
     report("synthetic6 noisy",noisy_fit);
     if (!noisy_fit.camera.valid || noisy_fit.rms>.3 || std::fabs(noisy_fit.camera.fx-900)>27) ++failures;
-    // A fifth coefficient is supported explicitly, but not enabled for the
-    // three-image demo. Project independently with OpenCV for this oracle.
-    truthD.at<double>(0,4)=.04;
-    std::vector<std::vector<Point2f>> five_term;
-    for (int i=0;i<6;++i) {
-        std::vector<cv::Point2f> projected;
-        cv::projectPoints(object,rotations[i],translations[i],truthK,truthD,projected);
-        std::vector<Point2f> frame;
-        for (auto p:projected) frame.push_back({p.x,p.y});
-        five_term.push_back(frame);
-    }
-    CameraCalibrationOptions all_terms; all_terms.estimate_k3=true;
-    auto five_fit=calibrate_camera(five_term,1280,720,5,8,1,all_terms);
-    report("synthetic6 k3",five_fit);
-    if (!five_fit.camera.valid || five_fit.rms>.001 || std::fabs(five_fit.camera.k3-.04)>.005) ++failures;
     // Failure paths must never authorize remapping.
     if (calibrate_camera({three[0],three[1]},1280,720,5,8).camera.valid) ++failures;
     if (calibrate_camera({three[0],three[0],three[0]},1280,720,5,8).camera.valid) ++failures;
@@ -77,8 +62,6 @@ int main(int argc,char** argv) {
     broken=three; broken[0][0].x=std::numeric_limits<float>::quiet_NaN();
     if (calibrate_camera(broken,1280,720,5,8).camera.valid) ++failures;
     if (calibrate_camera(three,1280,720,5,8,-1).camera.valid) ++failures;
-    CameraCalibrationOptions no_iterations; no_iterations.max_iterations=1;
-    if (calibrate_camera(three,1280,720,5,8,1,no_iterations).camera.valid) ++failures;
     std::string root=argc>1 ? argv[1]:"E:/fpga/algorithom";
     std::vector<std::vector<Point2f>> real;
     std::vector<std::vector<cv::Point2f>> cvpoints;

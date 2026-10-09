@@ -24,14 +24,12 @@
     <ClInclude Include="algo\chessboard.h" />
     <ClInclude Include="algo\chessboard\internal.h" />
     <ClInclude Include="algo\grayscale.h" />
-    <ClInclude Include="algo\shi_tomasi.h" />
     <ClInclude Include="algo\subpixel.h" />
     <ClInclude Include="algo\undistort.h" />
     <ClInclude Include="common\image.h" />
     <ClInclude Include="common\image_view.h" />
     <ClInclude Include="common\math3.h" />
     <ClInclude Include="common\matrix.h" />
-    <ClInclude Include="common\symmetric_eigen.h" />
     <ClInclude Include="common\types.h" />
     <ClInclude Include="desktop\display.h" />
     <ClInclude Include="desktop\calibration_export.h" />
@@ -53,12 +51,10 @@
     <ClCompile Include="algo\chessboard\validation.cpp" />
     <ClCompile Include="algo\grayscale.cpp" />
     <ClCompile Include="algo\remap_table.cpp" />
-    <ClCompile Include="algo\shi_tomasi.cpp" />
     <ClCompile Include="algo\subpixel.cpp" />
     <ClCompile Include="algo\undistort.cpp" />
     <ClCompile Include="common\math3.cpp" />
     <ClCompile Include="common\matrix.cpp" />
-    <ClCompile Include="common\symmetric_eigen.cpp" />
     <ClCompile Include="desktop\display.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>

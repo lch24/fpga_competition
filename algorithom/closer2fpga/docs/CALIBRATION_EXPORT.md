@@ -1,3 +1,7 @@
+# 当前算法标识
+
+导出已切换为 single_seed_forward_lm_v1：单初值、单阶段、最多 60 次迭代、k3=0。rtl_algorithm_matches=false 表明旧 RTL 尚未迁移；rtl_input_ready 仅为输入格式检查。接口不再接收算法配置对象。详见 [当前标定实现](CALIBRATION_SIMPLIFICATION.md)。
+
 # 用真实角点对比 C++ 与 FPGA
 
 重新编译并运行桌面程序即可自动导出，无需另按保存按钮。输入仍是 `main.cpp` 中配置的三张图片，角点检测、标定和窗口显示流程保留。

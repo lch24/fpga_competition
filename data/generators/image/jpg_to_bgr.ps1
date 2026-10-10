@@ -1,7 +1,7 @@
 # jpg_to_bgr.ps1 - decode test JPGs into raw BGR byte files (no external deps)
 # ---------------------------------------------------------------------------
 # Uses .NET System.Drawing (GDI+), which is available in Windows PowerShell by
-# default. Output files are consumed by export_vectors.exe:
+# default. Output files are consumed by raw-image consumers:
 #   testN.bgr : raw bytes, BGR order, row-major, no padding (W*H*3 bytes)
 #   testN.dim : ASCII text "W H"
 # ---------------------------------------------------------------------------

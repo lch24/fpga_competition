@@ -13,7 +13,7 @@ def main():
     parser.add_argument('--update',action='store_true')
     args=parser.parse_args()
     sources=sorted([p for p in (ROOT/'rtl').rglob('*') if p.suffix in ('.v','.sv')],
-                   key=lambda p:(p.name!='lround_pkg.sv',p.as_posix()))
+                   key=lambda p:p.as_posix())
     board=[p for p in sources if 'board' in p.parts or 'clock' in p.parts or p.name=='calibrated_view_top.v']
     common=[p for p in sources if p not in board]
     manifest=['+incdir+rtl/include']+[p.relative_to(ROOT).as_posix() for p in common]

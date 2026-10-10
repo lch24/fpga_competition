@@ -98,7 +98,13 @@ module vision_ddr_top #(
   .clk(clk),.rst_n(rst_n),.cmd_valid(gv),.cmd_ready(gr),.width(16'(WIDTH)),.height(16'(HEIGHT)),
   .src_base(src),.src_stride(ss),.dst_base(GRAY_BASE),.dst_stride(32'(WIDTH)),.rsp_valid(gdone),.rsp_ready(gack),.rsp_status(gs),
   ${client(0)});
- corner_detect_ddr_top #(.DDR_CANDIDATES(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.W0(WIDTH),.H0(HEIGHT),.DEPTH(DEPTH),.REPLAY_RESP(1),.DDR_GRAY(1),.GRAY_ADDR_W($clog2(2*WIDTH*HEIGHT)),.ROWS(\`PAR_BOARD_ROWS),.COLS(\`PAR_BOARD_COLS)) detector(
+ wire feature_req_valid,feature_req_ready,feature_active,feature_rsp_valid,feature_rsp_ready;
+ wire [4:0] feature_req_op,feature_flags;
+ wire [63:0] feature_req_a,feature_req_b,feature_result;
+ corner_detect_ddr_top #(.FP_SHARED(1),.DDR_CANDIDATES(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.W0(WIDTH),.H0(HEIGHT),.DEPTH(DEPTH),.REPLAY_RESP(1),.DDR_GRAY(1),.GRAY_ADDR_W($clog2(2*WIDTH*HEIGHT)),.ROWS(\`PAR_BOARD_ROWS),.COLS(\`PAR_BOARD_COLS)) detector(
+  .math_req_valid(feature_req_valid),.math_req_ready(feature_req_ready),.math_req_op(feature_req_op),
+  .math_req_a(feature_req_a),.math_req_b(feature_req_b),.math_active(feature_active),
+  .math_rsp_valid(feature_rsp_valid),.math_rsp_ready(feature_rsp_ready),.math_result(feature_result),.math_flags(feature_flags),
   .clk(clk),.rst_n(ar),.process_frame(process_frame),.busy(),.done(ddone),.status(dstatus),
   .cfg_gray_base(GRAY_BASE),.cfg_gray_stride(32'(WIDTH)),.cfg_gray_w(16'(WIDTH)),.cfg_gray_h(16'(HEIGHT)),.cfg_ram_base({$clog2(2*WIDTH*HEIGHT){1'b0}}),
   .cfg_resp_base(32'd0),.cfg_resp_dump_en(1'b0),.cfg_pyr_en(DEPTH>1),
@@ -107,7 +113,10 @@ module vision_ddr_top #(
   .ext_wr_req_valid(1'b0),.ext_wr_req_addr(32'd0),.ext_wr_req_len(32'd0),.ext_wr_req_tag(16'd0),
   .ext_wr_dat_valid(1'b0),.ext_wr_dat_data(32'd0),.ext_wr_dat_keep(4'd0),.ext_wr_dat_last(1'b0),.ext_wr_done_ready(1'b1),
   ${client(1,detector)});
- calib_top calibration(
+ calib_top #(.EXTERNAL_FP(1)) calibration(
+  .math_req_valid(feature_req_valid),.math_req_ready(feature_req_ready),.math_req_op(feature_req_op),
+  .math_req_a(feature_req_a),.math_req_b(feature_req_b),.math_active(feature_active),
+  .math_rsp_valid(feature_rsp_valid),.math_rsp_ready(feature_rsp_ready),.math_result(feature_result),.math_flags(feature_flags),
   .clk(clk),.rst_n(ar),.collect_valid(collect_v),.collect_ready(collect_r),.collect_job_id(debug_job),
   .corner_valid(cv),.corner_ready(cr),.corner_job_id(debug_job),.corner_view_id(debug_view),.corner_point_index(index),.corner_x_fp32(dx),.corner_y_fp32(dy),.corner_last(last),
   .view_rsp_valid(vr),.view_rsp_ready(va),.view_rsp_job_id(debug_job),.view_rsp_view_id(debug_view),.view_rsp_status(view_status),

@@ -1,28 +1,26 @@
-# 测试输入与参考数据
+# 程序源、测试输入与参考数据
 
-| 子目录 | 内容与来源 |
-| --- | --- |
-| calibration | 独立标定/几何/浮点参考向量、用例名称和基准结果 |
-| real | 已保存的真实图像 C++ 导出：角点、标定参数、完成标志；保持每次导出文件成套 |
-| reports | 从旧工作目录保留的精简数值对比与局部综合报告，见 [说明](reports/README.md) |
-| system | 独立渲染图像、平方根向量、棋盘排序基准及系统对比基准 |
-| rom | RTL 使用的权重和三角表唯一维护源；运行目录中的副本均为工具生成 |
-| generators/calibration | JS/C++ 标定与数值参考、真实导出格式转换 |
-| generators/image | 检测阶段 C++ 向量导出与 JPG 转换 |
-| generators/remap | NumPy FP32 算术和坐标映射参考 |
-| generators/system | 独立测试棋盘图像、平方根向量生成 |
-| generators/rom | ROM 表生成器 |
+## 指令程序
 
-以下命令从仓库根运行。已保存的快速回归向量可直接使用；重新生成数据不能覆盖 RTL 的输出以充当期望值。
+| 目录 | 内容 | 维护方式 |
+|---|---|---|
+| `programs/calibration` | 指令定义 `isa.json`，姿态、旋转、求解等 `.asm` | 输入源，修改后运行 `build_rom.py`；部分汇编供独立指令测试 |
+| `programs/detection` | 检测任务可读清单 `flow.lst` | 由 `scripts/image/build_detection_program.py` 生成 |
+| `programs/features` | 精修程序清单 `refine.lst` | 由 `scripts/compute/microcode/build_feature.py` 生成 |
+| `programs/math` | 数学程序清单 `program.lst` | 由 `scripts/compute/microcode/build_math.py` 生成 |
 
-```powershell
-node data/generators/calibration/generate_model_vectors.js
-node data/generators/calibration/generate_init_vectors.js
-node data/generators/system/generate_board_images.js
-python data/generators/system/generate_sqrt_vectors.py
-python data/generators/remap/generate_vectors.py --out data/remap
-```
+实际综合使用 `rtl/include/*program_init.vh`，这些生成物随仓库提供。初值/LM/检查的展开汇编写入 `build/calibration_engine` 供调试，不是另一份维护源。程序 ROM 随 FPGA 配置初始化，工作数据运行时再装入 RAM。
 
-历史检测阶段的大型二进制向量按需写入 `data/image`；`generators/image/run_export.cmd` / `run_export_gcc.cmd` 可生成基础图像参考，其他阶段生成器位于同目录。实际源图由 C++ 工程提供，尚未生成的历史向量不属于快速测试必备数据。
+## 数值输入
 
-`real` 保存已有对拍输入，C++ 应用以后生成的新一轮导出仍写入其原 `exports` 目录；需要固定为回归输入时再成套归档到这里。仿真实际结果写入根 `build`，不混入参考目录。
+| 目录 | 内容 |
+|---|---|
+| `calibration` | 浮点、几何、初值、LM、检查等参考向量 |
+| `real` | 已归档的真实图像角点和对应 C++ 参数 |
+| `fixtures` | C++ 推荐算法的固定回归基准 |
+| `system` | 独立渲染图像、排序和系统参考 |
+| `rom` | 图像算法的权重/三角常量表 |
+| `reports` | 有日期和版本边界的历史验证证据 |
+| `generators` | 按 calibration/image/remap/system/rom 分类的数据生成程序 |
+
+真实角点以 FP32 位模式输入 RTL，期望结果来自独立参考模型或保存的 C++ 导出；仿真实际输出在 `build`。独立算术向量生成器仍可写入 `data/image`；依赖已删除 Shi–Tomasi 软件接口的旧图像阶段导出器和孤立 TB 已清理。当前可运行入口见[脚本目录](../scripts/README.md)，历史结果见 [reports](reports/README.md)。

@@ -1,38 +1,13 @@
-`timescale 1ns / 1ps
-//==============================================================================
-// subpixel_ctrl.sv — M5 亚像素精定位主控（复刻 algo/subpixel.cpp::refine_subpixel）
-//------------------------------------------------------------------------------
-// 对点流逐点做 40 轮以内的高斯加权梯度交点迭代：
-//   sample：floor 取整 + 小数部分，bilinear_core 插值（float）
-//   gx/gy  ：相邻 1px 差分（fp32_sub，float 精度）→ f32_to_f64 提升（精确）
-//   w      ：exp(-(x²+y²)/r²)，离线 ROM（gaussian_weights.mem，radius=2..15）
-//            段内 y 外循环 x 内循环（与 export_m5.cpp 累加顺序一致）
-//   xx/xy/yy/bx/by：subpixel_accum 五项 FP64 累加（同序逐次舍入）
-//   solve  ：tensor_solve（FP64，det/trace 可靠性判定 + 除法）
-//   next   ：f64_to_f32(p + dx/dy)；非有限 || hypot(next-original)>radius → 失败
-//   converge：dx²+dy²<1e-6（FP64）→ reliable；40 轮未收敛保留 original
-// 位级权威 = tests/rtl/export_m5.cpp（refine_subpixel_traj），逐迭代一致。
-//
-// 三级循环：点（0..n_in-1）→ 迭代（0..39）→ 窗口（y=-r..r 外、x=-r..r 内）。
-//
-// 存储与读口：
-//   - 点读口 pt_rd_*：1 拍延迟（candidate_store 单读口阶段复用；SUBPX 期间归本模块）
-//   - 灰度读口 gray_rd_*：1 拍延迟（外部存储/DDR 模型；与 ring_check 同款）
-//   - patch RAM：每迭代按当前 floor(p) 预装 [floor(p.x)-r-1, floor(p.x)+r+2]×
-//     [floor(p.y)-r-1, floor(p.y)+r+2]（2r+4 行 × 2r+4 列，r=15 时 34×34），
-//     组合读（reg 数组），迭代中窗口像素 0 延迟取。
-//   - w ROM：gaussian_weights.mem，段基址按 r 查（每 r 一段，(2r+1)² 项）。
-//
-// 时序契约（不得改动）：
-//   - pt/gray 读口：rd_en=1 的下一拍数据有效（请求拍 → 转移拍 → 吸收拍）。
-//   - fp32/fp64 算术模块：fire 拍接受，out_valid 下一拍起（弹握手流水）。
-//   - bilinear_core 一次 2 拍延迟；每窗口位置需 4 次 bilinear（sample(sx±1,sy)、
-//     (sx,sy±1)）+ 2 次 fp32_sub 差分 + f32_to_f64 提升 → 喂 accum 一组。
-//   - accum：逐样本流水吸收，n_win=(2r+1)² 收齐后 out_valid 给 5 项。
-//   - tensor_solve：start 后 busy/done，出 ok/dx/dy。
-//   - 输出流 out_*：reliable=1 收敛更新 / =0 保留 original；out_valid 握手。
-//==============================================================================
-module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter VARIABLE_SCALE=0,
+`timescale 1ns/1ps
+// Subpixel refinement: point -> iteration -> weighted image window.
+// Patch loading, interpolation, gradients and accumulation remain hardware.
+// feature_program executes tensor solving, coordinate update and convergence
+// with a shared scalar ALU. FP_SHARED connects it to the board arithmetic pool;
+// standalone use supplies one local ALU. The outer controller checks finite
+// coordinates, displacement radius and the iteration limit before publishing.
+// All variable-latency services use valid/ready or start/done; CE freezes the
+// local pipeline, while external scalar replies are held until CE resumes.
+module subpixel_ctrl #(parameter FP_SHARED=0,parameter SHARED_HYPOT=0, parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter VARIABLE_SCALE=0,
     parameter IMG_W        = 1280,
     parameter IMG_H        = 720,
     parameter GRAY_ADDR_W  = 20,        // ≥ $clog2(W*H)
@@ -40,6 +15,16 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
     parameter PATCH_HW     = 16,        // 最大半宽 r+1=16 → patch 2r+4=34
     parameter ROM_FILE     = "data/rom/gaussian_weights.mem"
 ) (
+    // Optional shared FP64 scalar service, independent of the image stream.
+    output wire math_req_valid,input wire math_req_ready,output wire [4:0] math_req_op,
+    output wire [63:0] math_req_a,math_req_b,output wire math_active,
+    input wire math_rsp_valid,output wire math_rsp_ready,input wire [63:0] math_result,
+    input wire [4:0] math_flags,
+    // Optional shared coordinate-distance service; same reset/CE domain.
+    output wire math_hyp_valid,input wire math_hyp_ready,
+    output wire [31:0] math_hyp_a,math_hyp_b,
+    input wire math_hyp_rsp_valid,output wire math_hyp_rsp_ready,
+    input wire [31:0] math_hyp_result,
     // Global synchronous stall for variable-latency backing memory.
     input wire ce,
     input wire [2:0] cfg_scale,
@@ -107,9 +92,7 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
     reg [1:0] smpl;
 
     // solve 子状态（I_SOLVE 内 nst）
-    localparam SV0 = 4'd0, SV1 = 4'd1, SV2 = 4'd2, SV3 = 4'd3,
-               SV4 = 4'd4, SV5 = 4'd5, SV6 = 4'd6, SV7 = 4'd7,
-               SV8 = 4'd8, SV9 = 4'd9;
+    localparam SV0 = 4'd0, SV1 = 4'd1;
     reg [3:0] nst;
 
     // 更新子状态（I_UPDATE 内 ust）
@@ -141,9 +124,6 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
     reg [31:0] bilA_r, bilB_r, bilC_r, bilD_r;
     reg [63:0] gx64_r, gy64_r;      // 差分 → f64 提升
     reg [63:0] acc_x_r, acc_y_r, acc_w_r, acc_gx_r, acc_gy_r;  // accum 输入锁存
-    reg [63:0] ts_dx_r, ts_dy_r;    // tensor_solve 输出锁存
-    reg [63:0] nextx64_r;           // fp64_add(cur_x, dx) 结果
-    reg [63:0] cmulx_r, cmuly_r;    // dx², dy²（收敛链）
     reg [63:0] conv_sum_r;          // dx²+dy²
     reg        acc_start_p, ts_start_p;   // 脉冲
     reg        solve_started;       // tensor_solve start 已接受标志
@@ -243,8 +223,6 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
 
     // fp32_add ×2（基址/变轴）
     wire window_active = state==S_ITER && ist==I_WIN;
-    wire solve_active = state==S_ITER && ist==I_SOLVE;
-    wire update_active = state==S_ITER && ist==I_UPDATE;
     // Substates retain their last value outside their owning phase. Never
     // launch arithmetic from an inactive substate (stale FIFO results would
     // otherwise be mistaken for a new point when arithmetic latency changes).
@@ -296,29 +274,6 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
     wire sub_gy_v;
     wire [31:0] sub_gy_r;
 
-    // fp64_mul ×2（收敛 dx²/dy²）
-    wire cmul_fire = solve_active && (nst == SV2);
-    wire cmul_v1, cmul_v2;
-    wire [63:0] cmul_r1, cmul_r2;
-
-    // fp64_add（收敛和 dx²+dy²）
-    wire acnv_fire = update_active && (ust == U0);
-    wire acnv_v;
-    wire [63:0] acnv_r;
-
-    // fp64_add（next = cur + dx / cur + dy）
-    wire anxtx_fire = solve_active && (nst == SV2);
-    wire anxty_fire = solve_active && (nst == SV7);
-    wire anxt_v;
-    wire [63:0] anxt_r;
-
-    // f64_to_f32 ×1（next_x/next_y 串行）
-    wire cvtx_fire = solve_active && (nst == SV5);
-    wire cvty_fire = solve_active && (nst == SV8) && anxt_v;
-    wire [63:0] cvt_in = (nst == SV5) ? nextx64_r : anxt_r;
-    wire cvt_v;
-    wire [31:0] cvt_r;
-
     // fp32_hypot（|next-orig|）
     wire hyp_fire = (ust == U1) && sub_gx_v && sub_gy_v;
     wire hyp_v;
@@ -331,10 +286,6 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
 
     wire ts_busy, ts_done, ts_out_ok;
     wire [63:0] ts_out_dx, ts_out_dy;
-
-    // anxt 操作数：SV2 做 x（cur_x+dx）、SV7 做 y（cur_y+dy）
-    wire [63:0] anxt_a = (nst == SV2) ? f32_to_f64_c(cur_x) : f32_to_f64_c(cur_y);
-    wire [63:0] anxt_b = (nst == SV2) ? ts_dx_r : ts_dy_r;
 
     //--------------------------------------------------------------------
     // Window pixel addresses; four synchronous reads precede W_FIRE.
@@ -413,7 +364,14 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
     );
     end endgenerate
 
-    tensor_solve #(.USE_CE(USE_CE)) u_ts (.ce(ce),
+    wire [31:0] program_next_x,program_next_y;
+    wire [63:0] program_convergence;
+    feature_program #(.USE_CE(USE_CE),.FP_SHARED(FP_SHARED)) u_ts (.ce(ce),
+        .math_req_valid(math_req_valid),.math_req_ready(math_req_ready),.math_req_op(math_req_op),
+        .math_req_a(math_req_a),.math_req_b(math_req_b),.math_active(math_active),
+        .math_rsp_valid(math_rsp_valid),.math_rsp_ready(math_rsp_ready),.math_result(math_result),.math_flags(math_flags),
+        .refine(1'b1),.in_x(cur_x),.in_y(cur_y),
+        .out_x(program_next_x),.out_y(program_next_y),.out_convergence(program_convergence),
         .clk(clk), .rst_n(rst_n),
         .start(ts_start_p), .busy(ts_busy), .done(ts_done),
         .in_a(acc_out_a), .in_b(acc_out_b), .in_c(acc_out_c),
@@ -484,37 +442,11 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
         .in_a(sub_gy_a), .in_b(sub_gy_b),
         .out_valid(sub_gy_v), .out_ready(1'b1), .out_r(sub_gy_r)
     );
-    fp64_mul #(.USE_CE(USE_CE)) u_cmul1 (.ce(ce),
-        .clk(clk), .rst_n(rst_n),
-        .in_valid(cmul_fire), .in_ready(),
-        .in_a(ts_dx_r), .in_b(ts_dx_r),
-        .out_valid(cmul_v1), .out_ready((nst == SV4) && anxt_v && cmul_v1 && cmul_v2), .out_r(cmul_r1)
-    );
-    fp64_mul #(.USE_CE(USE_CE)) u_cmul2 (.ce(ce),
-        .clk(clk), .rst_n(rst_n),
-        .in_valid(cmul_fire), .in_ready(),
-        .in_a(ts_dy_r), .in_b(ts_dy_r),
-        .out_valid(cmul_v2), .out_ready((nst == SV4) && anxt_v && cmul_v1 && cmul_v2), .out_r(cmul_r2)
-    );
-    fp64_add #(.USE_CE(USE_CE)) u_acnv (.ce(ce),
-        .clk(clk), .rst_n(rst_n),
-        .in_valid(acnv_fire), .in_ready(),
-        .in_a(cmulx_r), .in_b(cmuly_r),
-        .out_valid(acnv_v), .out_ready(1'b1), .out_r(acnv_r)
-    );
-    fp64_add #(.USE_CE(USE_CE)) u_anxt (.ce(ce),
-        .clk(clk), .rst_n(rst_n),
-        .in_valid(anxtx_fire || anxty_fire), .in_ready(),
-        .in_a(anxt_a), .in_b(anxt_b),
-        .out_valid(anxt_v), .out_ready((nst == SV8) || ((nst == SV4) && cmul_v1 && cmul_v2)), .out_r(anxt_r)
-    );
-    f64_to_f32 #(.USE_CE(USE_CE)) u_cvt (.ce(ce),
-        .clk(clk), .rst_n(rst_n),
-        .in_valid(cvtx_fire || cvty_fire), .in_ready(),
-        .in_x(cvt_in),
-        .out_valid(cvt_v), .out_ready(1'b1), .out_r(cvt_r)
-    );
-    fp32_hypot #(.USE_CE(USE_CE)) u_hyp (.ce(ce),
+    hypot_port #(.SHARED(SHARED_HYPOT),.USE_CE(USE_CE)) u_hyp (.ce(ce),
+        .math_hyp_valid(math_hyp_valid),.math_hyp_ready(math_hyp_ready),
+        .math_hyp_a(math_hyp_a),.math_hyp_b(math_hyp_b),
+        .math_hyp_rsp_valid(math_hyp_rsp_valid),.math_hyp_rsp_ready(math_hyp_rsp_ready),
+        .math_hyp_result(math_hyp_result),
         .clk(clk), .rst_n(rst_n),
         .in_valid(hyp_fire), .in_ready(),
         .in_a(sub_gx_r), .in_b(sub_gy_r),
@@ -550,8 +482,6 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
             gx64_r <= 64'd0; gy64_r <= 64'd0;
             acc_x_r <= 64'd0; acc_y_r <= 64'd0; acc_w_r <= 64'd0;
             acc_gx_r <= 64'd0; acc_gy_r <= 64'd0;
-            ts_dx_r <= 64'd0; ts_dy_r <= 64'd0;
-            nextx64_r <= 64'd0; cmulx_r <= 64'd0; cmuly_r <= 64'd0;
             conv_sum_r <= 64'd0;
             acc_start_p <= 1'b0; ts_start_p <= 1'b0;
             solve_started <= 1'b0;
@@ -794,52 +724,13 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
                                             reliable <= 1'b0;
                                             state <= S_OUT;
                                         end else begin
-                                            ts_dx_r <= ts_out_dx;
-                                            ts_dy_r <= ts_out_dy;
-                                            nst <= SV2;
+                                            next_x<=program_next_x;next_y<=program_next_y;
+                                            conv_sum_r<=program_convergence;
+                                            ust<=U0;ist<=I_UPDATE;
                                         end
                                     end
                                 end
-                                SV2: begin
-                                    // 发 next_x 的 fp64_add + 收敛 dx²/dy²（组合）
-                                    nst <= SV3;
-                                end
-                                SV3: nst <= SV4;
-                                SV4: begin
-                                    if (anxt_v && cmul_v1 && cmul_v2) begin
-                                        nextx64_r <= anxt_r;
-                                        cmulx_r <= cmul_r1;
-                                        cmuly_r <= cmul_r2;
-                                        nst <= SV5;
-                                    end
-                                end
-                                SV5: begin
-                                    // 发 f64_to_f32(next_x)（组合）
-                                    nst <= SV6;
-                                end
-                                SV6: begin
-                                    if (cvt_v) begin
-                                        next_x <= cvt_r;
-                                        nst <= SV7;
-                                    end
-                                end
-                                SV7: begin
-                                    // 发 next_y 的 fp64_add（组合）
-                                    nst <= SV8;
-                                end
-                                SV8: begin
-                                    if (anxt_v) begin
-                                        // 同拍发 f64_to_f32(next_y)（操作数 anxt_r 有效）
-                                        nst <= SV9;
-                                    end
-                                end
-                                default: begin   // SV9
-                                    if (cvt_v) begin
-                                        next_y <= cvt_r;
-                                        ust <= U0;
-                                        ist <= I_UPDATE;
-                                    end
-                                end
+                                default: nst<=SV0;
                             endcase
                         end
                         I_UPDATE: begin
@@ -854,8 +745,7 @@ module subpixel_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, para
                                     end
                                 end
                                 U1: begin
-                                    if (sub_gx_v && sub_gy_v && acnv_v) begin
-                                        conv_sum_r <= acnv_r;
+                                    if (sub_gx_v && sub_gy_v) begin
                                         ust <= U2;      // 同拍发 hypot（组合）
                                     end
                                 end

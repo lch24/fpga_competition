@@ -27,7 +27,7 @@
 // 响应导出：detect_ctrl.resp_dump_* 直连 resp_ddr_writer.in_*；
 //   cfg_words = (W0>>(DEPTH-1))*(H0>>(DEPTH-1))（参数化 localparam）。
 //==============================================================================
-module corner_detect_ddr_top #(
+module corner_detect_ddr_top #(parameter FP_SHARED=0,
     parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0,
     parameter W0          = 1280,
     parameter H0          = 720,
@@ -42,6 +42,12 @@ module corner_detect_ddr_top #(
     parameter DDR_GRAY = 0, // 1: packed gray/pyramid in DDR, 4 KiB cache
     parameter REPLAY_RESP = 0 // No response frame RAM; cfg_resp_dump_en must be 0
 ) (
+    // Optional shared FP64 scalar service, independent of the image stream.
+    output wire math_req_valid,input wire math_req_ready,output wire [4:0] math_req_op,
+    output wire [63:0] math_req_a,math_req_b,output wire math_active,
+    input wire math_rsp_valid,output wire math_rsp_ready,input wire [63:0] math_result,
+    input wire [4:0] math_flags,
+
     input  wire                    clk,
     input  wire                    rst_n,
 
@@ -281,11 +287,14 @@ module corner_detect_ddr_top #(
     wire        det_resp_dump_valid, det_resp_dump_ready, det_resp_dump_done;
     wire [31:0] det_resp_dump_data;
 
-    detect_ctrl #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),
+    detect_ctrl #(.FP_SHARED(FP_SHARED),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),
         .USE_CE(DDR_GRAY),
         .W0 (W0), .H0 (H0), .DEPTH (DEPTH), .GRAY_ADDR_W (GRAY_ADDR_W),
         .DDR_CANDIDATES(DDR_CANDIDATES),.ROWS(ROWS), .COLS(COLS), .REPLAY_RESP(REPLAY_RESP), .SHARE_BACKEND(DDR_GRAY)
-    ) u_det (.scratch_rd_en(scratch_rd_en),.scratch_wr_en(scratch_wr_en),
+    ) u_det (
+        .math_req_valid(math_req_valid),.math_req_ready(math_req_ready),.math_req_op(math_req_op),
+        .math_req_a(math_req_a),.math_req_b(math_req_b),.math_active(math_active),
+        .math_rsp_valid(math_rsp_valid),.math_rsp_ready(math_rsp_ready),.math_result(math_result),.math_flags(math_flags),.scratch_rd_en(scratch_rd_en),.scratch_wr_en(scratch_wr_en),
         .scratch_rd_addr(scratch_rd_addr),.scratch_wr_addr(scratch_wr_addr),
         .scratch_wr_data(scratch_wr_data),.scratch_rd_data(scratch_rd_data),
         .ce(engine_ce),

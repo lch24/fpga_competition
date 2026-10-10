@@ -1,43 +1,21 @@
-# 当前标定实现
+# 当前 C++ 标定算法
 
-C++ 已固定为经过验证的推荐方案，没有算法模式选项。图像尺寸、棋盘行列数、视图数和方格尺寸仍由输入决定，至少需要三张有效视图。
+入口为 `algo/calibrate.cpp` 的 `calibrate_camera`。输入每张图的有序角点、图像尺寸、棋盘行列数和格长，输出共享相机参数、每图姿态、误差及有效性。当前只维护这一套流程。
 
-## 流程和接口
+## 初值
 
-1. 归一化角点，固定 H 最后一项为 1，用 8 元线性最小二乘求各视图单应矩阵。
-2. 焦距初值等于图宽，主点为图像中心；由 H 和 K 恢复各图 R、t，畸变初值为零。
-3. 单阶段 LM，联合优化内参、k1/k2/p1/p2 和全部 R、t，固定 k3=0。
-4. 保留收敛、内参范围、重投影误差、姿态及 33×25 点映射折叠检查；汇总复用最终残差。
+归一化角点，固定 H 的最后一项为 1，用 8 元线性最小二乘求各图单应矩阵。共享焦距初值取图宽、主点取图像中心；从 K 与 H 恢复各图 R/t，畸变初值为零。
 
-LM 使用单边差分，最多 60 次外迭代、每次 8 次阻尼试探。代价改善停止阈值为 1e-7×(1+E)，相对步长阈值为 1e-9，也保留梯度停止条件。只接受降低代价的更新。
+## 按视图分块的 LM
 
-删除了 Zhang、特征值初始化、多初值、分阶段、中心差分及模型切换，以及配置类和无调用的特征值求解器。状态仍保留 k3 的零值位置，不进入优化方程。
+共享参数是 8 个：焦距、主点及 k1/k2/p1/p2；每图另有 6 个姿态参数，k3 固定为零。一张图的残差只依赖共享参数和该图姿态，所以不必建立包含所有视图的大矩阵。
 
-~~~cpp
-auto result = calibrate_camera(points, width, height, rows, cols, square_size);
-if (result.camera.valid) {
-    // 才能应用校正。
-}
-~~~
+`algo/calibration/lm.cpp` 直接累积共享的 8×8 块、每图的 8×6 交叉块与 6×6 姿态块。先消去各图姿态，形成 8×8 Schur 方程求共享参数更新，再回代各图姿态更新。各图依然联合标定同一相机，不是各自求出三套相机参数。
 
-[入口](../closer2fpga/algo/calibrate.cpp) → [单应求解](../closer2fpga/algo/calibration/initialization.cpp) → [姿态](../closer2fpga/algo/calibration/pose_init.cpp) → [LM](../closer2fpga/algo/calibration/lm.cpp) → [检查](../closer2fpga/algo/calibration/report.cpp)。
+内参、畸变和平移采用解析导数，旋转使用单边差分。运算为 double，角点及最终相机参数为 FP32。最多 60 次外迭代、每次 8 次阻尼尝试，只有代价降低才接受更新。
 
-## 验证
+## 检查与校正
 
-从仓库根目录运行，MSVC 根目录可通过 VS_ROOT 指定：
+`report.cpp` 汇总重投影误差、姿态和参数有效性，并检查采样映射。成功后 `remap_table.cpp` 生成输出像素到原图的坐标表，`undistort.cpp` 按表双线性取样。
 
-~~~powershell
-& .\algorithom\closer2fpga\tests\run_recommended_tests.cmd
-& .\algorithom\closer2fpga\tests\run_calibration_tests.cmd
-& .\algorithom\closer2fpga\tests\run_export_tests.cmd
-~~~
-
-第一项对比上次推荐方案保存的 [8 组数值基准](../../../data/fixtures/calibration/recommended.csv)，覆盖真实角点、不同棋盘/视图数、纯径向、切向畸变、噪声、长短焦距和弱姿态，以及重复视图/缺点/退化输入拒绝。测试不再携带其他算法实现。其余两项验证 OpenCV 对照、纯 C++ 去畸变、缓冲区和导出。
-
-真实角点 RMS 约 0.542585388 像素、残差计算 299 遍，与精简前推荐配置一致。原方案曾需要 9145 遍；推荐方案与原方案的采样映射最大变化约 0.0012 像素。删掉切向项曾导致约 17 像素变化，因此保留 p1/p2。
-
-低 RMS 不保证边缘精度：弱姿态和较短焦距合成数据边缘真值误差仍约 8～10 像素，原方案也存在此问题。当前求解为 double、角点和输出参数为 FP32；尚未验证 FP32 求解或迁移 RTL，计算遍数下降不等于 FPGA LUT 或时间同比下降。
-
-导出算法标识为 single_seed_forward_lm_v1，rtl_algorithm_matches=false，保留旧字段 max_iterations_per_stage=60（当前只有一阶段）。rtl_input_ready 仅表示角点格式可供旧适配器使用，不表示算法逐位一致。旧 RTL 设计规划属于旧硬件流程，不能作为当前 C++ 流程说明。
-
-旧 RTL 的 init/LM/top/check 四个 C++ 参考生成入口已明确停用，防止新算法覆盖旧硬件期望值；已有向量与 RTL 仿真入口保留。待 RTL 迁移后再恢复相应对照。
+验证入口见[项目 README](../README.md)。导出算法名为 `single_seed_schur_hybrid_lm_v2`。当前 RTL 已采用共享指令执行架构，但初值仍为 DLT/Jacobi、LM 仍以中心差分和完整活动参数方程为基础，因此 `rtl_algorithm_matches=false` 保留。数值对照应使用同一组角点，并分别检查参数、误差和映射偏差。

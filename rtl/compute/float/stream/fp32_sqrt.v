@@ -23,7 +23,7 @@ module fp32_sqrt (
     // 负输入防御：sqrtf(负数)=NaN，本值域不会出现；给 NaN(0x7FC00000) 安全
     wire is_neg = in_x[31];
 
-    // f32 → f64 提升（参考 min_eigen_core 的 trace64 手法）
+    // f32 → f64 提升（参考 FP32 conversion 的 trace64 手法）
     wire [10:0] e64 = {3'b000, in_x[30:23]} + 11'd896;
     wire [63:0] x64 = {is_neg ? 1'b1 : 1'b0, e64, in_x[22:0], 29'd0};
 

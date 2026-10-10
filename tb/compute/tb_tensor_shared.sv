@@ -28,6 +28,8 @@ module tb_tensor_shared #(parameter COUNT=604);
         for(i=0;i<COUNT;i=i+1)begin
             {expected_ok,in_a,in_b,in_c,in_bx,in_by,expected_dx,expected_dy}=vectors[i];
             launch();cycles=0;
+            // Accepted inputs must be latched, even while other units stall.
+            in_a=0;in_b=0;in_c=0;in_bx=0;in_by=0;
             while(!done)begin @(negedge clk);#1;cycles=cycles+1;
                 if(cycles>2000)$fatal(1,"timeout case %0d",i);end
             if(out_ok!==expected_ok[0] || busy)$fatal(1,"validity case %0d",i);

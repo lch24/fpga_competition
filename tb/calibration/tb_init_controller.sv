@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
-// 真正的corner_store + 全部init子模块；仅3个专门场景强制子核状态以检查调度容错。
-module tb_init_controller;
+// Real corner_store, shared instruction engine and FP pool. Two directed
+// numerical-fault cases inject NaN at the public FP response interface.
+module tb_init_controller #(parameter QUICK=0);
+ `include "init_test_defs.vh"
     reg clk=0;always #5 clk=~clk;
     reg rst_n=0,cmd_valid=0,rsp_ready=0,seed_ready=0;
     wire cmd_ready,rsp_valid,seed_valid;wire [7:0] rsp_status;
@@ -21,7 +23,16 @@ module tb_init_controller;
     reg [7:0] held_status;reg [2:0] held_count;
     reg [31:0] random_state=32'h652fab19;
     real av,ev,difference,tolerance;
-    init_controller dut(.clk(clk),.rst_n(rst_n),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),
+    wire [127:0] execution_req;wire [95:0] execution_rsp;
+    wire [7:0] fv,fr,fa,sv,sr;wire [39:0] fo;wire [511:0] fpa,fpb;wire [63:0] value;wire [4:0] flags;
+    calib_execution_service execution(.clk(clk),.rst_n(rst_n),.request(execution_req),.response(execution_rsp),
+    .shared_req_valid(fv[7]),.shared_req_ready(fr[7]),.shared_req_op(fo[35+:5]),.shared_req_a(fpa[448+:64]),.shared_req_b(fpb[448+:64]),
+    .shared_rsp_valid(sv[7]),.shared_rsp_ready(sr[7]),.shared_rsp_result(value),.shared_rsp_flags(flags));
+    assign fa[7]=rst_n;
+    fp_calibration_pool #(.CLIENTS(8)) pool(.clk(clk),.rst_n(rst_n),.c_req_valid(fv),.c_req_ready(fr),.c_req_op(fo),.c_req_a(fpa),.c_req_b(fpb),.c_active(fa),.c_rsp_valid(sv),.c_rsp_ready(sr),.result(value),.flags(flags));
+    init_controller #(.FP_SHARED(1),.ENGINE_SHARED(1)) dut(.execution_req(execution_req),.execution_rsp(execution_rsp),
+    .shared_req_valid(fv[6:0]),.shared_req_ready(fr[6:0]),.shared_req_op(fo[34:0]),.shared_req_a(fpa[447:0]),.shared_req_b(fpb[447:0]),
+    .shared_active(fa[6:0]),.shared_rsp_valid(sv[6:0]),.shared_rsp_ready(sr[6:0]),.shared_rsp_result(value),.shared_rsp_flags(flags),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),
         .cmd_width(cmd_width),.cmd_height(cmd_height),
         .point_rd_en(read_en),.point_rd_view_id(read_view),.point_rd_index(read_index),
         .point_rd_valid(read_valid),.point_rd_x_fp32(read_x),.point_rd_y_fp32(read_y),
@@ -33,9 +44,10 @@ module tb_init_controller;
         .view_rsp_valid(view_rsp_valid),.view_rsp_ready(view_rsp_ready),.view_rsp_view_id(view_rsp_view),.view_rsp_status(8'b0),
         .view_done(),.view_status(),.view_point_count(),.view_format_error(),.view_usable(usable),
         .rd_en(read_en),.rd_view_id(read_view),.rd_point_index(read_index),.rd_valid(read_valid),.rd_x_fp32(read_x),.rd_y_fp32(read_y));
-    // 定向错误注入保留真实子核计算与握手，只覆盖完成状态，验证父模块的跳过规则。
+    // Preserve real request/response timing; inject a non-finite arithmetic
+    // result during either homography or pose to verify GUARD termination.
     always @(negedge clk) begin
-        if(mode==3 || (mode==2 && dut.seed==2))force dut.p_status=8'd4;else release dut.p_status;
+        if((mode==3 || (mode==2 && execution.engine.sequencer.pc>=POSE_ENTRY)) && sv[7])force value=64'h7ff8000000000000;else release value;
     end
     task check;input condition;input [511:0] label;
         begin if(condition!==1'b1)begin errors=errors+1;if(errors<40)$fdisplay(report,"FAIL case=%0d %0s cycle=%0d",cases,label,cycles);end end
@@ -102,7 +114,7 @@ module tb_init_controller;
     task await_response;
         begin
             cycles=0;
-            while(!rsp_valid && cycles<4000000)begin
+            while(!rsp_valid && cycles<20000000)begin
                 // 每个seed先持续背压17拍，然后确定性伪随机ready。
                 if(seed_valid)begin stall_cycles=stall_cycles+1;random_state={random_state[30:0],random_state[31]^random_state[21]^random_state[1]^random_state[0]};seed_ready=stall_cycles>17 && random_state[0];end
                 else begin stall_cycles=0;seed_ready=0;end
@@ -121,12 +133,13 @@ module tb_init_controller;
         end
     endtask
     initial begin
-        report=$fopen("init_controller_results.txt","w");fd=$fopen("../../../data/calibration/init_controller_vectors.txt","r");if(!fd || !report)$fatal(1,"file open");reset_dut();
-        while(!$feof(fd))begin load_vector();if(rc==12)begin fill_store();launch();await_response();consume_response();cases=cases+1;end else if(rc!=-1)$fatal(1,"malformed vector");end
-        $fclose(fd);fd=$fopen("../../../data/calibration/init_controller_vectors.txt","r");load_vector();$fclose(fd);
+        report=$fopen("init_controller_results.txt","w");fd=$fopen("init_controller_vectors.txt","r");if(!fd || !report)$fatal(1,"file open");reset_dut();
+        while(!$feof(fd) && (!QUICK || cases<1))begin load_vector();if(rc==12)begin fill_store();launch();await_response();consume_response();$fdisplay(report,"case=%0d status=%d cycles=%0d",cases,rsp_status,cycles);$fflush(report);cases=cases+1;end else if(rc!=-1)$fatal(1,"malformed vector");end
+        $fclose(fd);if(!QUICK)begin fd=$fopen("init_controller_vectors.txt","r");load_vector();$fclose(fd);
         fill_store();launch();repeat(100)@(negedge clk);reset_dut();repeat(100)begin @(negedge clk);check(cmd_ready && !rsp_valid && !seed_valid,"no stale result after cancellation");end protocol_cases=protocol_cases+1;
-        fill_store();launch();cycles=0;while(!seed_valid && cycles<4000000)begin @(negedge clk);cycles=cycles+1;end check(seed_valid,"reached blocked seed");repeat(5)@(negedge clk);reset_dut();protocol_cases=protocol_cases+1;
+        fill_store();launch();cycles=0;while(!seed_valid && cycles<20000000)begin @(negedge clk);cycles=cycles+1;end check(seed_valid,"reached blocked seed");repeat(5)@(negedge clk);reset_dut();protocol_cases=protocol_cases+1;
         fill_store();launch();await_response();consume_response();protocol_cases=protocol_cases+1;
+        end
         $fdisplay(report,"RESULT cases=%0d protocol_cases=%0d errors=%0d max_cycles=%0d",cases,protocol_cases,errors,max_cycles);$fclose(report);done=1;
     end
 endmodule

@@ -1,16 +1,61 @@
 # FPGA 相机标定与去畸变
 
-本项目在 FPGA 上完成棋盘角点检测、相机标定和图像去畸变，C++ 程序用于算法参考及数值对比。
+本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。当前运行方式是收集多张标定图，完成一次标定，校正最后一张图，并持续显示原图与校正结果。
 
-当前板级流程：**摄像头 → DDR 原图 → 灰度与棋盘角点 → 初值计算与 LM 标定 → 校正映射与采样 → DDR 校正图 → HDMI 显示**。采集多张标定图后校正最后一张，持续显示原图/校正图对比；目前是一次标定、静态显示流程。
+## 从输入到输出
 
-但事实证明按照检测流程分工是极端错误的选择，导致我们之前写了很多重复的运算单元，造成了极大的资源浪费。但是，即便 AI 尽可能合并了浮点运算、访存控制等足够多的资源模块，目前 LUT 资源消耗与 RAM 容量紧张的问题还是没有解决。为了方便后续的优化， AI 在原有仓库的基础上整理了三个人的代码，同一放到了根目录下并尽可能按照功能解耦的方式划分了模块，但是还有流程化的痕迹，可能需要进一步优化，完全按照模块交互的方式组织代码。目前项目存在的诸多问题列举如下：
+```text
+摄像头 → RGB565 原图写入 DDR
+             ↓ 每张标定图
+       灰度/金字塔 → 候选点 → 有序棋盘角点 → 角点 RAM
+                                                  ↓ 收齐视图
+                                           初值 → LM → 结果检查
+                                                  ↓ 相机参数
+原图 DDR → 读取映射坐标并插值 ← X/Y 映射表写入 DDR
+                    ↓
+             校正图写入 DDR → HDMI 持续显示
+```
 
-1.资源依旧紧张，目前 LUT 用量依旧是 fpga 最大容量的 2.5 倍左右，结构优化与资源合并串行使用等方式出现了边际效应，未来可能需要精简算法（控制流）或牺牲精度与处理速度的方式来争取把整套逻辑塞到 fpga 中，而且即使可以塞进去，还应该为布局布线的时序优化需要用到的逻辑资源留有裕量。
+处理一张图后保存角点即可释放该帧，不需要同时缓存所有标定原图。最后一张原图保留到校正结束。完整图像、灰度金字塔和映射表放在 DDR，片上保存窗口、FIFO、角点和计算工作区。
 
-2.虽然没有成功综合过，但有足够的证据标明目前的时序非常差，由于 AI 是从 C++ 翻译成 RTL 的，所以可能目前代码中存在大量直接翻译成组合逻辑的地方，在我最深入的一次综合中，估算的最高时钟甚至不足 10 MHz，在现有算法下，即使时钟跑到 100 MHz，畸变参数的计算时长也有数十秒的量级，这在比赛中是没有竞争力的。
+## 当前架构
 
-3.不可综合导致的最严重的问题是我们无法及时的进行实际的上版验证，不知道当前的代码能否在实际的 fpga 上正常运行。更本质的来说，不知道现有的测试脚本能否真正检验出代码的时序与逻辑问题，如果能够上板验证后，第一件事应该是建立完善的仿真测试脚本，通过多轮的迭代（例如仿真觉得没问题，但实际有问题，就要在修改代码在现实跑通逻辑的同时修改仿真脚本，让它能够暴露问题）可以大大提高后续性能优化时的工作效率。
+系统由专用数据通路和分层微程序控制器组成。像素扫描、采集显示、DDR、投影与插值保留专用电路；迭代和重复数值步骤通过程序复用运算器。
+
+| 控制器 | 作用 | 代码入口 |
+|---|---|---|
+| 检测任务程序 | 管理金字塔层、候选遍历、方向搜索、精修调度 | `rtl/control/detection/detection_program.v` |
+| 标定程序 | 初值、LM、结果检查轮流使用同一执行器和工作 RAM | `rtl/compute/service/calib_execution_service.v` |
+| 精修微程序 | 求解局部张量方程、更新角点坐标、计算收敛量 | `rtl/compute/service/feature_program.v` |
+| 数学微程序 | 实现复杂数学函数内部的分步运算 | `rtl/compute/float/fp_math_program.v` |
+
+这些控制器属于不同层次。检测精修与标定通过仲裁共享 FP64 后端；检测的多个模块还共享 FP32 加减和距离服务。几何投影内部另有固定运算序列表。控制器数量不等于独立算术单元数量，也不意味着每个像素由通用 CPU 执行。
+
+程序源在 `scripts/*` 和 `data/programs`，生成的指令表在 `rtl/include`，随 FPGA bitstream 初始化。算法目标时钟为 40 MHz，摄像头、DDR 和显示通过跨时钟接口连接。
+
+## 阅读与代码组织
+
+| 入口 | 内容 |
+|---|---|
+| [系统架构](docs/SYSTEM_ARCHITECTURE.md) | 整体流程、时钟、存储和模块之间的数据交接 |
+| [RTL 导航](rtl/README.md) | 按功能组织的目录及关键源码 |
+| [指令控制指南](docs/INSTRUCTION_CONTROL_GUIDE.md) | 启动、取指、执行、HOST 服务及程序生成 |
+| [检测设计](docs/DETECTION_ENGINE.md) | 检测任务程序和专用计算服务 |
+| [标定设计](docs/CALIBRATION_ENGINE_ARCHITECTURE.md) | 初值、LM、检查如何共用执行器 |
+| [测试平台](tb/README.md)、[脚本](scripts/README.md)、[数据](data/README.md) | 验证入口、程序源与参考数据 |
+| [C++ 参考](algorithom/closer2fpga/README.md) | 算法原理、软件实现及导出 |
+
+板级入口是 [calibrated_view_top.v](rtl/top/calibrated_view_top.v)，算法 DDR 到 DDR 入口是 [vision_ddr_top.v](rtl/top/vision_ddr_top.v)。PDS 工程为 [DualView_OV5640.pds](OV5640_DualView_100H/DualView_OV5640.pds)，引脚和时钟约束为同目录 [DualView_OV5640.fdc](OV5640_DualView_100H/DualView_OV5640.fdc)。
+
+源码按职责分为 `rtl/control` 调度、`rtl/compute` 计算服务、`rtl/memory` 存储、`rtl/image` 图像数据通路、`rtl/video` 采集显示，`rtl/top` 负责连接。厂商 IP 位于工程目录的 `ipcore`；仿真产物统一写入 `build`。
+
+## 配置和数据接口
+
+默认 3 张图、5×8 内角点，标定配置集中在 [calib_config.vh](rtl/include/calib_config.vh)。板级图像为 1280×720 RGB565，检测使用 Gray8；角点以原图像素坐标 FP32 表示，按行优先排列。`view` 区分同一任务的各张图，`job` 区分整次任务。
+
+标定内部主要使用 FP64，输出九个 FP32 参数：`fx, fy, cx, cy, k1, k2, k3, p1, p2`，当前固定 `k3=0`。各图 R/t 参与 LM，但不作为图像去畸变的输入。RTL 当前使用 DLT/Jacobi 初值和单阶段 LM；C++ 的单应初值已简化为 8 元求解，两者是数值对照关系，并非逐指令相同。
+
+请求/响应在 `valid && ready` 时交接，背压期间保持载荷。算法 DDR 接口使用字节地址；物理 DDR 总线宽度和突发由访存适配层处理。
 
 ## 实际板上资源数：
 
@@ -24,59 +69,9 @@
 | DRM36K/FIFO（片上块 RAM） | **155 个 36 Kibit 等效块** | 总计**5,580 Kibit = 697.5 KiB ≈ 0.681 MiB**；用于窗口、FIFO、角点、矩阵和工作缓存                                                       |
 | APM（专用算术块）         |                    **240** | 承担适合映射的乘法、乘加等运算；不等于 240 个完整浮点运算器，浮点控制、规格化等仍可能消耗 LUT/FF                                               |
 | 用户 I/O                  |                    **300** | 器件用户端口上限；实际可用引脚还受板级布线、接口占用和电气约束限制，不能按封装的 676 个焊球计算                                                |
-| 板外 DDR3<br /><br />     |     **当前配置对应 1 GiB** | DDR IP 配置为 15 位行地址、10 位列地址、3 位 Bank 地址、32 位数据宽度，容量为`2^(15+10+3) × 4` 字节；属于外部存储，不增加 FPGA 内部 LUT/DRM |
+| 板外 DDR3     |     **当前配置对应 1 GiB** | DDR IP 配置为 15 位行地址、10 位列地址、3 位 Bank 地址、32 位数据宽度，容量为`2^(15+10+3) × 4` 字节；属于外部存储，不增加 FPGA 内部 LUT/DRM |
 
-理解这些数字时，尤其注意以下几点：
-
-- **片上 RAM 放不下一整张当前原图**：1280×720 的 RGB565 图像需要 1,843,200 字节（约 1.76 MiB），Gray8 图也需要 921,600 字节（900 KiB），都超过全部 DRM 的理论容量。因此整帧和映射表放 DDR，片上只保留必要的局部数据。
-- **DRM 的标称容量不等于任意数组都能用满**：端口数、位宽、深度和读延迟影响映射效率；异步读取、多路并行读或整数组复位可能导致数据被实现为寄存器和选择器。报告中的 `0.5 DRM` 表示一个 18 Kibit 等效块。
-- **容量达标后仍须通过布局布线和时序检查**：LUT、FF、DRM、APM 分别受限，不能互相简单折算；应留出优化余量。实际主频取决于具体路径和布局布线结果，不能由器件型号或速度等级直接认定为 100 MHz。
-
-## 从哪里开始看
-
-| 内容                             | 入口                                                                                                      |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| PDS 工程                         | [DualView_OV5640.pds](OV5640_DualView_100H/DualView_OV5640.pds)                                            |
-| 引脚与时钟约束                   | [DualView_OV5640.fdc](OV5640_DualView_100H/DualView_OV5640.fdc)                                            |
-| 摄像头、DDR、算法、HDMI 板级连接 | [calibrated_view_top.v](rtl/top/calibrated_view_top.v)                                                     |
-| DDR 输入到 DDR 输出的算法连接    | [vision_ddr_top.v](rtl/top/vision_ddr_top.v)                                                               |
-| RTL 分层、共享计算与开发规范     | [rtl/README.md](rtl/README.md)                                                                             |
-| TB、运行脚本、参考数据           | [tb](tb/README.md)、[scripts](scripts/README.md)、[data](data/README.md)                                     |
-| 标定原理、内外参与 LM            | [算法总览](algorithom/closer2fpga/docs/ALGORITHM_OVERVIEW.md)                                              |
-| C++ 运行及真实角点/参数导出      | [参考程序](algorithom/closer2fpga/README.md)、[导出格式](algorithom/closer2fpga/docs/CALIBRATION_EXPORT.md) |
-
-PDS 的综合顶层应为 `calibrated_view_top`。文件列表中的独立模块不一定属于板级实例树，例如 `brown_distort` 保留给独立测试；板级投影通过 `project_point → geometry_engine` 执行 Brown 畸变计算。是否占用硬件取决于实际实例关系及综合优化结果。
-
-## 目录
-
-| 目录                            | 职责                                               |
-| ------------------------------- | -------------------------------------------------- |
-| `rtl/top`                     | 板级及算法集成连线                                 |
-| `rtl/control`                 | 采集、帧交接、标定初始化、LM、结果检查与校正调度   |
-| `rtl/compute`                 | 共享浮点服务、基础运算、矩阵求解和几何计算         |
-| `rtl/memory`                  | 工作 RAM、角点/参数缓存、DDR 仲裁与访问适配        |
-| `rtl/image`                   | 像素窗口、棋盘特征处理、映射表与校正采样           |
-| `rtl/video`                   | 摄像头/HDMI 配置、采集显示 DMA、像素流与跨时钟接口 |
-| `rtl/common`、`rtl/include` | 公共基础模块、配置、状态定义和指令表               |
-| `tb`                          | 按功能分类的测试平台和行为模型                     |
-| `scripts`                     | 测试运行、工程维护、连接生成及综合诊断             |
-| `data`                        | 参考向量、真实角点、ROM、数据生成器和保留的报告    |
-| `OV5640_DualView_100H`        | PDS 工程、FDC 及厂商生成 IP                        |
-| `algorithom/closer2fpga`      | C++ 参考实现、算法文档及 C++ 单元测试              |
-| `build`                       | 本地仿真工作库、波形和日志，不提交 Git             |
-
-三人按硬件职责协作：一人负责调度与算法步骤，一人负责计算服务与局部像素运算，一人负责存储、板级接口与集成；具体模块可互相协助。基础运算和存储源码只维护一份。**复用源码不等于共享硬件**：节省资源需要一个物理实例配合仲裁；相机、显示和 DDR 等并发通路不能直接合并。
-
-## 配置与对接约定
-
-- **棋盘配置**：统一在 [calib_config.vh](rtl/include/calib_config.vh) 设置视图数、内角点行列数及 LM 上限。默认 3 张、5×8 内角点、150 次迭代、16 次阻尼尝试。标定模块支持的容量大于检测链；当前完整检测链限制为每图最多 64 点。配置变更后须重新编译并验证接口两端。
-- **板级配置**：相机选择、采集等待周期和棋盘格尺寸见 `calibrated_view_top` 参数；当前板级图像固定为 1280×720。修改分辨率还须同步采集、显示、步长、容量和 DDR 分区。
-- **图像**：采集和校正使用 RGB565，灰度 DMA 转为 Gray8 后检测。角点 x/y 为原图像素坐标的 FP32 位模式，按 `row × 列数 + col` 排列。
-- **任务**：job 标识整次标定，view 标识其中一张图；检测状态与角点流分别接收。失败不能用补零角点凑满数量，响应必须归属于正确的任务。
-- **参数**：成功发布九个 FP32，顺序为 `fx、fy、cx、cy、k1、k2、k3、p1、p2`，当前默认 `k3=0`。参数包与成功完成响应均到达后才能建表；R/t 参与标定计算，但不是图像校正的输入参数。
-- **握手**：请求/响应接口在 `valid && ready` 时传输，背压期间保持 valid 与载荷。修改运算延迟时同步检查流式结果对齐；取消、复位和失败行为见模块接口注释。
-- **访存**：算法侧使用字节地址与字节长度、32 位数据、4 位 keep、16 位 tag；物理 256 位 DDR HMIC 接口由适配层处理。完成响应必须等待写事务完成。
-- **帧所有权**：检测和校正期间不能覆盖正在使用的原图；每张处理完可释放原图缓冲，最后一张保留至校正完成。角点单独保存，无须同时保存所有标定原图。
+整幅 720p RGB565 图约 1.76 MiB，Gray8 图为 900 KiB，所以完整帧存放 DDR。DDR 的 1 GiB 是配置容量，不是算法实际用量。最终资源占用以当前版本整板综合和布局布线报告为准，局部优化估算不作为整板已放入的结论。
 
 ## 当前 DDR 分区
 
@@ -91,26 +86,16 @@ PDS 的综合顶层应为 `calibrated_view_top`。文件列表中的独立模块
 | Gray8 灰度金字塔 | `0x03000000` | 1,152,000 字节 |
 | 候选点工作区     | `0x03200000` | 262,144 字节   |
 
-上述有效数据合计约 11.9 MiB，地址间保留空隙。整帧数据存 DDR，片上保留局部窗口、缓存、FIFO、角点和标定工作数据。DDR 容量充足并不意味着片上 LUT/RAM 或访问带宽充足；调整图像尺寸、金字塔层数或缓存时必须重新检查分区重叠和吞吐。
+有效数据合计约 11.9 MiB，地址之间保留间隔。
 
-## 仿真与工程使用
+## 使用入口
 
-在仓库根目录运行；安装 ModelSim，并通过 `MODELSIM_BIN`、PATH 或脚本的 `-ModelSimBin` 参数指定工具。联合测试还使用 Node.js，Python 参考模型的依赖见 [requirements.txt](data/generators/requirements.txt)。
+工具路径通过 `MODELSIM_BIN`、`PDS_SHELL` 或 PATH 指定。以下命令从仓库根目录运行：
 
 ```powershell
-# 板级连接与任务控制（厂商 IP 使用端口桩）
+python scripts/build/check_rtl_layout.py
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build/configure_pds.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
-# 检测数值回归
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_detection_compat
-# 几何计算的局部数值/协议回归
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compute/run_project_point.ps1
 ```
 
-按修改范围选择测试，不必每次跑完整 LM 或端到端。厂商端口桩只检查连接，不能证明 DDR/PLL 的真实行为。仿真输出位于 `build`；关闭相关进程后，可用 [clean_generated.ps1](scripts/build/clean_generated.ps1) 清理，加 `-WhatIf` 可先预览。
-
-PDS 直接打开上面的工程文件。ROM 唯一维护源在 `data/rom`；从工程目录运行时需有对应的 `data/rom` 镜像，clone 后可在仓库根目录执行：
-
-```powershell
-New-Item -ItemType Directory -Force OV5640_DualView_100H/data/rom | Out-Null
-Copy-Item data/rom/*.mem OV5640_DualView_100H/data/rom/ -Force
-```
+PDS 配置脚本同步相对源码路径、准备图像 ROM 并保存、重新打开工程核对；不启动综合。按修改范围选择数值回归，具体命令见脚本文档。

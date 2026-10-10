@@ -1,9 +1,13 @@
 `timescale 1ns / 1ps
+// Board EXTERNAL_SEQ=1: one ANGLE command computes one direction; the shared
+// detection instruction core owns the 90-angle loop and output publication.
+// SHARED_ADD=1 removes private add/sub units. Snapshot/output use sync RAM.
+// See docs/DETECTION_ENGINE.md; numerical stages below belong to one angle.
 //==============================================================================
 // grid_order_ctrl.sv — M4 网格排序主控（复刻 organize_grid_det + cost_ref）
 //------------------------------------------------------------------------------
 // 从 M3 inner 点流组织 rows×cols 角点网格，输出行列序坐标。
-// 位级对拍权威 = export_m4.cpp（确定性排序变体）。流程：
+// 位级对拍权威 = historical FP32 reference（确定性排序变体）。流程：
 //   90 方向角度循环（cos/sin ROM，degree=-90+2*ak）：
 //     A_PROJ   ：v = -x·si + y·co（f2o 单调 key）→ 填 keyv/idxv/vv
 //     A_VSORT  ：index_sort 按 v 排序 → order[0..N)
@@ -26,10 +30,11 @@
 //     A_ORIGIN ：4 角 x+y 最小定 origin；buf 重排写回 best/buf
 //     A_OUT    ：过渡
 //     A_NEXT   ：ak 推进 / angle_finish（90 角度完）
-//   原点规范化后 S_DONE 从 best_buf 输出 40 点流。
+//   原点规范化后 S_DONE 从同步 best RAM 输出 ROWS*COLS 点流。
 //
 // 存储：pts/keyv/idxv/vv/order/gapk/gapi/keyu/idxu/grid/best 用 dual_port_ram
-//   （1 拍延迟读）；gaps_arr/gap_pos/win_order/wstep_r/wmed_key/best_buf 用 reg。
+//   （1 拍延迟读）；gaps_arr/gap_pos/win_order/wstep_r/wmed_key 用 reg。
+//   origin_snapshot 保存镜像重排前副本，最终输出复用 best RAM。
 // 子模块：index_sort（排序）、grid_validate（代价）、fp32 算术（mul/add/sub/
 //   div/hypot）。
 //
@@ -40,15 +45,24 @@
 //     主控只喂 s_start/s_n，收 out 流（st_out_valid/st_out_ready/st_out_idx）。
 //   - grid_validate 的 rd_en/rd_addr 为其输出（wire），经 gv_busy 多路选通
 //     u_grid 读口（A_COST 期间归 gv，其余归主控 A_BEST 复制用）。
-//   - 输出流 out_x/out_y 为组合（best_buf[oc_idx2]），out_valid 为 reg。
+//   - 输出流经同步 RAM 读出再寄存，out_valid 持有到 out_ready。
 //==============================================================================
-module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
+module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, parameter SHARED_HYPOT=0, parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     parameter ROWS        = 5,
     parameter COLS        = 8,
     parameter N_ADDR_W    = 8,          // 点容量 256
     parameter GAP_ADDR_W  = 8,
     parameter ROM_FILE    = "data/rom/grid_cos_sin.mem"
 ) (
+    // Shared add/sub jobs; paired X/Y results are published atomically.
+    output wire add_req_valid,add_req_sub,add_req_pair,input wire add_req_ready,
+    output wire [63:0] add_req_a,add_req_b,
+    input wire add_rsp_valid,output wire add_rsp_ready,input wire [63:0] add_result,
+
+    // Shared detection instruction core. External mode removes phase scheduling.
+    input wire seq_valid,seq_enter,input wire [7:0] seq_id,input wire [15:0] seq_arg,
+    output wire seq_done,output wire [31:0] seq_result,
+
 
     // Exclusive-stage shared validator; memory latency and CE are unchanged.
     output wire val_start,
@@ -57,6 +71,11 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     input wire val_rd_en,
     input wire [6-1:0] val_rd_addr,
     output wire [31:0] val_rd_x, val_rd_y,
+    // Optional shared coordinate-distance service; same reset/CE domain.
+    output wire math_hyp_valid,input wire math_hyp_ready,
+    output wire [31:0] math_hyp_a,math_hyp_b,
+    input wire math_hyp_rsp_valid,output wire math_hyp_rsp_ready,
+    input wire [31:0] math_hyp_result,
     // Global synchronous stall for variable-latency backing memory.
     input wire ce,
 
@@ -89,7 +108,11 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     // 状态
     //--------------------------------------------------------------------
     localparam S_IDLE  = 2'd0, S_CAP  = 2'd1, S_ANGLE = 2'd2, S_DONE = 2'd3;
-    reg [1:0] state;
+    reg [2:0] state;
+    localparam S_WAIT=4;
+    `include "detection_services.vh"
+    assign seq_done=EXTERNAL_SEQ && seq_valid && !seq_enter &&
+      ((seq_id==DET_ORDER_FINISH)?done:(state==S_WAIT));
 
     localparam A_PROJ=0, A_VSORT=1, A_GAP=2, A_GSORT=3, A_GPSORT=4,
                A_ROW=5, A_COST=6, A_BEST=7, A_ORIGIN=8, A_OUT=9, A_NEXT=10;
@@ -150,14 +173,15 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     reg [31:0] gv_gap;
     reg [31:0] sum4 [0:3];            // 4 角 x+y
 
+    reg output_pending;
+    wire [63:0] snapshot_data;
     // 数组
     reg [N_ADDR_W-1:0] gap_pos  [0:15];
     reg [N_ADDR_W-1:0] gaps_arr [0:15];
     reg [N_ADDR_W-1:0] win_order [0:255];
     reg [31:0] wstep_r [0:COLS-2];
     reg [31:0] wmed_key [0:7];
-    reg [63:0] best_buf [0:63];       // {y,x}
-    reg [63:0] buf_orig [0:63];       // A_ORIGIN 前快照（就地重排的读源，M6.2 修复）
+
 
     //--------------------------------------------------------------------
     // 子模块互连
@@ -280,7 +304,8 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(64), .ADDR_WIDTH(6)) u_best (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .wr_en(best_wr_en), .wr_addr(best_wr_addr), .wr_data({best_wr_y, best_wr_x}),
-        .rd_en(best_rd_en), .rd_addr(best_rd_addr), .rd_data(best_rd64)
+         .rd_en(state==S_DONE?(!out_valid && !output_pending && out_grid_ok && oc_cnt<NCELL):best_rd_en),
+        .rd_addr(state==S_DONE?oc_idx2[5:0]:best_rd_addr), .rd_data(best_rd64)
     );
 
     //--------------------------------------------------------------------
@@ -292,6 +317,22 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
         .in_a(mul_a), .in_b(mul_b),
         .out_valid(mul_v), .out_ready(1'b1), .out_r(mul_r)
     );
+    generate if(SHARED_ADD)begin:g_shared_add
+
+      reg response_sub;
+      assign add_req_valid=add_fire || sub_fire;assign add_req_sub=sub_fire;assign add_req_pair=0;
+      assign add_req_a={32'd0,sub_fire?sub_a:add_a};assign add_req_b={32'd0,sub_fire?sub_b:add_b};
+      assign add_rsp_ready=1;
+      assign add_rdy=add_req_ready;assign sub_rdy=add_req_ready;
+      assign add_v=add_rsp_valid && !response_sub;assign sub_v=add_rsp_valid && response_sub;
+      assign add_r=add_result[31:0];assign sub_r=add_result[31:0];
+      always @(posedge clk or negedge rst_n)begin
+        if(!rst_n)response_sub<=0;
+        else if((!USE_CE || ce) && add_req_valid && add_req_ready)response_sub<=sub_fire;
+      end
+    end else begin:g_private_add
+      assign add_req_valid=0;assign add_req_sub=0;assign add_req_pair=0;
+      assign add_req_a=0;assign add_req_b=0;assign add_rsp_ready=0;
     fp32_add #(.USE_CE(USE_CE)) u_add (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .in_valid(add_fire), .in_ready(add_rdy),
@@ -304,7 +345,12 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
         .in_a(sub_a), .in_b(sub_b),
         .out_valid(sub_v), .out_ready(1'b1), .out_r(sub_r)
     );
-    fp32_hypot #(.USE_CE(USE_CE)) u_hyp (.ce(ce),
+    end endgenerate
+    hypot_port #(.SHARED(SHARED_HYPOT),.USE_CE(USE_CE)) u_hyp (.ce(ce),
+        .math_hyp_valid(math_hyp_valid),.math_hyp_ready(math_hyp_ready),
+        .math_hyp_a(math_hyp_a),.math_hyp_b(math_hyp_b),
+        .math_hyp_rsp_valid(math_hyp_rsp_valid),.math_hyp_rsp_ready(math_hyp_rsp_ready),
+        .math_hyp_result(math_hyp_result),
         .clk(clk), .rst_n(rst_n),
         .in_valid(hyp_fire), .in_ready(hyp_rdy),
         .in_a(hyp_a), .in_b(hyp_b),
@@ -366,6 +412,7 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                       ((ast == A_ROW) && (rst == R_WIN) && (wst == W_MED)) ? wmed_id :
                       {N_ADDR_W{1'b0}};
 
+    assign seq_result={31'd0,((seq_id==DET_ORDER_CAPTURE)?(N_reg<NCELL || N_reg>255):!found_best)};
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpos_kd <= 32'd0; gpos_id <= {N_ADDR_W{1'b0}};
@@ -414,8 +461,10 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     //--------------------------------------------------------------------
     // 块 A：顶层主状态机（IDLE/CAP/ANGLE/DONE）
     //--------------------------------------------------------------------
-    assign pts_ready = (state == S_CAP);
-    assign pts_wr_en = pts_valid && pts_ready;
+    // Overflow is a rejected job, but continue draining the upstream filter.
+    // Otherwise a held final point could prevent FILTER_FINISH/ORDER_CAPTURE.
+    assign pts_ready = (state == S_CAP) || (EXTERNAL_SEQ && state==S_WAIT && N_reg>255);
+    assign pts_wr_en = pts_valid && pts_ready && state==S_CAP && cnt_pts<256;
     assign pts_wr_addr = cnt_pts[N_ADDR_W-1:0];
     assign pts_wr_x = pts_x;
     assign pts_wr_y = pts_y;
@@ -438,29 +487,41 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                     if (pts_valid && pts_ready)
                         cnt_pts <= cnt_pts + 16'd1;
                     if (cnt_pts > 16'd255) begin
-                        status <= 2'b10; done <= 1'b1; busy <= 1'b0; state <= S_DONE;
+                        N_reg<=cnt_pts;
+                        status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                     end else if (pts_done) begin
                         N_reg <= cnt_pts + (pts_valid ? 16'd1 : 16'd0);
                         if (cnt_pts + (pts_valid ? 16'd1 : 16'd0) < NCELL[15:0]) begin
-                            status <= 2'b10; done <= 1'b1; busy <= 1'b0; state <= S_DONE;
+                            status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                         end else begin
-                            go_angle <= 1'b1;
-                            state <= S_ANGLE;
+                            go_angle <= !EXTERNAL_SEQ;
+                            state <= EXTERNAL_SEQ?S_WAIT:S_ANGLE;
                         end
                     end
                 end
                 S_ANGLE: begin
-                    if (angle_finish) begin
-                        if (!found_best) begin
-                            status <= 2'b10; done <= 1'b1; busy <= 1'b0; state <= S_DONE;
-                        end else begin
-                            status <= 2'b01;
-                            out_grid_ok <= 1'b1;
-                            out_total <= NCELL[15:0];
-                            oc_cnt <= 16'd0; oc_idx2 <= 16'd0;
-                            done <= 1'b1; busy <= 1'b0;
-                            state <= S_DONE;
+                    if (angle_finish && !go_angle) begin
+                        if(EXTERNAL_SEQ)state<=S_WAIT;
+                        else begin
+                            if (!found_best) begin
+                                status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
+                            end else begin
+                                status <= 2'b01;
+                                out_grid_ok <= 1'b1;
+                                out_total <= NCELL[15:0];
+                                oc_cnt <= 16'd0; oc_idx2 <= 16'd0;
+                                done <= 1'b1; busy <= 1'b0;
+                                state <= S_DONE;
+                            end
                         end
+                    end
+                end
+                S_WAIT: if(EXTERNAL_SEQ && seq_valid && seq_enter)begin
+                    if(seq_id==DET_ANGLE)begin go_angle<=1;state<=S_ANGLE;end
+                    else if(seq_id==DET_ORDER_FINISH)begin
+                        status<=found_best?1:2;out_grid_ok<=found_best;
+                        out_total<=found_best?NCELL:0;oc_cnt<=0;oc_idx2<=0;
+                        done<=1;busy<=0;state<=S_DONE;
                     end
                 end
                 S_DONE: begin
@@ -487,31 +548,35 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
     end // synchronous clock enable
     end
 
-    // S_DONE 输出：out_valid 与 out_x/out_y
-    // out_x/out_y 组合直读 best_buf[oc_idx2]（重排后最终序），与握手同步无滞后。
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            out_valid <= 1'b0;
-        end else if(!USE_CE || ce) begin begin
-            if (state == S_DONE && !start && out_grid_ok && (oc_cnt < NCELL[15:0]))
-                out_valid <= 1'b1;
-            else
-                out_valid <= 1'b0;
+    // Registered output: request RAM, capture next enabled cycle, hold until
+    // consumed. No extra read can overwrite a stalled point.
+    always @(posedge clk or negedge rst_n)begin
+      if(!rst_n)begin out_valid<=0;out_x<=0;out_y<=0;output_pending<=0;end
+      else if(!USE_CE || ce)begin
+        if(start || state!=S_DONE)begin out_valid<=0;output_pending<=0;end
+        else if(out_valid)begin if(out_ready)out_valid<=0;end
+        else if(out_grid_ok && oc_cnt<NCELL)begin
+          if(!output_pending)output_pending<=1;
+          else begin out_x<=best_rd64[31:0];out_y<=best_rd64[63:32];out_valid<=1;output_pending<=0;end
         end
-    end // synchronous clock enable
-    end
-    always_comb begin
-        out_x = best_buf[oc_idx2[5:0]][31:0];
-        out_y = best_buf[oc_idx2[5:0]][63:32];
+      end
     end
 
-    // 原点规范化源索引（A_ORIGIN 重排用）；读源取 A_ORIGIN 前快照 buf_orig
-    // （M6.2 修复：原实现就地读 best_buf 做 c 镜像，src 被自身 dst 覆盖，
-    //   origin=1/3 时网格被破坏；C++ 参考用副本 copy 读源，此处等价）。
+    // 原点规范化源索引：读源为 origin_snapshot，写回 best RAM。
+    // 保留独立快照，避免镜像过程中目标写入覆盖尚未读取的源坐标。
     wire [15:0] src_idx_c =
         ((origin_k[1] ? ROWS[15:0] - 1 - rc : rc) * COLS[15:0]) +
         (origin_k[0] ? COLS[15:0] - 1 - c : c);
-    wire [63:0] src_buf_d = buf_orig[src_idx_c[5:0]];
+    // One synchronous snapshot RAM, and existing u_best for final output.
+    // No combinational 64-way 64-bit register-array selectors.
+    wire snapshot_write=run_angle && ast==A_ORIGIN && oo==2 && bc_cnt!=0;
+    wire snapshot_read=run_angle && ast==A_ORIGIN && (oo==3 || oo==8);
+    wire [5:0] snapshot_address=oo==3?cid_f(mc):src_idx_c[5:0];
+    dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(64),.ADDR_WIDTH(6)) origin_snapshot(
+      .clk(clk),.rst_n(rst_n),.ce(ce),.wr_en(snapshot_write),
+      .wr_addr(6'(bc_cnt-1'b1)),.wr_data(best_rd64),
+      .rd_en(snapshot_read),.rd_addr(snapshot_address),.rd_data(snapshot_data));
+    wire [63:0] src_buf_d = snapshot_data;
 
     //--------------------------------------------------------------------
     // 块 B：角度子状态机（A_PROJ…A_NEXT）
@@ -572,15 +637,15 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                 // 新一轮初始化
                 run_angle <= 1'b1; angle_finish <= 1'b0;
                 ast <= A_PROJ; rst <= R_RSORT; wst <= W_STEP;
-                ak <= 8'd0; ai <= 16'd0;
+                ak <= EXTERNAL_SEQ?seq_arg[7:0]:0; ai <= 16'd0;
                 pp <= 4'd0; ov_addr <= 16'd0; gr_cnt <= 16'd0; gcnt <= 16'd0;
                 gpos_cnt <= 16'd0; ku_addr <= 16'd0; ks_cnt <= 16'd0; on_cnt <= 16'd0;
                 r <= 16'd0; s <= 16'd0; c <= 16'd0;
                 begin_idx <= 16'd0; end_idx <= 16'd0; seg_len <= 16'd0;
-                best_cost <= C_1E30F; cur_cost <= 32'd0;
+                if(!EXTERNAL_SEQ || seq_arg==0)best_cost <= C_1E30F; cur_cost <= 32'd0;
                 row_best <= 32'd0; cur_spacing <= 32'd0; score_acc <= 32'd0;
                 start_best <= 16'hFFFF;
-                found_best <= 1'b0; grid_full <= 1'b0;
+                if(!EXTERNAL_SEQ || seq_arg==0)found_best <= 1'b0; grid_full <= 1'b0;
                 origin_k <= 2'd0;
                 wc <= 4'd0; sd_cnt <= 4'd0; med_cnt <= 4'd0; sc_idx <= 4'd0;
                 scp <= 2'd0; rc <= 4'd0; bc_cnt <= 16'd0; oo <= 4'd0; mc <= 4'd0;
@@ -1191,8 +1256,6 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                             oo <= 4'd2;
                         end
                         4'd2: begin
-                            best_buf[bc_cnt - 16'd1] <= best_rd64;
-                            buf_orig[bc_cnt - 16'd1] <= best_rd64;   // 快照（M6.2 修复）
                             best_rd_en <= 1'b0;
                             if (bc_cnt >= NCELL[15:0]) begin
                                 mc <= 4'd0;
@@ -1200,9 +1263,10 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                             end else
                                 oo <= 4'd0;
                         end
-                        4'd3: begin
-                            add_a <= best_buf[cid_f(mc)][31:0];
-                            add_b <= best_buf[cid_f(mc)][63:32];
+                        4'd3: oo<=4'd10; // issue synchronous snapshot read
+                        4'd10: begin
+                            add_a <= snapshot_data[31:0];
+                            add_b <= snapshot_data[63:32];
                             add_fire <= 1'b1;
                             oo <= 4'd4;
                         end
@@ -1236,13 +1300,14 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                             c <= 16'd0;
                             oo <= 4'd8;
                         end
-                        4'd8: begin
+                        4'd8: oo<=4'd11; // issue synchronous snapshot read
+                        4'd11: begin
+                            oo <= 4'd8; // fetch the next mirrored source before writing
                             // 重排：dst=r*COLS+c ← buf[src]（同时更新 buf 供输出）
                             best_wr_x <= src_buf_d[31:0];
                             best_wr_y <= src_buf_d[63:32];
                             best_wr_addr <= rc * COLS + c;
                             best_wr_en <= 1'b1;
-                            best_buf[rc * COLS + c] <= src_buf_d;
                             if (c + 16'd1 >= COLS[15:0]) begin
                                 c <= 16'd0;
                                 rc <= rc + 4'd1;
@@ -1262,8 +1327,9 @@ module grid_order_ctrl #(parameter SHARED_VALIDATE=0, parameter USE_CE=0,
                 end
                 //============================================ A_NEXT
                 A_NEXT: begin
-                    if (ak >= 8'd89) begin
+                    if (EXTERNAL_SEQ || ak >= 8'd89) begin
                         angle_finish <= 1'b1;
+                        if(EXTERNAL_SEQ)run_angle<=0;
                     end else begin
                         ak <= ak + 8'd1;
                         ai <= 16'd0;

@@ -166,7 +166,7 @@ module tb_calib_top;
  end endtask
  task await_output;integer watchdog;begin
   watchdog=0;while(!diag_valid && watchdog<1500000000)begin @(negedge clk);watchdog=watchdog+1;end
-  if(!diag_valid)$fatal(1,"TOP timeout pc=%0d LM pc=%0d",dut.pc,dut.optimizer.pc);
+  if(!diag_valid)$fatal(1,"TOP timeout pc=%0d LM pc=%0d",dut.pc,dut.execution.engine.sequencer.pc);
  end endtask
  task finish_job;input [7:0] code;input [3:0] where;input integer order;reg [(`PAR_POINT_BITS+11)*`PAR_VIEWS-1:0] debug_saved;begin
   await_output();check(diag_status==code && diag_phase==where && diag_job_id==32'h80000000+cases,"diagnostic status/phase/job");

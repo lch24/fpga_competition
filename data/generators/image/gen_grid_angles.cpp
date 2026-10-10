@@ -3,7 +3,7 @@
 // 输出 grid_cos_sin.mem：180 行，每行 8 位十六进制 fp32 位模式（$readmemh）
 //   行 2k (k=0..89)     = std::cos(degree_k * pi / 180)   （degree = -90 + 2k）
 //   行 2k+1 (k=0..89)   = std::sin(degree_k * pi / 180)
-// 与 export_m4.cpp organize_grid_det 的 `std::cos(a)/std::sin(a)`（a 为 float）
+// 与 historical FP32 reference organize_grid_det 的 `std::cos(a)/std::sin(a)`（a 为 float）
 // 一致——用本机 g++ libm cosf/sinf 位模式，RTL ROM 直接存这些位。
 //------------------------------------------------------------------------------
 #include <cstdio>

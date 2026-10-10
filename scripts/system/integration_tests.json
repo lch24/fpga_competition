@@ -32,5 +32,6 @@
   "tb/system/tb_vision_numeric.sv",
   "tb/memory/tb_vision_clock_bridge.sv",
   "tb/system/tb_algorithm_clock.sv",
-  "tb/system/tb_board_flow_cdc.sv"
+  "tb/system/tb_board_flow_cdc.sv",
+  "tb/image/tb_detection_capture.sv"
 ]

@@ -102,11 +102,16 @@ def main():
     sources = []
     for directory in ('rtl',):
         sources += [p for p in (ROOT / directory).rglob('*') if p.suffix in ('.sv', '.v') and 'board' not in p.parts and p.name != 'calibrated_view_top.v']
-    sources.sort(key=lambda p: (p.name != 'lround_pkg.sv', str(p)))
-    tests = {'tb_calib_geometry': ['checked==338'], 'tb_resource_math': ['checked==2500', f'div_checked=={len(rows)}', 'mul_checked==5000', 'reset_checked==3'],
+    sources.sort(key=str)
+    tests = {'tb_calib_geometry': ['checked==338'], 'tb_resource_math': ['checked==2500', f'div_checked=={len(rows)}', 'mul_checked==5000', 'reset_checked==3', 'mul_reset_checked==4'],
              'tb_ddr_recovery': ['checked==2'],
              'tb_gray_cache': ['checked==1153', 'faults==3'], 'tb_fp_pool': ['accepted==4', 'returned==3'],
              'tb_ddr_pyramid': ['checked==102400', 'native_passes==2']}
+    if '--only' in sys.argv:
+        selected = sys.argv[sys.argv.index('--only') + 1]
+        if selected not in tests:
+            raise ValueError('Unknown test: ' + selected)
+        tests = {selected: tests[selected]}
     import shutil
     shutil.copytree(ROOT / 'data/rom', BUILD / 'data/rom', dirs_exist_ok=True)
     sources += [ROOT / 'tb/models/ddr_memory_model.sv']

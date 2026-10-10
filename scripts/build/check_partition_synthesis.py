@@ -92,7 +92,7 @@ def run_one(top, batch, args):
         source.write_text(content,encoding='utf-8')
         compiled_hashes[source.relative_to(case/'source').as_posix()]=hashlib.sha256(source.read_bytes()).hexdigest()
     (case/'compiled_sha256.json').write_text(json.dumps(compiled_hashes,indent=2))
-    sources.sort(key=lambda p: (p.name != 'lround_pkg.sv', str(p)))
+    sources.sort(key=str)
     quote = lambda p: '{' + Path(p).as_posix() + '}'
     script = [f'create_project {quote(case / "project" / "test.pds")} -synthesize_tool 2 -family Logos2 -device PG2L100H -package FBG676 -speedgrade -6 -in_process',
               'set_option verilog_standard SystemVerilog [get_filesets design_1]']
@@ -129,6 +129,45 @@ always @(posedge clk) begin
 end
 endmodule
 ''')
+        script.append(f'add_design -verilog {quote(wrapper)}')
+    if top in ('probe_order_program','probe_order_before','probe_merge_program','probe_merge_before','probe_refine_program','probe_refine_before'):
+        kind=top.split('_')[1]
+        module={'order':'grid_order_ctrl','merge':'candidate_merge','refine':'grid_refine_ctrl'}[kind]
+        source=(case/'source/rtl/image/features'/(module+'.sv')).read_text(encoding='utf-8')
+        start=source.index('module '+module);end=source.index('\n);',start)+3
+        header=source[start:end].replace('module '+module,'module '+top,1)
+        old=top.endswith('_before')
+        params={'order':'.SHARED_HYPOT(1),.SHARED_VALIDATE(1),.USE_CE(1)',
+                'merge':'.SHARED_DISTANCE(1),.USE_CE(1)',
+                'refine':'.SHARED_HYPOT(1),.SHARED_VALIDATE(1),.SHARED_SUBPIXEL(1),.USE_CE(1)'}[kind]
+        if not old:params+=',.SHARED_ADD(1)'+(',.EXTERNAL_SEQ(1)' if kind!='merge' else '')
+        target=module+'_before' if old else module
+        wrapper=case/'wrapper.sv'
+        # Old reference has fewer ports. Explicit named connections prevent
+        # new command/adder inputs from becoming artificial reference logic.
+        target_source=next(p for p in sources if p.name==target+'.sv').read_text(encoding='utf-8') if old else source
+        target_header=target_source[target_source.index('module '+target):]
+        target_header=target_header[:target_header.index('\n);')]
+        clean=re.sub(r'//[^\n]*','',target_header)
+        names=[]
+        for direction,part in re.findall(r'\b(input|output|inout)\s+(.*?)(?=\binput\b|\boutput\b|\binout\b|$)',clean,re.S):
+            part=re.sub(r'\[[^\]]*\]','',part)
+            part=re.sub(r'\b(wire|reg|logic|signed)\b','',part)
+            names.extend(re.findall(r'\b[a-zA-Z_]\w*\b',part))
+        wrapper.write_text(header+'\n'+target+' #('+params+') dut('+','.join('.'+n+'('+n+')' for n in names)+');\nendmodule\n',encoding='utf-8')
+        script.append(f'add_design -verilog {quote(wrapper)}')
+    if top in ('probe_feature_shared','probe_subpixel_program'):
+        path, module, parameters = (
+            ('rtl/compute/service/feature_program.v','feature_program','.FP_SHARED(1),.USE_CE(1)')
+            if top=='probe_feature_shared' else
+            ('rtl/image/features/subpixel_ctrl.sv','subpixel_ctrl',
+             '.FP_SHARED(1),.USE_CE(1),.SHARED_HYPOT(1),.FIXED_BILINEAR(1),.FIXED_ACCUM(1),.VARIABLE_SCALE(1),.N_ADDR_W(14),.GRAY_ADDR_W(21)'))
+        source=(case/'source'/path).read_text(encoding='utf-8')
+        start=source.index('module '+module)
+        end=source.index('\n);',start)+3
+        header=source[start:end].replace('module '+module,'module '+top,1)
+        wrapper=case/'wrapper.sv'
+        wrapper.write_text(header+'\n'+module+' #('+parameters+') dut(.*);\nendmodule\n',encoding='utf-8')
         script.append(f'add_design -verilog {quote(wrapper)}')
     if top in ('probe_detector_compact','probe_detector_fixed'):
         source = (case / 'source/rtl/image/features/corner_detect_ddr_top.v').read_text(encoding='utf-8')

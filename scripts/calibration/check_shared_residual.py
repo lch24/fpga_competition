@@ -45,10 +45,10 @@ def main():
   return p.stdout
  if not (BUILD/'work').exists():run('vlib','work')
  manifest=[]
- for line in (ROOT/'parameter/files.f').read_text().splitlines():
+ for line in (ROOT/'rtl/files.f').read_text().splitlines():
   if not line.strip():continue
-  if line.startswith('+incdir+'):manifest.append('+incdir+'+(ROOT/'parameter'/line[8:]).as_posix())
-  else:manifest.append((ROOT/'parameter'/line).as_posix())
+  if line.startswith('+incdir+'):manifest.append('+incdir+'+(ROOT/line[8:]).as_posix())
+  else:manifest.append((ROOT/line).as_posix())
  (BUILD/'rtl.f').write_text('\n'.join(line if line.startswith(chr(34)) else chr(34)+line+chr(34) for line in manifest)+'\n')
  run('vlog','-sv','-f','rtl.f','probe.sv','tb.sv')
  output=run('vsim','-c','-voptargs=+acc','work.tb_residual_engine','-do','do {'+(ROOT/'scripts/compute/run_residual_engine.do').as_posix()+'}')

@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
 module fp_checker #(parameter W=64, PROFILE=0,
-    ENABLE_EXP=1, ENABLE_LOG=1, ENABLE_SINCOS=1, ENABLE_ATAN_ACOS=1)
+    ENABLE_EXP=1, ENABLE_LOG=1, ENABLE_SINCOS=1, ENABLE_ATAN_ACOS=1, CALIB_ALU=0)
     (output reg done=0, output reg [31:0] errors=0, output reg [31:0] checked=0);
     reg clk=0; always #5 clk=~clk;
     reg rst_n=0, req_valid=0, rsp_ready=0;
@@ -10,11 +10,18 @@ module fp_checker #(parameter W=64, PROFILE=0,
     wire req_ready,rsp_valid,less,equal,unordered;
     wire [W-1:0] result;
     wire [4:0] flags;
+    generate if(CALIB_ALU) begin : compact
+    calib_alu dut (.ce(1'b1),.clk(clk),.rst_n(rst_n),.req_valid(req_valid),
+      .req_ready(req_ready),.req_op(op),.req_a(a),.req_b(b),.rsp_valid(rsp_valid),
+      .rsp_ready(rsp_ready),.rsp_result(result),.rsp_flags(flags),
+      .rsp_less(less),.rsp_equal(equal),.rsp_unordered(unordered));
+    end else begin : original
     fp_operator #(.FP_W(W),.ENABLE_EXP(ENABLE_EXP),.ENABLE_LOG(ENABLE_LOG),
       .ENABLE_SINCOS(ENABLE_SINCOS),.ENABLE_ATAN_ACOS(ENABLE_ATAN_ACOS)) dut (.clk(clk),.rst_n(rst_n),.req_valid(req_valid),
       .req_ready(req_ready),.req_op(op),.req_a(a),.req_b(b),.rsp_valid(rsp_valid),
       .rsp_ready(rsp_ready),.rsp_result(result),.rsp_flags(flags),
       .rsp_less(less),.rsp_equal(equal),.rsp_unordered(unordered));
+    end endgenerate
     integer fd, report, fields, cycles, i, wait_cycles;
     reg [63:0] va,vb,expected,tolerance,got,distance;
     reg [4:0] command,expected_flags;
@@ -111,7 +118,8 @@ module fp_checker #(parameter W=64, PROFILE=0,
                     @(posedge clk);#1;
                     @(negedge clk);req_valid=0;
                     cycles=0;
-                    // EXP/LOG: serial 384-cycle divides and 192-cycle multiplies.
+                    // Bound includes serial divides, limb products, packing
+                    // and CORDIC shifts; never assume a fixed response latency.
                     while(rsp_valid!==1 && cycles<26000)begin @(posedge clk);#1;cycles=cycles+1;end
                     if(rsp_valid!==1)begin problem("operation timeout");reset_dut;end
                     else begin

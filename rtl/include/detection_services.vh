@@ -1,0 +1,24 @@
+// Generated service IDs, include inside a module.
+localparam DET_NATIVE=8'd1;
+localparam DET_ORDER_OUTPUT=8'd2;
+localparam DET_REFINE=8'd3;
+localparam DET_MAP=8'd4;
+localparam DET_NEXT_LAYER=8'd5;
+localparam DET_FINISH=8'd6;
+localparam DET_OUTPUT=8'd7;
+localparam DET_DUMP=8'd8;
+localparam DET_BOOT=8'd9;
+localparam DET_CAPTURE=8'd16;
+localparam DET_MERGE5=8'd17;
+localparam DET_SUBPIXEL=8'd18;
+localparam DET_MERGE3=8'd19;
+localparam DET_RING_POINT=8'd20;
+localparam DET_FILTER_FINISH=8'd21;
+localparam DET_ORDER_CAPTURE=8'd32;
+localparam DET_ANGLE=8'd33;
+localparam DET_ORDER_FINISH=8'd34;
+localparam DET_MINSTEP=8'd48;
+localparam DET_HALFWIN=8'd49;
+localparam DET_GRID_SUBPIXEL=8'd50;
+localparam DET_VALIDATE=8'd51;
+localparam DET_GRID_OUTPUT=8'd52;

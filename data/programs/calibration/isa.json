@@ -1,0 +1,25 @@
+{
+  "word_bits": 32,
+  "fields": {"opcode": [26, 6], "mode": [23, 3], "rd": [20, 3], "ra": [17, 3], "rb": [14, 3], "imm": [0, 14]},
+  "instructions": {
+    "NOP": [0, "", [0]], "END": [1, "u8", [0]],
+    "MOVI": [2, "Ad,u14", [0]], "ADDI": [3, "Ad,Aa,s14", [0]],
+    "IADD": [4, "Ad,Aa,Ab", [0]], "ISUB": [5, "Ad,Aa,Ab", [0]],
+    "ICMP": [6, "Aa,Ab", [0,1]], "BR": [7, "rel", [0,1,2,3,4,5,6,7]],
+    "CALL": [8, "rel", [0]], "RET": [9, "", [0]], "DBNZ": [10, "Ad,rel", [0]],
+    "LD": [16, "Fd,Aa,s14", [0]], "ST": [17, "Fd,Aa,s14", [0]],
+    "FMOV": [18, "Fd,Fa", [0]], "LDI32": [19, "Ad,Aa,s14", [0]],
+    "STI32": [20, "Ad,Aa,s14", [0]], "FGET32": [21, "Fd,Fa", [0,1]],
+    "FADD": [32, "Fd,Fa,Fb", [0]], "FSUB": [33, "Fd,Fa,Fb", [0]],
+    "FMUL": [34, "Fd,Fa,Fb", [0]], "FDIV": [35, "Fd,Fa,Fb", [0]],
+    "FSQRT": [36, "Fd,Fa", [0]], "FCMP": [37, "Fa,Fb", [0]],
+    "FABS": [38, "Fd,Fa", [0]], "FNEG": [39, "Fd,Fa", [0]],
+    "FCVT": [40, "Fd,Fa", [0,1]], "CLASS": [41, "Ad,Fa", [0,1]],
+    "FEXP": [42, "Fd,Fa", [0]], "FLOG": [43, "Fd,Fa", [0]],
+    "FSIN": [44, "Fd,Fa", [0]], "FCOS": [45, "Fd,Fa", [0]],
+    "FATAN2": [46, "Fd,Fa,Fb", [0]], "FACOS": [47, "Fd,Fa", [0]],
+    "KEXEC": [48, "Aa,u3", [0]], "STATUS": [49, "Ad", [0,1]],
+    "CLRFLAGS": [50, "", [0]],
+    "HOST": [51, "u8", [0]], "GUARD": [52, "rel", [0]]
+  }
+}

@@ -7,6 +7,6 @@ $RepoRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $BuildRoot=Join-Path $RepoRoot 'build/calibration'
 New-Item -ItemType Directory -Force $BuildRoot | Out-Null
 
-foreach ($module in @('jacobian','normal_equation','damped_step','lm_controller')) {
+foreach ($module in @('lm_controller')) {
  & (Join-Path $ScriptDir "run_$module.ps1") -ModelSimBin $ModelSimBin
 }

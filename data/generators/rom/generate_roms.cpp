@@ -1,5 +1,5 @@
 // Same expressions/layout as corner tests/rtl/{gen_grid_angles,ring_tables,
-// export_m5}. Standard C++ only. Run from repository root.
+// and Gaussian weights. Standard C++ only. Run from repository root.
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

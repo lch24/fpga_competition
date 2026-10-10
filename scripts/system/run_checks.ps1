@@ -37,7 +37,7 @@ foreach($file in $sources) {
     $names[$name]=$file.FullName
   }
 }
-$sources=@($sources | Sort-Object @{Expression={if($_.Name -eq 'lround_pkg.sv'){0}else{1}}},FullName)
+$sources=@($sources | Sort-Object FullName)
 if($Board){
   # Vendor IP port-only stubs are for connection elaboration, not IP simulation.
   $stub=''
@@ -84,7 +84,7 @@ $testFiles+=Join-Path $root 'tb/calibration/tb_calib_top.sv'
 $tests+=@('tb_corner_store','tb_calib_top')
 $integrationPaths=Get-Content (Join-Path $PSScriptRoot 'integration_tests.json') -Raw | ConvertFrom-Json
 $integrationTests=@(($integrationPaths | ForEach-Object {Get-Item (Join-Path $root $_)}) | Where-Object {
-  ($Board -or $_.BaseName -ne 'tb_algorithm_clock') -and $_.BaseName -notin @('tb_accum_fixed','tb_add_pipeline','tb_tensor_shared','tb_bilinear_fixed','tb_resource_math','tb_gray_cache','tb_fp_pool','tb_ddr_pyramid','tb_ddr_recovery','tb_calib_geometry')
+  ($Board -or $_.BaseName -ne 'tb_algorithm_clock') -and $_.BaseName -notin @('tb_detection_program','tb_detection_flow_control','tb_fp32_pair_add_pool','tb_feature_program','tb_accum_fixed','tb_add_pipeline','tb_tensor_shared','tb_bilinear_fixed','tb_resource_math','tb_gray_cache','tb_fp_pool','tb_ddr_pyramid','tb_ddr_recovery','tb_calib_geometry')
 }) # These tests have independent vector generation in tools/check_resource_units.py.
 $testFiles+=@($integrationTests.FullName)
 $tests+=@($integrationTests.BaseName)
@@ -124,7 +124,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $build 'run.do'),"onerror {quit -code 1 -f}`nonbreak {quit -code 1 -f}`nrun -all`nquit -code 0 -f`n",[Text.Encoding]::ASCII)
     $simArgs=@('-c',('work.'+$test),'-do','run.do')
     # Check completion counters in Tcl as well as HDL diagnostics on ModelSim 10.1c.
-    if($test -in @('tb_board_flow_cdc','tb_algorithm_clock','tb_vision_clock_bridge','tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
+    if($test -in @('tb_detection_capture','tb_board_flow_cdc','tb_algorithm_clock','tb_vision_clock_bridge','tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
       $doName=$test.Replace('tb_','run_')+'.do'
       $simArgs=@('-c','-voptargs=+acc',('work.'+$test),'-do',(Find-DoFile $doName))
       if($test -eq 'tb_vision_numeric'){$simArgs=@('-c','-voptargs=+acc=rn+tb_vision_numeric -O5',('work.'+$test),'-do',(Find-DoFile $doName))}

@@ -18,10 +18,15 @@
 //   保证 sum 串行链与 C++ 逐次舍入位级一致）。
 //   背压全程弹性：coord FIFO 满→sub 不喂；hypot 输出被回压→整链冻结。
 //==============================================================================
-module candidate_merge #(parameter USE_CE=0, parameter SHARED_DISTANCE=0,
+module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter SHARED_DISTANCE=0,
     parameter N_ADDR_W = 14,
     parameter DEPTH    = (1 << N_ADDR_W)
 ) (
+    // Shared add/sub jobs; paired X/Y results are published atomically.
+    output wire [1:0] add_req_valid,add_req_sub,add_req_pair,input wire [1:0] add_req_ready,
+    output wire [127:0] add_req_a,add_req_b,
+    input wire [1:0] add_rsp_valid,output wire [1:0] add_rsp_ready,input wire [127:0] add_result,
+
     // Global synchronous stall for variable-latency backing memory.
     input wire ce,
     output wire distance_valid,output wire [31:0] distance_x,distance_y,
@@ -108,6 +113,16 @@ module candidate_merge #(parameter USE_CE=0, parameter SHARED_DISTANCE=0,
     //--------------------------------------------------------------------
 
     // 距离流水：sub(x) / sub(y) → hypot（double 路径）
+    generate if(SHARED_ADD)begin:g_shared_add
+      assign add_req_valid[0]=feed_fire;assign add_req_sub[0]=1;assign add_req_pair[0]=1;
+      assign add_req_a[0+:64]={anchor_y,anchor_x};assign add_req_b[0+:64]={rd_y,rd_x};
+      assign subx_rdy=add_req_ready[0];assign suby_rdy=add_req_ready[0];
+      assign subx_v=add_rsp_valid[0];assign suby_v=add_rsp_valid[0];
+      assign subx_r=add_result[0+:32];assign suby_r=add_result[32+:32];
+      assign add_rsp_ready[0]=hypot_rdy;
+    end else begin:g_private_add
+      assign add_req_valid[0]=0;assign add_req_sub[0]=0;assign add_req_pair[0]=0;
+      assign add_req_a[0+:64]=0;assign add_req_b[0+:64]=0;assign add_rsp_ready[0]=0;
     fp32_sub #(.USE_CE(USE_CE)) u_subx (.ce(ce),
         .clk      (clk),
         .rst_n    (rst_n),
@@ -130,6 +145,7 @@ module candidate_merge #(parameter USE_CE=0, parameter SHARED_DISTANCE=0,
         .out_ready(hypot_rdy),
         .out_r    (suby_r)
     );
+    end endgenerate
     // The parent owns the shared service for the complete phase, including
     // draining every response. X/Y subtractors remain parallel and private.
     generate if(SHARED_DISTANCE) begin : g_shared_distance
@@ -170,6 +186,17 @@ module candidate_merge #(parameter USE_CE=0, parameter SHARED_DISTANCE=0,
     );
 
     // sum 累加链（x/y 各一条 fp32_add，串行保序 = C++ 逐次舍入）
+    generate if(SHARED_ADD)begin:g_shared_accumulate
+
+      assign add_req_valid[1]=addx_fire;assign add_req_sub[1]=0;assign add_req_pair[1]=1;
+      assign add_req_a[64+:64]={sum_y_cur,sum_x_cur};assign add_req_b[64+:64]={cfifo_py,cfifo_px};
+      assign addx_rdy=add_req_ready[1];assign addy_rdy=add_req_ready[1];
+      assign addx_v=add_rsp_valid[1];assign addy_v=add_rsp_valid[1];
+      assign addx_r=add_result[64+:32];assign addy_r=add_result[96+:32];
+      assign add_rsp_ready[1]=1;
+    end else begin:g_private_accumulate
+      assign add_req_valid[1]=0;assign add_req_sub[1]=0;assign add_req_pair[1]=0;
+      assign add_req_a[64+:64]=0;assign add_req_b[64+:64]=0;assign add_rsp_ready[1]=0;
     fp32_add #(.USE_CE(USE_CE)) u_addx (.ce(ce),
         .clk      (clk),
         .rst_n    (rst_n),
@@ -193,6 +220,7 @@ module candidate_merge #(parameter USE_CE=0, parameter SHARED_DISTANCE=0,
         .out_r    (addy_r)
     );
 
+    end endgenerate
     // n（int）→ fp32
     s32_to_f32 #(.USE_CE(USE_CE)) u_ncvt (.ce(ce),
         .clk      (clk),

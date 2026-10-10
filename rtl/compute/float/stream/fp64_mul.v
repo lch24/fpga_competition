@@ -12,7 +12,7 @@
 //   2) efield（进位）= ea+eb-1022；否则 = ea+eb-1023。
 //   3) 取 53 位尾数，round/sticky 做 RNE，尾数进位再右移+指数+1。
 //
-// Exact radix-four product: ordinary inputs return after 29 enabled cycles.
+// Registered exact DSP product: result appears two enabled edges after acceptance.
 // Result is held under backpressure; clock enable freezes every pipeline state.
 //==============================================================================
 module fp64_mul #(parameter USE_CE=0) (
@@ -30,16 +30,13 @@ module fp64_mul #(parameter USE_CE=0) (
     output wire [63:0] out_r
 );
 
-    // Radix-four exact integer product: 27 iterations, no DSP blocks.
-    // Preserve the detector's existing rounding and finite-input contract.
-    localparam IDLE=0,PREPARE=1,MULTIPLY=2,PACK=3,RESPONSE=4;
+    // Use the board's available APM multipliers rather than 106-bit
+    // shift/add registers. The full product and unchanged RNE pack are separate
+    // clock stages. No precision is discarded; CE and backpressure are retained.
+    localparam IDLE=0,PREPARE=1,PACK=3,RESPONSE=4;
     reg [2:0] state;
     reg [63:0] a_r,b_r,result_q;
-    reg [105:0] product_q,shift_a,shift_triple;
-    reg [52:0] bits_b;
-    reg [4:0] iteration;
-    wire [105:0] addend=bits_b[1:0]==0 ? 106'd0 :
-        bits_b[1:0]==1 ? shift_a : bits_b[1:0]==2 ? (shift_a<<1) : shift_triple;
+    reg [105:0] product_q;
     assign in_ready=rst_n && state==IDLE;
     assign out_valid=rst_n && state==RESPONSE;
     assign out_r=result_q;
@@ -81,18 +78,11 @@ module fp64_mul #(parameter USE_CE=0) (
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
             state<=IDLE;a_r<=0;b_r<=0;result_q<=0;product_q<=0;
-            shift_a<=0;shift_triple<=0;bits_b<=0;iteration<=0;
         end else if(!USE_CE || ce) case(state)
             IDLE: if(in_valid) begin a_r<=in_a;b_r<=in_b;state<=PREPARE;end
             PREPARE: begin
-                product_q<=0;shift_a<={53'd0,ma};
-                shift_triple<=({53'd0,ma}<<1)+{53'd0,ma};bits_b<=mb;iteration<=0;
-                state<=(za||zb)?PACK:MULTIPLY;
-            end
-            MULTIPLY: begin
-                product_q<=product_q+addend;
-                shift_a<=shift_a<<2;shift_triple<=shift_triple<<2;bits_b<=bits_b>>2;
-                if(iteration==26)state<=PACK;else iteration<=iteration+1'b1;
+                product_q<=ma*mb;
+                state<=PACK;
             end
             PACK: begin result_q<=res;state<=RESPONSE;end
             RESPONSE: if(out_ready)state<=IDLE;

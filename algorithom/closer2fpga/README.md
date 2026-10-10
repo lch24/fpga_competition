@@ -1,78 +1,41 @@
-# closer2fpga
+# C++ 相机标定与去畸变参考
 
-当前只保留单初值、单阶段 LM、8 元单应求解及单边差分。接口与验证见 [标定实现说明](docs/CALIBRATION_SIMPLIFICATION.md)。
+当前只有一套算法：整数 Harris 候选、固定半径圆环检查、亚像素精修；单初值标定、混合雅可比与按视图分块的 Schur LM；最后建表并双线性去畸变。
 
-纯 C++ 相机标定与去畸变参考实现，用于指导 FPGA Verilog 模块划分。处理边界为 DDR 输入图像到 DDR 输出图像。
+## 主流程与代码
 
-当前流程：读取三张图片 → 灰度化 → 内角点检测和亚像素定位 → 联合求解内参、姿态和畸变 → 生成一次映射表 → 彩色双线性去畸变。
+`closer2fpga/main.cpp` 读取三张图，逐图灰度化、检测和排序角点，联合计算相机参数，导出角点与结果，再显示原图和校正图。
 
-先阅读 [算法总览：从棋盘角点到相机标定与去畸变](docs/ALGORITHM_OVERVIEW.md)，了解每一步的输入输出、几何关系和参数含义；再阅读 [DDR 到 DDR 的 Verilog 分层设计规划](docs/VERILOG_DESIGN_PLAN.md)，查看模块职责、接口、迭代状态机、存储分配和文件清单。[Verilog 模块与时序指南](docs/RTL_GUIDE.md) 保留为简要代码映射。
+| 目录/文件 | 功能 |
+|---|---|
+| `algo/grayscale.*` | 灰度扫描 |
+| `algo/chessboard.cpp` | 金字塔与原分辨率回退 |
+| `algo/chessboard/candidates.cpp` | 整数 Harris、合并、固定半径圆环 |
+| `algo/chessboard/ordering.cpp`、`validation.cpp` | 排列方向搜索、网格排序和检查 |
+| `algo/subpixel.*` | 梯度交点迭代定位 |
+| `algo/calibrate.cpp` | 单初值、单阶段标定入口 |
+| `algo/calibration` | 8 元单应初值、姿态、残差、分块 LM 和检查 |
+| `algo/remap_table.cpp`、`undistort.*` | 映射表及双线性取样 |
+| `kernels`、`common` | 无状态运算、图像视图、矩阵和几何基础 |
+| `desktop` | OpenCV 显示与 CSV/JSON 导出 |
 
-## 运行
+原理见[算法总览](docs/ALGORITHM_OVERVIEW.md)，当前参数求解见[标定实现](docs/CALIBRATION_SIMPLIFICATION.md)。RTL 的实际结构见[系统架构](../../docs/SYSTEM_ARCHITECTURE.md)，C++ 与 RTL 的初值及求解组织存在差异，不要求逐步执行一致。
 
-打开 `closer2fpga.slnx`，重新生成并运行 `Debug | x64`。
+## 运行与导出
 
-- 默认输入为上级目录 `E:/fpga/algorithom/test0.jpg`、`test1.jpg`、`test2.jpg`，路径在 `closer2fpga/main.cpp` 中设置。
-- 三张图使用同一分辨率、同一相机及 5 行 × 8 列内角点棋盘。
-- 三个窗口同时显示左侧原图、右侧去畸变结果；关闭全部窗口退出。
-- 控制台输出参数及重投影误差，标定失败时不应用校正。
-- 每次运行自动把角点和C++标定结果保存到 `E:/fpga/algorithom/closer2fpga/exports/run_*`；控制台打印本次目录。用于后续真实角点的FPGA对比，格式和使用方法见 [数据导出说明](docs/CALIBRATION_EXPORT.md)。
-- 三视图默认固定 `k3=0`，其余四个畸变系数参与估计。
+打开 `closer2fpga.slnx` 构建运行。输入图片和导出根目录由 `main.cpp` 的 `paths`、`export_root` 指定；目前桌面示例仍保存本机绝对路径，换机器运行时在这里修改。默认 3 张图、5×8 内角点；算法接口支持由输入决定的棋盘和视图数。
 
-OpenCV 用于桌面程序的读图、图像容器、绘制和显示。`algo/`、`common/`、`kernels/` 的计算不依赖 OpenCV；回归测试单独使用 OpenCV 作为数值参考。
+成功时显示原图/校正图对比；窗口出现前已经写出 `corners.csv`、`calibration.json` 和 `COMPLETE.txt`，格式见[导出说明](docs/CALIBRATION_EXPORT.md)。算法核心不依赖 OpenCV，桌面读图/显示和部分对照测试使用 OpenCV。
 
-## 代码结构
+## 测试
 
-```text
-closer2fpga/
-  main.cpp                    三图流程与窗口事件循环
-  desktop/display.*           绘制与显示容器（OpenCV）
-  desktop/calibration_export.h 角点、参数及IEEE位模式导出（不依赖OpenCV）
-  kernels/                    无状态运算核
-    color.h                   BGR 灰度化
-    gradient.h                Sobel、外积、2×2 张量运算
-    interpolation.h           共享双线性插值
-    distortion.h              共享 Brown 畸变模型
-  algo/
-    grayscale.*               带行跨度的灰度扫描
-    chessboard.*              多尺度检测调度
-    chessboard/               候选点、网格排序、网格验证
-    shi_tomasi.*              梯度/窗口响应/全图阈值/NMS
-    subpixel.*                亚像素迭代控制
-    calibrate.*               标定入口与多初值调度
-    calibration/              初始化、姿态、残差、LM、结果检查
-    remap_table.cpp           坐标表生成
-    undistort.*               借用缓冲区与拥有内存的 remap 接口
-  common/
-    image.h / image_view.h    拥有内存的图像 / 借用的行跨度视图
-    types.h                   点与相机参数
-    math3.*                   三维运算与旋转转换
-    matrix.*                  小矩阵与高斯消元
-```
-
-运算核不访问图像内存，扫描/迭代控制留在算法层。格式由 `.clang-format` 统一；按职责拆文件，避免把所有标定或检测步骤放在一个长文件中。
-
-## 验证
-
-从上级仓库目录 `E:/fpga/algorithom` 执行：
+从仓库根目录运行：
 
 ```powershell
-& .\closer2fpga\tests\run_tests.cmd
-& .\closer2fpga\tests\run_calibration_tests.cmd
-& .\closer2fpga\tests\build_demo.cmd
+& ./algorithom/closer2fpga/tests/run_tests.cmd
+& ./algorithom/closer2fpga/tests/run_recommended_tests.cmd
+& ./algorithom/closer2fpga/tests/run_calibration_tests.cmd
+& ./algorithom/closer2fpga/tests/run_export_tests.cmd
 ```
 
-依次检查内角点、标定/去畸变及桌面程序构建。第二个脚本还编译并运行不链接 OpenCV 的核心程序及缓冲区/运算核回归。构建脚本默认使用 `E:\vs` 和其中的 vcpkg，可通过 `VS_ROOT`、`OPENCV_ROOT` 环境变量调整。
-
-- [内角点测试记录](tests/README.md)
-- [标定参数、去畸变验证和适用限制](tests/CALIBRATION.md)
-
-测试产物位于 `tests/build`；Visual Studio 缓存和构建目录均由 `.gitignore` 排除。输入图片位于本项目之外，不属于测试输出。
-
-## Verilog 开发参考
-
-详细实现参考 [DDR 到 DDR 的 Verilog 分层设计规划](docs/VERILOG_DESIGN_PLAN.md)：第 1～4 节定义系统分层和接口，第 5～8 节说明检测、亚像素、标定、建表和校正的实现与控制，第 9～12 节规划存储、数值、验证和开发顺序，第 13 节列出需要建立的文件。该规划以完整 FPGA 计算为目标，所有 RTL 文件仍待实现。
-
-[模块、DDR 缓冲区与时序划分](docs/RTL_GUIDE.md) 提供较短的 C++ 与硬件模块对应关系，说明可共享运算单元及其吞吐取舍。
-
-当前不固定 MCU/FPGA 分工，不实现 DDR 控制器、摄像头采集或显示链路。带行跨度的灰度化和 remap 接口已可借用调用方缓冲区；角点检测仍使用连续中间图。所有代码仍为浮点软件参考，定点位宽和逐周期验证留到后续 RTL 实现阶段。
+分别检查检测、固定基准、标定/校正和导出。工具通过 `VS_ROOT`、`OPENCV_ROOT` 配置，测试产物在 `tests/build`。FPGA 测试则统一在根 `tb` 和 `scripts`。

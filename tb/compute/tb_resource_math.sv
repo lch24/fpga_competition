@@ -12,7 +12,7 @@ module tb_resource_math;
  reg req_valid=0,rsp_ready=0;reg [2:0] req_op=0;
  reg [31:0] req_a=0,req_b=0;wire req_ready,rsp_valid,rsp_error;wire [31:0] rsp_result;
  fp32_service fp32(.*);
- integer checked=0,div_checked=0,mul_checked=0,reset_checked=0,fd,scan,i,ticks;
+ integer checked=0,div_checked=0,mul_checked=0,reset_checked=0,mul_reset_checked=0,fd,scan,i,ticks;
  reg finished=0;
  reg [63:0] a,b,expected;
  reg [99:0] vec[0:2499];
@@ -26,6 +26,14 @@ module tb_resource_math;
  endtask
  initial begin
   reset_core();
+  // Cancel each stage of the shorter multiplier, including held response.
+  for(i=0;i<4;i=i+1)begin
+   @(negedge clk);in_a=64'h4000000000000000;in_b=64'h4008000000000000;mul_valid=1;
+   @(posedge clk);@(negedge clk);mul_valid=0;
+   repeat(i)@(negedge clk);
+   reset_core();mul_reset_checked=mul_reset_checked+1;
+   repeat(6)begin @(negedge clk);if(mul_valid_out)$fatal(1,"cancelled multiply response");end
+  end
   for(i=0;i<3;i=i+1)begin
    in_a=64'h4000000000000000;in_b=64'h4008000000000000;in_valid=1;
    @(negedge clk);in_valid=0;repeat(1+25*i)@(negedge clk);
@@ -73,7 +81,9 @@ module tb_resource_math;
    @(negedge clk);req_valid=0;
    wait(rsp_valid);repeat(i%3)@(negedge clk);
    if(rsp_result!==expected32 || rsp_error!==(expected32[30:23]==255))$fatal(1,"FP32 vector %0d got %h expected %h",i,rsp_result,expected32);
-   rsp_ready=1;@(negedge clk);rsp_ready=0;checked=checked+1;
+   // wait(rsp_valid) may resume just after a rising edge. Keep ready high
+   // through the NEXT rising edge, otherwise zero-delay cases never retire.
+   @(negedge clk);rsp_ready=1;@(posedge clk);@(negedge clk);rsp_ready=0;checked=checked+1;
   end
   finished=1;$finish;
  end

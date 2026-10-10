@@ -7,7 +7,7 @@
 // 3) 用 m3_<scene>_merge3.bin + m3_<scene>_gray.bin 重算 nearest/ring，
 //    与 m3_<scene>_nearest.bin / m3_<scene>_ring.bin 位级对拍（复刻
 //    candidates.cpp::nearest_distance / alternating_ring 与
-//    tests/rtl/export_m3.cpp::ring_detail_，cos/sin 直接取 ROM 值，
+//    historical FP32 reference::ring_detail_，cos/sin 直接取 ROM 值，
 //    与 RTL 输入完全一致）。全过打印 SANITY OK。
 // 4) 生成 tests/build/vectors/lround_vec.mem：每行 "<fp32位模式> <lround
 //    结果s32>"，覆盖 ±0.5 边界、随机位模式，供 tb_ring.sv 对 lround_f32

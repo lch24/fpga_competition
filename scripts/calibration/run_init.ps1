@@ -7,6 +7,6 @@ $RepoRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $BuildRoot=Join-Path $RepoRoot 'build/calibration'
 New-Item -ItemType Directory -Force $BuildRoot | Out-Null
 
-foreach ($module in @('homography','zhang','pose_init','init_controller')) {
+foreach ($module in @('pose_init','init_controller')) {
     & (Join-Path $ScriptDir "run_$module.ps1") -ModelSimBin $ModelSimBin
 }

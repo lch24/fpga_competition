@@ -1,26 +1,6 @@
 `include "calib_defs.vh"
-
-/*
-配置：统一见 rtl/include/calib_config.vh；下文具体计数例子以默认3张5×8为例，
-实际容量、循环边界和端口位宽由PAR_*派生，修改配置后须重新编译/综合。
-作用：给定一组内参和三张H，生成一个完整LM初始状态。
-每视图计算K^-1H，尺度/深度符号修正，Gram-Schmidt正交化与叉乘得到R。
-调用rotation(mode=1)由R求旋转向量；tx/ty保留，tz必须正后取log。
-焦距取log，主点除W/H；畸变5槽清零。逐视图失败即该seed无效。
-子模块：rotation、fp_operator；3x3点积/叉积顺序控制直接放本模块，不再切碎。
-命令时锁存三张H及K；顺序完成view0..2，任一视图失败使整组seed无效。
-H整体取负仍可恢复正深度：尺度及前两列正交基使用相同符号，第三列由叉乘生成。
-BAD_CONFIG：宽高<2；CALIB_INVALID：非有限、非正焦距、退化基向量或非正深度。
-只有成功响应的27项状态有效；失败时整个输出清零，不暴露部分视图的结果。
-
-共同契约：
-- 已实现：单事务顺序状态机；FP64 运算核按请求/响应串行复用。
-- valid && ready 才传输；背压时 valid 和对应全部载荷保持不变。
-- 除另有说明，一次一项任务，rsp 被接收前不接受新 cmd；不假设固定延迟。
-- cmd_* 随命令锁存；rsp_* 随响应有效。失败仍须发完成响应，不能无声挂起。
-- 非零状态通常使结果载荷无效；本模块明确说明的诊断有效位例外。
-- 复位取消在途数据；复位后所有生产端 valid 清零。实现时禁止 real 运算。
-*/
+// Pose initialization: microprogram + block RAM, shared FP; standalone reference module.
+// Interface/precision are unchanged; each view reuses the same work area.
 module pose_init #(parameter FP_SHARED=0) (
     // Optional shared FP64 service; local mode keeps standalone compatibility.
     output wire [1:0] shared_req_valid,
@@ -47,203 +27,157 @@ module pose_init #(parameter FP_SHARED=0) (
     output reg [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
     output wire [`PAR_STATE_W-1:0] rsp_state // 完整PAR_STATE_N项状态
 );
+    // One view at a time: 128x64 workspace + 616x32 program replaces the
+    // former large multi-read working register array and arithmetic FSM.
+    // The same program also performs stable quaternion-based R -> rotvec.
+    `include "pose_program_defs.vh"
+    localparam IDLE=0,LOAD_COMMON=1,START=2,WAIT_ENGINE=3,READ_GLOBAL=4,
+      WAIT_GLOBAL=5,PAD=6,LOAD_VIEW=7,READ_VIEW=8,WAIT_VIEW=9,
+      RESPONSE=10;
+    reg [3:0] state,index;
+    reg [`PAR_VIEW_BITS-1:0] view;
+    reg common_phase;
+    reg [`PAR_H_ALL_W-1:0] h_shift;
+    reg [255:0] k_shift;
+    reg [63:0] width_fp,height_fp;
+    reg [`PAR_STATE_W-1:0] output_shift;
 
-    // 工作寄存器映射及各阶段见下方注释；数组不复位，事务内先写后读。
-    localparam IDLE=9000, FP_REQ=9001, FP_WAIT=9002, RESPONSE=9003;
-    localparam ADD=0,SUB=1,MUL=2,DIV=3,SQRT=4,LOG=9,CONVERT=11;
-    localparam [63:0] ZERO=64'b0,ONE=64'h3ff0000000000000;
-    reg [63:0] v[0:`PAR_STATE_N+46];
-    integer pc,destination,continuation,j;
-    reg [4:0] fp_op;
-    reg [63:0] fp_a,fp_b;
-    wire fp_ready,fp_valid;
-    wire [63:0] fp_result;
-    wire [4:0] fp_flags;
-    // v[0:3]=K, [4:5]=W/H, [10:18]=K^-1 H(列序), [20:28]=正交基列,
-    // 临时区[70:73]随PAR_STATE_N后移，避免与增加的输出外参重叠。默认：
-    // [30:32]=t, [33:39]=范数/尺度/临时量, [40:66]=27项输出, [70:73]=临时量。
-    reg [63:0] hom[0:9*`PAR_VIEWS-1];integer view;
-    // Select each homography element only across views. Explicit constant
-    // bank addresses avoid nine general 9*VIEWS-word dynamic read muxes.
-    wire [63:0] view_h[0:8];
-    genvar hk;
-    generate for(hk=0;hk<9;hk=hk+1)begin: h_by_view
-      reg [63:0] selected;integer hv;
-      always @* begin
-        selected=0;
-        for(hv=0;hv<`PAR_VIEWS;hv=hv+1)
-          if(view==hv)selected=hom[9*hv+hk];
-      end
-      assign view_h[hk]=selected;
-    end endgenerate
-    wire r_ready,r_valid;wire [7:0] r_status;wire [191:0] r_vec;
-    rotation #(.FP_SHARED(FP_SHARED)) rot(.shared_req_valid(shared_req_valid[1 +: 1]),.shared_req_ready(shared_req_ready[1 +: 1]),.shared_req_op(shared_req_op[5 +: 5]),.shared_req_a(shared_req_a[64 +: 64]),.shared_req_b(shared_req_b[64 +: 64]),.shared_active(shared_active[1 +: 1]),.shared_rsp_valid(shared_rsp_valid[1 +: 1]),.shared_rsp_ready(shared_rsp_ready[1 +: 1]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(rst_n),.cmd_valid(rst_n && pc==82),.cmd_ready(r_ready),.cmd_mode(1'b1),
-        .cmd_rotvec_fp64(192'b0),.cmd_r_fp64({v[28],v[25],v[22],v[27],v[24],v[21],v[26],v[23],v[20]}),
-        .rsp_valid(r_valid),.rsp_ready(rst_n && pc==83),.rsp_status(r_status),.rsp_rotvec_fp64(r_vec),.rsp_r_fp64());
-    genvar g;generate for(g=0;g<`PAR_STATE_N;g=g+1)begin:pack_state
-        assign rsp_state[64*g+:64]=(rsp_status==0)?v[40+g]:64'b0;
-    end endgenerate
-    assign cmd_ready=rst_n && pc==IDLE;
-    assign rsp_valid=rst_n && pc==RESPONSE;
-    function finite;
-        input [63:0] x;
-        begin finite=(x[62:52]!=11'h7ff);end
-    endfunction
-    // 精确无符号16位整数转FP64，不使用综合不支持的 real。
-    function [63:0] u16;
-        input [15:0] x;
-        integer k,top;
-        reg [63:0] shifted;
-        reg [10:0] exponent;
-        begin top=0;for(k=0;k<16;k=k+1)if(x[k])top=k;
-            shifted={48'b0,x} << (52-top);exponent=1023+top;
-            u16=(x==0)?64'b0:{1'b0,exponent,shifted[51:0]};end
-    endfunction
 
-    generate if(FP_SHARED) begin : g_shared_fp
-        assign shared_req_valid[0 +: 1] = rst_n && pc==FP_REQ;
-        assign shared_req_op[0 +: 5] = fp_op;
-        assign shared_req_a[0 +: 64] = fp_a;
-        assign shared_req_b[0 +: 64] = fp_b;
-        assign shared_rsp_ready[0 +: 1] = rst_n && pc==FP_WAIT;
-        assign shared_active[0] = rst_n;
-        assign fp_ready = shared_req_ready[0];
-        assign fp_valid = shared_rsp_valid[0];
-        assign fp_result = shared_rsp_result;
-        assign fp_flags = shared_rsp_flags;
+
+
+    wire engine_ready,engine_valid;wire [7:0] engine_status;
+    wire host_ready,host_valid,host_error;wire [63:0] host_result;
+    reg [31:0] host_addr;reg [63:0] host_data;
+    wire host_en=state==LOAD_COMMON || state==LOAD_VIEW || state==READ_GLOBAL || state==READ_VIEW;
+    wire host_write=state==LOAD_COMMON || state==LOAD_VIEW;
+    wire imem_en;wire [15:0] imem_addr;reg [31:0] imem_data;
+    reg [31:0] program_memory[0:1023];integer rom_index;
+    initial begin
+      for(rom_index=0;rom_index<1024;rom_index=rom_index+1)program_memory[rom_index]=32'h040000d2;
+      `include "pose_program_init.vh"
+    end
+    always @(posedge clk)if(imem_en)imem_data<=program_memory[imem_addr[9:0]];
+    wire fp_request,fp_ready,fp_response,fp_response_ready;
+    wire [4:0] fp_op,fp_flags;wire [63:0] fp_a,fp_b,fp_result;
+    assign cmd_ready=rst_n && state==IDLE;
+    assign rsp_valid=rst_n && state==RESPONSE;
+    assign rsp_state=rsp_status==`PAR_OK ? output_shift : {`PAR_STATE_W{1'b0}};
+    calib_datapath #(.FP_SHARED(1),.ENABLE_KERNELS(0),.RAM_WORDS(128),.CONST_BASE(92),.TRAP_FP(1)) engine(
+      .svc_valid(),.svc_ready(1'b0),.svc_id(),
+      .clk(clk),.rst_n(rst_n),.start_valid(state==START),.start_ready(engine_ready),
+      .start_pc(common_phase?16'd`POSE_COMMON_PC:16'd`POSE_VIEW_PC),.program_words(16'd`POSE_PROGRAM_WORDS),
+      .imem_en(imem_en),.imem_addr(imem_addr),.imem_data(imem_data),
+      .host_en(host_en),.host_write(host_write),.host_addr(host_addr),.host_data(host_data),
+      .host_ready(host_ready),.host_valid(host_valid),.host_error(host_error),.host_result(host_result),
+      .busy(),.rsp_valid(engine_valid),.rsp_ready(state==WAIT_ENGINE),.rsp_status(engine_status),
+      .debug_pc(),.cycle_count(),.instruction_count(),
+      .shared_req_valid(fp_request),.shared_req_ready(fp_ready),.shared_req_op(fp_op),.shared_req_a(fp_a),.shared_req_b(fp_b),
+      .shared_rsp_ready(fp_response_ready),.shared_rsp_valid(fp_response),.shared_rsp_result(fp_result),.shared_rsp_flags(fp_flags));
+    generate if(FP_SHARED)begin : g_shared_fp
+      assign shared_req_valid[0]=fp_request;assign shared_req_op[4:0]=fp_op;
+      assign shared_req_a[63:0]=fp_a;assign shared_req_b[63:0]=fp_b;
+      assign shared_active[0]=rst_n;assign shared_rsp_ready[0]=fp_response_ready;
+      assign fp_ready=shared_req_ready[0];assign fp_response=shared_rsp_valid[0];
+      assign fp_result=shared_rsp_result;assign fp_flags=shared_rsp_flags;
     end else begin : g_local_fp
-    fp_operator #(.FP_W(64), .ENABLE_EXP(0), .ENABLE_LOG(1), .ENABLE_SINCOS(0), .ENABLE_ATAN_ACOS(0)) arithmetic(.clk(clk),.rst_n(rst_n),
-        .req_valid(rst_n && pc==FP_REQ),.req_ready(fp_ready),.req_op(fp_op),.req_a(fp_a),.req_b(fp_b),
-        .rsp_valid(fp_valid),.rsp_ready(rst_n && pc==FP_WAIT),.rsp_result(fp_result),.rsp_flags(fp_flags),
+      fp_operator #(.FP_W(64),.ENABLE_EXP(0),.ENABLE_LOG(1),.ENABLE_SINCOS(0),.ENABLE_ATAN_ACOS(1)) arithmetic(
+        .clk(clk),.rst_n(rst_n),.req_valid(fp_request),.req_ready(fp_ready),.req_op(fp_op),.req_a(fp_a),.req_b(fp_b),
+        .rsp_valid(fp_response),.rsp_ready(fp_response_ready),.rsp_result(fp_result),.rsp_flags(fp_flags),
         .rsp_less(),.rsp_equal(),.rsp_unordered());
-assign shared_req_valid[0 +: 1] = 0;
-assign shared_req_op[0 +: 5] = 0;
-assign shared_req_a[0 +: 64] = 0;
-assign shared_req_b[0 +: 64] = 0;
-assign shared_active[0 +: 1] = 0;
-assign shared_rsp_ready[0 +: 1] = 0;
+      assign shared_req_valid[0]=0;assign shared_req_op[4:0]=0;assign shared_req_a[63:0]=0;assign shared_req_b[63:0]=0;
+      assign shared_active[0]=0;assign shared_rsp_ready[0]=0;
     end endgenerate
-
-    task calculate;
-        input [4:0] operation;input [63:0] a,b;input integer target,next_pc;
-        begin fp_op<=operation;fp_a<=a;fp_b<=b;destination<=target;continuation<=next_pc;pc<=FP_REQ;end
-    endtask
-    task fail;
-        input [7:0] status;
-        begin rsp_status<=status;pc<=RESPONSE;end
-    endtask
-    always @(posedge clk or negedge rst_n) begin
-        if(!rst_n) begin
-            pc<=IDLE;rsp_status<=0;fp_op<=0;fp_a<=0;fp_b<=0;destination<=0;continuation<=0;
-            view<=0;
-        end else case(pc)
-            IDLE: if(cmd_valid) begin
-                rsp_status<=0;pc<=0;
-                view<=0;v[4]<=u16(cmd_width);v[5]<=u16(cmd_height);
-                for(j=0;j<9*`PAR_VIEWS;j=j+1)hom[j]<=cmd_h_all_fp64[64*j +:64];
-                for(j=0;j<`PAR_STATE_N;j=j+1)v[40+j]<=0;
-                for(j=0;j<4;j=j+1)v[j]<=cmd_k_fp64[64*j +:64];
-                for(j=0;j<9*`PAR_VIEWS;j=j+1)if(!finite(cmd_h_all_fp64[64*j +:64]))fail(`PAR_CALIB_INVALID);
-                for(j=0;j<4;j=j+1)if(!finite(cmd_k_fp64[64*j +:64]))fail(`PAR_CALIB_INVALID);
-                if(cmd_width<2 || cmd_height<2)fail(`PAR_BAD_CONFIG);
-            end
-            FP_REQ: if(fp_ready) pc<=FP_WAIT;
-            FP_WAIT: if(fp_valid) begin
-                if((|fp_flags[2:0]) || !finite(fp_result)) fail(`PAR_CALIB_INVALID);
-                else begin v[destination]<=fp_result;pc<=continuation;end
-            end
-            RESPONSE: if(rsp_ready) pc<=IDLE;
-                // 焦距必须正；编码log(fx/fy)、cx/W、cy/H；畸变槽保持0
-                0: begin if(v[0][63] || v[1][63] || v[0][62:0]==0 || v[1][62:0]==0)fail(`PAR_CALIB_INVALID);else pc<=1; end
-                1: begin calculate(LOG, v[0], ZERO, 40, 2); end
-                2: begin calculate(LOG, v[1], ZERO, 41, 3); end
-                3: begin calculate(DIV, v[2], v[4], 42, 4); end
-                4: begin calculate(DIV, v[3], v[5], 43, 5); end
-                // 逐视图计算 K^-1 H 的三列
-                5: begin calculate(MUL, v[2], view_h[6], `PAR_STATE_N+43, 6); end
-                6: begin calculate(SUB, view_h[0], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 7); end
-                7: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 10, 8); end
-                8: begin calculate(MUL, v[3], view_h[6], `PAR_STATE_N+44, 9); end
-                9: begin calculate(SUB, view_h[3], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 10); end
-                10: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 11, 11); end
-                11: begin v[12]<=view_h[6];pc<=12; end
-                12: begin calculate(MUL, v[2], view_h[7], `PAR_STATE_N+43, 13); end
-                13: begin calculate(SUB, view_h[1], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 14); end
-                14: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 13, 15); end
-                15: begin calculate(MUL, v[3], view_h[7], `PAR_STATE_N+44, 16); end
-                16: begin calculate(SUB, view_h[4], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 17); end
-                17: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 14, 18); end
-                18: begin v[15]<=view_h[7];pc<=19; end
-                19: begin calculate(MUL, v[2], view_h[8], `PAR_STATE_N+43, 20); end
-                20: begin calculate(SUB, view_h[2], v[`PAR_STATE_N+43], `PAR_STATE_N+43, 21); end
-                21: begin calculate(DIV, v[`PAR_STATE_N+43], v[0], 16, 22); end
-                22: begin calculate(MUL, v[3], view_h[8], `PAR_STATE_N+44, 23); end
-                23: begin calculate(SUB, view_h[5], v[`PAR_STATE_N+44], `PAR_STATE_N+44, 24); end
-                24: begin calculate(DIV, v[`PAR_STATE_N+44], v[1], 17, 25); end
-                25: begin v[18]<=view_h[8];pc<=26; end
-                26: begin calculate(MUL, v[10], v[10], `PAR_STATE_N+43, 27); end
-                27: begin calculate(MUL, v[11], v[11], `PAR_STATE_N+44, 28); end
-                28: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], `PAR_STATE_N+43, 29); end
-                29: begin calculate(MUL, v[12], v[12], `PAR_STATE_N+44, 30); end
-                30: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 33, 31); end
-                31: begin calculate(SQRT, v[33], ZERO, 33, 32); end
-                32: begin calculate(MUL, v[13], v[13], `PAR_STATE_N+43, 33); end
-                33: begin calculate(MUL, v[14], v[14], `PAR_STATE_N+44, 34); end
-                34: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], `PAR_STATE_N+43, 35); end
-                35: begin calculate(MUL, v[15], v[15], `PAR_STATE_N+44, 36); end
-                36: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 34, 37); end
-                37: begin calculate(SQRT, v[34], ZERO, 34, 38); end
-                38: begin if(v[33]<64'h3d719799812dea11 || v[34]<64'h3d719799812dea11)fail(`PAR_CALIB_INVALID);else pc<=39; end
-                39: begin calculate(ADD, v[33], v[34], 35, 40); end
-                40: begin calculate(DIV, 64'h4000000000000000, v[35], 35, 41); end
-                41: begin if(v[18][63] && v[18][62:0]!=0)v[35]<=(v[35] ^ 64'h8000000000000000);pc<=42; end
-                42: begin calculate(MUL, v[16], v[35], 30, 43); end
-                43: begin calculate(MUL, v[17], v[35], 31, 44); end
-                44: begin calculate(MUL, v[18], v[35], 32, 45); end
-                45: begin calculate(DIV, ONE, v[33], 36, 46); end
-                46: begin if(v[35][63])v[36]<=(v[36] ^ 64'h8000000000000000);pc<=47; end
-                47: begin calculate(MUL, v[10], v[36], 20, 48); end
-                48: begin calculate(MUL, v[11], v[36], 21, 49); end
-                49: begin calculate(MUL, v[12], v[36], 22, 50); end
-                // Gram-Schmidt：从第二列减去沿第一列的投影，再归一化
-                50: begin calculate(MUL, v[20], v[13], `PAR_STATE_N+43, 51); end
-                51: begin calculate(MUL, v[21], v[14], `PAR_STATE_N+44, 52); end
-                52: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], `PAR_STATE_N+43, 53); end
-                53: begin calculate(MUL, v[22], v[15], `PAR_STATE_N+44, 54); end
-                54: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 37, 55); end
-                55: begin calculate(MUL, v[37], v[20], `PAR_STATE_N+43, 56); end
-                56: begin calculate(SUB, v[13], v[`PAR_STATE_N+43], 13, 57); end
-                57: begin calculate(MUL, v[37], v[21], `PAR_STATE_N+43, 58); end
-                58: begin calculate(SUB, v[14], v[`PAR_STATE_N+43], 14, 59); end
-                59: begin calculate(MUL, v[37], v[22], `PAR_STATE_N+43, 60); end
-                60: begin calculate(SUB, v[15], v[`PAR_STATE_N+43], 15, 61); end
-                61: begin calculate(MUL, v[13], v[13], `PAR_STATE_N+43, 62); end
-                62: begin calculate(MUL, v[14], v[14], `PAR_STATE_N+44, 63); end
-                63: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], `PAR_STATE_N+43, 64); end
-                64: begin calculate(MUL, v[15], v[15], `PAR_STATE_N+44, 65); end
-                65: begin calculate(ADD, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 38, 66); end
-                66: begin calculate(SQRT, v[38], ZERO, 38, 67); end
-                67: begin if(v[38]<64'h3d719799812dea11 || v[32][63] || v[32][62:0]==0)fail(`PAR_CALIB_INVALID);else pc<=68; end
-                68: begin calculate(DIV, ONE, v[38], 39, 69); end
-                69: begin if(v[35][63])v[39]<=(v[39] ^ 64'h8000000000000000);pc<=70; end
-                70: begin calculate(MUL, v[13], v[39], 23, 71); end
-                71: begin calculate(MUL, v[14], v[39], 24, 72); end
-                72: begin calculate(MUL, v[15], v[39], 25, 73); end
-                73: begin calculate(MUL, v[21], v[25], `PAR_STATE_N+43, 74); end
-                74: begin calculate(MUL, v[22], v[24], `PAR_STATE_N+44, 75); end
-                75: begin calculate(SUB, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 26, 76); end
-                76: begin calculate(MUL, v[22], v[23], `PAR_STATE_N+43, 77); end
-                77: begin calculate(MUL, v[20], v[25], `PAR_STATE_N+44, 78); end
-                78: begin calculate(SUB, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 27, 79); end
-                79: begin calculate(MUL, v[20], v[24], `PAR_STATE_N+43, 80); end
-                80: begin calculate(MUL, v[21], v[23], `PAR_STATE_N+44, 81); end
-                81: begin calculate(SUB, v[`PAR_STATE_N+43], v[`PAR_STATE_N+44], 28, 82); end
-                // 旋转矩阵转旋转向量，使用稳定四元数分支
-                82: begin if(r_ready)pc<=83; end
-                83: begin if(r_valid)begin if(r_status!=0)fail(r_status);else begin for(j=0;j<3;j=j+1)v[49+view*6+j]<=r_vec[64*j +:64];v[52+view*6]<=v[30];v[53+view*6]<=v[31];pc<=84;end end end
-                84: begin calculate(LOG, v[32], ZERO, 54+view*6, 85); end
-                85: begin if(view==(`PAR_VIEWS-1))pc<=RESPONSE;else begin view<=view+1;pc<=5;end end
-            default: fail(`PAR_CALIB_INVALID);
+    // The old rotation client is removed; its legacy slot remains tied off
+    // until the parent bus is consolidated with later stage migrations.
+    assign shared_req_valid[1]=0;assign shared_req_op[9:5]=0;
+    assign shared_req_a[127:64]=0;assign shared_req_b[127:64]=0;
+    assign shared_active[1]=0;assign shared_rsp_ready[1]=0;
+    function [63:0] u16;
+      input [15:0] x;integer k,top;reg [63:0] shifted;reg [10:0] exponent;
+      begin top=0;for(k=0;k<16;k=k+1)if(x[k])top=k;
+        shifted={48'd0,x}<<(52-top);exponent=1023+top;
+        u16=x==0?64'd0:{1'b0,exponent,shifted[51:0]};end
+    endfunction
+    always @* begin
+      host_addr=0;host_data=0;
+      case(state)
+        LOAD_COMMON:begin
+          host_addr=index<6?{28'd0,index}:32'd86+{28'd0,index};
+          case(index)
+            0,1,2,3:host_data=k_shift[63:0];
+            4:host_data=width_fp;
+            5:host_data=height_fp;
+            6:host_data=64'd0;
+            7:host_data=64'h3ff0000000000000;
+            8:host_data=64'h4000000000000000;
+            9:host_data=64'h3d719799812dea11;
+            10:host_data=64'h4010000000000000;
+          endcase
+        end
+        LOAD_VIEW:begin host_addr=32'd80+{28'd0,index};host_data=h_shift[63:0];end
+        READ_GLOBAL:host_addr=32'd40+{28'd0,index};
+        READ_VIEW:case(index)
+          0:host_addr=55;1:host_addr=56;2:host_addr=57;
+          3:host_addr=30;4:host_addr=31;5:host_addr=54;
         endcase
+      endcase
+    end
+    task fail;
+      input [7:0] status;
+      begin rsp_status<=status;state<=RESPONSE;end
+    endtask
+    integer j;
+    always @(posedge clk or negedge rst_n)begin
+      if(!rst_n)begin state<=IDLE;index<=0;view<=0;rsp_status<=0;common_phase<=1;end
+      else case(state)
+        IDLE:if(cmd_valid)begin
+          rsp_status<=`PAR_OK;index<=0;view<=0;common_phase<=1;state<=LOAD_COMMON;
+          h_shift<=cmd_h_all_fp64;k_shift<=cmd_k_fp64;output_shift<=0;
+          width_fp<=u16(cmd_width);height_fp<=u16(cmd_height);
+          for(j=0;j<9*`PAR_VIEWS;j=j+1)if(cmd_h_all_fp64[64*j+52+:11]==2047)fail(`PAR_CALIB_INVALID);
+          for(j=0;j<4;j=j+1)if(cmd_k_fp64[64*j+52+:11]==2047)fail(`PAR_CALIB_INVALID);
+          if(cmd_k_fp64[63] || cmd_k_fp64[127] || cmd_k_fp64[62:0]==0 || cmd_k_fp64[126:64]==0)fail(`PAR_CALIB_INVALID);
+          if(cmd_width<2 || cmd_height<2)fail(`PAR_BAD_CONFIG);
+        end
+        LOAD_COMMON:if(host_ready)begin
+          if(index<4)k_shift<=k_shift>>64;
+          if(index==10)state<=START;else index<=index+1'b1;
+        end
+        START:if(engine_ready)state<=WAIT_ENGINE;
+        WAIT_ENGINE:if(engine_valid)begin
+          if(engine_status!=0)fail(`PAR_CALIB_INVALID);
+          else begin index<=0;state<=common_phase?READ_GLOBAL:READ_VIEW;end
+        end
+        READ_GLOBAL:if(host_ready)state<=WAIT_GLOBAL;
+        WAIT_GLOBAL:if(host_valid)begin
+          if(host_error)fail(`PAR_CALIB_INVALID);
+          else begin
+            output_shift<={host_result,output_shift[`PAR_STATE_W-1:64]};
+            if(index==3)begin index<=0;state<=PAD;end
+            else begin index<=index+1'b1;state<=READ_GLOBAL;end
+          end
+        end
+        PAD:begin
+          output_shift<={64'd0,output_shift[`PAR_STATE_W-1:64]};
+          if(index==4)begin index<=0;common_phase<=0;state<=LOAD_VIEW;end else index<=index+1'b1;
+        end
+        LOAD_VIEW:if(host_ready)begin
+          h_shift<=h_shift>>64;
+          if(index==8)state<=START;else index<=index+1'b1;
+        end
+        READ_VIEW:if(host_ready)state<=WAIT_VIEW;
+        WAIT_VIEW:if(host_valid)begin
+          if(host_error)fail(`PAR_CALIB_INVALID);
+          else begin
+            output_shift<={host_result,output_shift[`PAR_STATE_W-1:64]};
+            if(index==5)begin
+              if(view==`PAR_VIEWS-1)state<=RESPONSE;
+              else begin view<=view+1'b1;index<=0;state<=LOAD_VIEW;end
+            end else begin index<=index+1'b1;state<=READ_VIEW;end
+          end
+        end
+        RESPONSE:if(rsp_ready)state<=IDLE;
+        default:fail(`PAR_CALIB_INVALID);
+      endcase
     end
 endmodule

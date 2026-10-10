@@ -1,39 +1,56 @@
-# 测试与工程脚本
+# 程序生成、仿真与工程脚本
 
-从仓库根目录运行下面的命令。脚本根据自身位置找到仓库，工作目录固定在根 `build` 下，也可用脚本的完整路径从其他目录启动。仓库可以移动，路径可以包含空格。
+脚本根据自身位置定位仓库。以下示例从根目录运行，输出写入 `build`。ModelSim 通过 `MODELSIM_BIN` 或 PATH 定位，PDS 通过 `PDS_SHELL`、PATH 或脚本参数定位。
 
-| 子目录              | 用途                                             |
-| ------------------- | ------------------------------------------------ |
-| calibration         | 初始化、LM、校验、标定顶层、多配置及 C++ 对拍    |
-| compute             | 浮点/矩阵/几何测试、共享计算与定点回归           |
-| memory              | 角点存储独立测试与缓存 Tcl 检查                  |
-| image、remap、video | 相应模块的 ModelSim Tcl 完成检查                 |
-| system              | 联合编译与仿真入口、系统测试清单、数值结果检查   |
-| build               | PDS 配置、隔离综合、目录检查、RTL 连接生成、清理 |
-| common              | 外部工具定位和模拟器退出处理                     |
+## 程序生成入口
 
-需安装 ModelSim、Node.js；Python 数值参考用到 NumPy，安装命令为 `python -m pip install -r data/generators/requirements.txt`。C++ 参考生成需要 MSVC 或相应生成器支持的 g++。
-
-ModelSim 从 `MODELSIM_BIN` 环境变量或 PATH 查找，也可传 `-ModelSimBin`。PDS 使用 `PDS_SHELL` 或 PATH，也可传 `-PdsBin` / `--pds`。MSVC 使用 `VS_ROOT` 或 `-VsRoot`。这些值指向各人自己的工具安装位置，仓库不保存开发者机器上的绝对路径。
+| 源文件 | 生成什么 | 对应执行器 |
+|---|---|---|
+| `image/build_detection_program.py` | 检测任务 ROM、服务编号及指令清单 | `detection_program` |
+| `calibration/engine/build_init.py` | DLT/Jacobi/姿态初值程序 | 标定执行器 |
+| `calibration/engine/build_lm.py` | 差分、方程、阻尼和参数更新程序 | 标定执行器 |
+| `calibration/engine/build_validate.py` | 参数、残差统计、姿态和映射检查程序 | 标定执行器 |
+| `calibration/engine/build_rom.py` | 合并上述三个阶段，生成入口地址 | `calib_execution_service` |
+| `compute/microcode/build_feature.py` | 张量求解、坐标更新和收敛量程序 | `feature_program` |
+| `compute/microcode/build_math.py` | 复杂数学函数程序 | `fp_math_program` |
 
 ```powershell
-# 不启动仿真的目录/路径检查
-python scripts/build/check_test_layout.py
-python scripts/build/check_rtl_layout.py
-
-# 板级连接与控制；IP 端口桩只验证连接
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
-# DDR 集成与校正单项检查
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_vision_ddr
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_undistort
-# 局部数值/协议回归
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compute/run_project_point.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/memory/run_corner_store.ps1
-python scripts/calibration/check_shared_init.py
-python scripts/calibration/check_shared_residual.py
-node scripts/calibration/test_calib_real_data.js
+python scripts/calibration/engine/build_rom.py
+python scripts/image/build_detection_program.py
+python scripts/compute/microcode/build_feature.py
+python scripts/compute/microcode/build_math.py
 ```
 
-`run_checks.ps1` 维护常用联合测试集，`-OnlyTest` 选择其中一个；不指定时运行默认集合，完整数值 LM 仍需显式选择。某些历史检测 TB 使用按需生成的 `data/image` 向量，并不属于默认快速集合。独立数值脚本使用独立工作库；不要同时运行两个写入同一 `build/system` 的联合脚本。
+程序生成物在 `rtl/include`，随源码提供；修改程序源时再生成。输入汇编与可读清单见[数据目录](../data/README.md)。
 
-生成输入/参考数据的程序放在 [data/generators](../data/README.md)。日志、波形、临时编译清单和生成的测试包装写入 `build`，不提交 Git。PDS 所需 ROM 镜像由 `configure_pds.ps1` 从 `data/rom` 复制，clone 后首次使用 PDS 应运行该脚本；只配置并保存/重开工程，不启动综合。
+## 按修改范围选择验证
+
+| 修改范围 | 运行入口 |
+|---|---|
+| 检测任务顺序、回退和背压 | `python scripts/image/check_detection_program.py` |
+| 检测共享加减 | `python scripts/compute/check_pair_add_pool.py` |
+| 检测候选输入边界 | `run_checks.ps1 -OnlyTest tb_detection_capture` |
+| 检测整条数值链 | `run_checks.ps1 -OnlyTest tb_detection_fixed` |
+| 初值程序/阶段接口 | `python scripts/calibration/engine/check_init.py` |
+| LM 程序/阶段接口 | `python scripts/calibration/engine/check_lm.py` |
+| LM 与真实残差服务 | `python scripts/calibration/engine/check_lm_service.py` |
+| 结果检查 | `python scripts/calibration/engine/check_validate.py` |
+| 精修数值程序 | `python scripts/compute/check_feature_program.py` |
+| 浮点后端 | `scripts/compute/run_fp_operator.ps1` |
+| 投影模型 | `scripts/compute/run_project_point.ps1` |
+| 角点存储 | `scripts/memory/run_corner_store.ps1` |
+| 板级任务与连接 | `run_checks.ps1 -Board -OnlyTest tb_board_flow` |
+
+表中的 `run_checks.ps1` 位于 `scripts/system`。例如：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
+```
+
+初值和检查脚本支持 `--quick`，仅做编译可用 `--compile-only`。完整 LM 单独运行，避免每次局部修改都重复长仿真。数值参考部分使用 Node.js 或 Python，依赖见 `data/generators/requirements.txt`。
+
+## 其余目录
+
+`memory`、`image`、`remap`、`video` 保存各功能的仿真驱动；`system/integration_tests.json` 定义联合测试清单；`common` 负责工具定位。输入数据生成器放在 `data/generators`，不与运行器混放。
+
+`build/check_rtl_layout.py` 检查源码、include、仿真清单和 PDS；`check_test_layout.py` 检查测试路径。`configure_pds.ps1` 同步工程后重新打开核对。`check_partition_synthesis.py` 在隔离目录测量局部资源，带内存保护。`generate_wiring.js` 和 `generate_camera_wiring.js` 维护算法集成连线。

@@ -1,4 +1,8 @@
 `timescale 1ns / 1ps
+// Board EXTERNAL_SEQ=1: MINSTEP/HALFWIN/SUBPIXEL/VALIDATE/OUTPUT are commands
+// from the shared detection program. S_WAIT holds results between commands.
+// Paired differences use the common adder when SHARED_ADD=1. Numerical order
+// and geometry checks remain unchanged. See docs/DETECTION_ENGINE.md.
 //==============================================================================
 // grid_refine_ctrl.sv — M5 网格精定位（复刻 validation.cpp::refine_grid）
 //------------------------------------------------------------------------------
@@ -12,7 +16,7 @@
 //       → 复用 subpixel_ctrl（rtl/detect/subpixel_ctrl.sv，M5.1 交付）
 //   4. valid = grid_validate(corners) < 1e30f（复用 rtl/detect/grid_validate.sv）
 //       → 无效则 corners 清空（valid=0，无输出流）
-// 位级权威 = tests/rtl/export_m5.cpp（refine_grid_ref，M5.2 对拍）。
+// 位级权威 = historical FP32 reference（refine_grid_ref，M5.2 对拍）。
 //
 // 实现要点（与 C++ 位级一致）：
 //   - 中间缓冲：40 点 {x,y} 双口 RAM（x/y 各一个 dual_port_ram，1 拍读延迟）。
@@ -36,7 +40,7 @@
 //   - pt_rd_*：点读口，1 拍延迟（请求拍 → 转移拍 → 吸收拍）
 //   - gray_rd_*：灰度读口，1 拍延迟（透传 subpixel_ctrl）
 //==============================================================================
-module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter VARIABLE_SCALE=0, parameter SHARED_SUBPIXEL=0,
+module grid_refine_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, parameter SHARED_HYPOT=0, parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter VARIABLE_SCALE=0, parameter SHARED_SUBPIXEL=0,
     parameter ROWS        = 5,
     parameter COLS        = 8,
     parameter N_ADDR_W    = 8,         // 点容量 256（≥ROWS*COLS）
@@ -45,6 +49,15 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
     parameter GRAY_ADDR_W = 20,
     parameter ROM_FILE    = "data/rom/gaussian_weights.mem"
 ) (
+    // Shared add/sub jobs; paired X/Y results are published atomically.
+    output wire add_req_valid,add_req_sub,add_req_pair,input wire add_req_ready,
+    output wire [63:0] add_req_a,add_req_b,
+    input wire add_rsp_valid,output wire add_rsp_ready,input wire [63:0] add_result,
+
+    // Shared detection instruction core. External mode removes phase scheduling.
+    input wire seq_valid,seq_enter,input wire [7:0] seq_id,input wire [15:0] seq_arg,
+    output wire seq_done,output wire [31:0] seq_result,
+
 
     // Exclusive-stage shared validator; memory latency and CE are unchanged.
     output wire val_start,
@@ -69,6 +82,12 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
     output wire sp_out_ready,
     input wire [32-1:0] sp_out_x,
     input wire [32-1:0] sp_out_y,
+        // Optional shared coordinate-distance service; same reset/CE domain.
+    output wire math_hyp_valid,input wire math_hyp_ready,
+    output wire [31:0] math_hyp_a,math_hyp_b,
+    input wire math_hyp_rsp_valid,output wire math_hyp_rsp_ready,
+    input wire [31:0] math_hyp_result,
+    // Global synchronous stall for variable-latency backing memory.
     input wire ce,
     input wire [2:0] cfg_scale,
 
@@ -101,6 +120,11 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
     localparam S_IDLE = 3'd0, S_MINSTEP = 3'd1, S_HALFWIN = 3'd2,
                S_SUBPX = 3'd3, S_VALIDATE = 3'd4, S_OUT = 3'd5, S_DONE = 3'd6;
     reg [2:0] state;
+    localparam S_WAIT=7;
+    reg completed;
+    `include "detection_services.vh"
+    assign seq_done=EXTERNAL_SEQ && seq_valid && !seq_enter &&
+       ((seq_id==DET_GRID_OUTPUT)?completed:(state==S_WAIT));
 
     // MINSTEP 子状态（装载 + 边扫描）
     localparam M_LOAD = 3'd0, M_RD1 = 3'd1, M_RD2 = 3'd2, M_RD3 = 3'd3,
@@ -258,6 +282,15 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
         .rd_en(iram_rd_en), .rd_addr(iram_rd_addr), .rd_data(iram_rd_y)
     );
 
+    generate if(SHARED_ADD)begin:g_shared_add
+
+      assign add_req_valid=sdx_go;assign add_req_sub=1;assign add_req_pair=1;
+      assign add_req_a={ya_r,xa_r};assign add_req_b={yb_r,xb_r};assign add_rsp_ready=1;
+      assign sdx_v=add_rsp_valid;assign sdy_v=add_rsp_valid;
+      assign sdx_r=add_result[31:0];assign sdy_r=add_result[63:32];
+    end else begin:g_private_add
+      assign add_req_valid=0;assign add_req_sub=0;assign add_req_pair=0;
+      assign add_req_a=0;assign add_req_b=0;assign add_rsp_ready=0;
     fp32_sub #(.USE_CE(USE_CE)) u_sdx (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .in_valid(sdx_go), .in_ready(),
@@ -270,7 +303,12 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
         .in_a(ya_r), .in_b(yb_r),
         .out_valid(sdy_v), .out_ready(1'b1), .out_r(sdy_r)
     );
-    fp32_hypot #(.USE_CE(USE_CE)) u_hyp (.ce(ce),
+    end endgenerate
+    hypot_port #(.SHARED(SHARED_HYPOT),.USE_CE(USE_CE)) u_hyp (.ce(ce),
+        .math_hyp_valid(math_hyp_valid),.math_hyp_ready(math_hyp_ready),
+        .math_hyp_a(math_hyp_a),.math_hyp_b(math_hyp_b),
+        .math_hyp_rsp_valid(math_hyp_rsp_valid),.math_hyp_rsp_ready(math_hyp_rsp_ready),
+        .math_hyp_result(math_hyp_result),
         .clk(clk), .rst_n(rst_n),
         .in_valid(hyp_go), .in_ready(),
         .in_a(dx_r), .in_b(dy_r),
@@ -353,9 +391,10 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
     //--------------------------------------------------------------------
     // 状态机
     //--------------------------------------------------------------------
+    assign seq_result={31'd0,!grid_valid};
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state <= S_IDLE;
+            state <= S_IDLE;completed<=0;
             busy <= 1'b0; done <= 1'b0; valid_out <= 1'b0;
             out_valid <= 1'b0; out_valid_flag <= 1'b0;
             out_x <= 32'd0; out_y <= 32'd0;
@@ -374,7 +413,7 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        busy <= 1'b1;
+                        busy <= 1'b1;completed<=0;
                         min_step <= FLT_MAX;
                         ld_cnt <= 16'd0;
                         scan_cnt <= 16'd0;
@@ -454,7 +493,7 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
                                     min_step <= hyp_r;
                                 if (scan_cnt >= N_EDGE - 16'd1) begin
                                     hst <= H_MUL;
-                                    state <= S_HALFWIN;
+                                    state <= EXTERNAL_SEQ?S_WAIT:S_HALFWIN;
                                 end else begin
                                     scan_cnt <= scan_cnt + 16'd1;
                                     mst <= M_RD1;
@@ -475,7 +514,7 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
                             if (mul_v) begin
                                 half_win <= hw_clamp(mul_r);
                                 pst <= P_START;
-                                state <= S_SUBPX;
+                                state <= EXTERNAL_SEQ?S_WAIT:S_SUBPX;
                             end
                         end
                     endcase
@@ -500,7 +539,7 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
                             if (spx_done) begin
                                 pst <= P_START;
                                 vst <= V_START;
-                                state <= S_VALIDATE;
+                                state <= EXTERNAL_SEQ?S_WAIT:S_VALIDATE;
                             end
                         end
                     endcase
@@ -519,9 +558,9 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
                                 if ($unsigned(gv_cost_out) < C_1E30) begin
                                     oc_cnt <= 16'd0;
                                     ost <= O_RD;
-                                    state <= S_OUT;
+                                    state <= EXTERNAL_SEQ?S_WAIT:S_OUT;
                                 end else begin
-                                    state <= S_DONE;   // 无效：无输出流（清空）
+                                    state <= EXTERNAL_SEQ?S_WAIT:S_DONE;   // 无效：无输出流（清空）
                                 end
                             end
                         end
@@ -555,7 +594,16 @@ module grid_refine_ctrl #(parameter SHARED_VALIDATE=0, parameter FIXED_BILINEAR=
                 end
 
                 //--------------------------------------------------------
+                S_WAIT: if(EXTERNAL_SEQ && seq_valid && seq_enter)begin
+                    case(seq_id)
+                     DET_HALFWIN:begin hst<=H_MUL;state<=S_HALFWIN;end
+                     DET_GRID_SUBPIXEL:begin pst<=P_START;state<=S_SUBPX;end
+                     DET_VALIDATE:begin vst<=V_START;state<=S_VALIDATE;end
+                     DET_GRID_OUTPUT:begin oc_cnt<=0;ost<=O_RD;state<=grid_valid?S_OUT:S_DONE;end
+                    endcase
+                end
                 S_DONE: begin
+                    completed<=1;
                     busy <= 1'b0;
                     done <= 1'b1;
                     valid_out <= grid_valid;

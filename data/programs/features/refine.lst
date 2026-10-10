@@ -1,0 +1,37 @@
+FP 2 r7,r0,r2
+FP 2 r8,r1,r1
+FP 1 r9,r7,r8
+FP 0 r10,r0,r2
+FP 2 r7,r17,r10
+FP 2 r7,r7,r10
+FP 13 r0,r10,r18
+BR 1 reject
+FP 13 r0,r9,r7
+BR 2 reject
+FP 2 r7,r2,r3
+FP 2 r8,r1,r4
+FP 1 r7,r7,r8
+FP 3 r11,r7,r9
+FP 2 r7,r0,r4
+FP 2 r8,r1,r3
+FP 1 r7,r7,r8
+FP 3 r12,r7,r9
+OUT 0,r11
+OUT 1,r12
+BR 3 accept
+FP 11 r5,r5,r16
+FP 11 r6,r6,r16
+FP 0 r13,r5,r11
+FP 12 r13,r13,r16
+FP 0 r14,r6,r12
+FP 12 r14,r14,r16
+FP 2 r7,r11,r11
+FP 2 r8,r12,r12
+FP 0 r15,r7,r8
+OUT 2,r13
+OUT 3,r14
+OUT 4,r15
+accept:
+END 1
+reject:
+END 0

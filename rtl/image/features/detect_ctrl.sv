@@ -1,4 +1,7 @@
 `timescale 1ns / 1ps
+// Board reading entry: g_program_flow.control -> detection_flow_control ->
+// detection_program. It owns stage/layer/candidate/angle scheduling; the shared
+// backend below exposes command services. See docs/DETECTION_ENGINE.md.
 //==============================================================================
 // detect_ctrl.sv — M6.2 单图多尺度检测调度（detect_chessboard 金字塔编排）
 //------------------------------------------------------------------------------
@@ -117,7 +120,7 @@ endmodule
 //------------------------------------------------------------------------------
 // detect_ctrl — 顶层调度
 //------------------------------------------------------------------------------
-module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0,
+module detect_ctrl #(parameter FP_SHARED=0,parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0,
     parameter W0          = 1280,
     parameter H0          = 720,
     parameter DEPTH       = 2,           // 层数（含 L0；DEPTH=1 无金字塔）
@@ -129,6 +132,12 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
     parameter SHARE_BACKEND = 0, parameter DDR_CANDIDATES=0,
     parameter REPLAY_RESP = 0 // 1: recompute responses; frame dump unavailable
 ) (
+    // Optional shared FP64 scalar service, independent of the image stream.
+    output wire math_req_valid,input wire math_req_ready,output wire [4:0] math_req_op,
+    output wire [63:0] math_req_a,math_req_b,output wire math_active,
+    input wire math_rsp_valid,output wire math_rsp_ready,input wire [63:0] math_result,
+    input wire [4:0] math_flags,
+
     // Global synchronous stall for variable-latency backing memory.
     input wire ce,
     output wire scratch_rd_en,scratch_wr_en,
@@ -310,12 +319,35 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
     wire bs_order_v,bs_order_done,bs_order_gok,bs_refine_v,bs_refine_done,bs_refine_val;
     wire [31:0] bs_order_x,bs_order_y,bs_refine_x,bs_refine_y;
     generate if(!SHARE_BACKEND) begin : g_no_scratch
+        assign math_req_valid=0;assign math_req_op=0;assign math_req_a=0;assign math_req_b=0;
+        assign math_active=0;assign math_rsp_ready=0;
         assign scratch_rd_en=0;assign scratch_wr_en=0;
         assign scratch_rd_addr=0;assign scratch_wr_addr=0;assign scratch_wr_data=0;
     end endgenerate
+    // One instruction core owns all low-rate detection phase scheduling.
+    wire seq_valid,seq_enter;wire [7:0] seq_id;wire [15:0] seq_arg;
+    wire seq_filter_done,seq_order_done,seq_grid_done;
+    wire [31:0] seq_filter_result,seq_order_result,seq_grid_result;
     generate if(SHARE_BACKEND) begin : g_shared_backend
         wire resetting=(stage==ST_NATIVE && nat_entry)||(stage==ST_REFINE && ref_entry);
         wire backend_rst_n=rst_n && !resetting;
+        wire [3:0] hyp_req,hyp_ready,hyp_rsp,hyp_rsp_ready;
+        wire [127:0] hyp_a,hyp_b;
+        wire [31:0] hyp_result;
+        hypot_pool #(.CLIENTS(4),.USE_CE(USE_CE)) distance_pool(
+            .clk(clk),.rst_n(backend_rst_n),.ce(ce),
+            .req_valid(hyp_req),.req_ready(hyp_ready),.req_a(hyp_a),.req_b(hyp_b),
+            .rsp_valid(hyp_rsp),.rsp_ready(hyp_rsp_ready),.result(hyp_result));
+
+        // One physical FP32 adder for merge differences, merge accumulation,
+        // grid ordering and refinement. Per-client response slots avoid cycles
+        // between distance backpressure and the accumulation needed to drain it.
+        wire [3:0] add_req,add_ready,add_sub,add_pair,add_rsp,add_rsp_ready;
+        wire [255:0] add_a,add_b,add_result;
+        fp32_pair_add_pool #(.CLIENTS(4),.USE_CE(USE_CE)) scalar_add_pool(
+          .clk(clk),.rst_n(backend_rst_n),.ce(ce),.req_valid(add_req),.req_ready(add_ready),
+          .req_sub(add_sub),.req_pair(add_pair),.req_a(add_a),.req_b(add_b),
+          .rsp_valid(add_rsp),.rsp_ready(add_rsp_ready),.result(add_result));
         reg native_start_q,refine_start_q;
         always @(posedge clk) begin
             if(!rst_n) begin native_start_q<=0;refine_start_q<=0;end
@@ -378,9 +410,16 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
         assign sr_out_x=sp_out_x;
         assign sf_out_y=sp_out_y;
         assign sr_out_y=sp_out_y;
-        subpixel_ctrl #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.USE_CE(USE_CE),.VARIABLE_SCALE(1),.IMG_W(W0),.IMG_H(H0),
+        subpixel_ctrl #(.FP_SHARED(FP_SHARED),.SHARED_HYPOT(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.USE_CE(USE_CE),.VARIABLE_SCALE(1),.IMG_W(W0),.IMG_H(H0),
             .GRAY_ADDR_W(GRAY_ADDR_W),.N_ADDR_W(14)) shared_subpixel(
-            .clk(clk),.rst_n(backend_rst_n),.ce(ce),.cfg_scale(dl[2:0]),
+            .math_req_valid(math_req_valid),.math_req_ready(math_req_ready),.math_req_op(math_req_op),
+        .math_req_a(math_req_a),.math_req_b(math_req_b),.math_active(math_active),
+        .math_rsp_valid(math_rsp_valid),.math_rsp_ready(math_rsp_ready),.math_result(math_result),.math_flags(math_flags),
+            .clk(clk),.rst_n(backend_rst_n),.ce(ce),
+                .math_hyp_valid(hyp_req[0]),.math_hyp_ready(hyp_ready[0]),
+                .math_hyp_a(hyp_a[0+:32]),.math_hyp_b(hyp_b[0+:32]),
+                .math_hyp_rsp_valid(hyp_rsp[0]),.math_hyp_rsp_ready(hyp_rsp_ready[0]),
+                .math_hyp_result(hyp_result),.cfg_scale(dl[2:0]),
             .gray_rd_data(gray_rd_data),.out_reliable(),
             .start((select_refine?sr_start:sf_start)),
             .busy(sp_busy),
@@ -413,11 +452,18 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
         wire [31:0] inner_x,inner_y;
         wire [15:0] inner_total,order_total;
         wire shared_ready;
-            candidate_filter_ctrl #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.DDR_CANDIDATES(DDR_CANDIDATES),.SHARED_SUBPIXEL(1),.VARIABLE_SCALE(1),.USE_CE(USE_CE),
+            candidate_filter_ctrl #(.SHARED_ADD(1),.EXTERNAL_SEQ(1),.SHARED_HYPOT(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.DDR_CANDIDATES(DDR_CANDIDATES),.SHARED_SUBPIXEL(1),.VARIABLE_SCALE(1),.USE_CE(USE_CE),
                 .IMG_W(W0), .IMG_H(H0), .GRAY_ADDR_W(GRAY_ADDR_W)
             ) u_filter (.scratch_rd_en(scratch_rd_en),.scratch_wr_en(scratch_wr_en),
         .scratch_rd_addr(scratch_rd_addr),.scratch_wr_addr(scratch_wr_addr),
         .scratch_wr_data(scratch_wr_data),.scratch_rd_data(scratch_rd_data),.sp_start(sf_start),.sp_busy(sf_busy),.sp_done(sf_done),.sp_n_in(sf_n_in),.sp_half_win(sf_half_win),.sp_pt_rd_en(sf_pt_rd_en),.sp_pt_rd_addr(sf_pt_rd_addr),.sp_pt_rd_x(sf_pt_rd_x),.sp_pt_rd_y(sf_pt_rd_y),.sp_gray_rd_en(sf_gray_rd_en),.sp_gray_rd_addr(sf_gray_rd_addr),.sp_out_valid(sf_out_valid),.sp_out_ready(sf_out_ready),.sp_out_x(sf_out_x),.sp_out_y(sf_out_y),.cfg_scale(dl[2:0]),.ce(ce),
+                .math_hyp_valid(hyp_req[1]),.math_hyp_ready(hyp_ready[1]),
+                .math_hyp_a(hyp_a[32+:32]),.math_hyp_b(hyp_b[32+:32]),
+                .math_hyp_rsp_valid(hyp_rsp[1]),.math_hyp_rsp_ready(hyp_rsp_ready[1]),
+                .math_hyp_result(hyp_result),
+                .add_req_valid(add_req[0+:2]),.add_req_ready(add_ready[0+:2]),.add_req_sub(add_sub[0+:2]),.add_req_pair(add_pair[0+:2]),.add_rsp_valid(add_rsp[0+:2]),.add_rsp_ready(add_rsp_ready[0+:2]),.add_req_a(add_a[0+:128]),.add_req_b(add_b[0+:128]),.add_result(add_result[0+:128]),
+                .seq_valid(seq_valid && seq_id[7:4]==4'd1),.seq_enter(seq_enter),.seq_id(seq_id),.seq_arg(seq_arg),
+                .seq_done(seq_filter_done),.seq_result(seq_filter_result),
                 .clk(clk), .rst_n(backend_rst_n),
                 .start(native_start_q), .busy(), .done(filter_done), .status(),
                 .cand_valid(bc_valid[dl]), .cand_ready(shared_ready),
@@ -429,20 +475,27 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
                 .probe_valid(), .probe_hi(), .probe_lo(), .probe_thr(),
                 .probe_ntrans(), .probe_opp_err(), .probe_sector_ok(), .probe_pass()
             );
-            grid_order_ctrl #(.SHARED_VALIDATE(1),.USE_CE(USE_CE),.ROWS(ROWS), .COLS(COLS)) u_order (.ce(ce),
+            grid_order_ctrl #(.SHARED_ADD(1),.EXTERNAL_SEQ(1),.SHARED_HYPOT(1),.SHARED_VALIDATE(1),.USE_CE(USE_CE),.ROWS(ROWS), .COLS(COLS)) u_order (.ce(ce),
+                .math_hyp_valid(hyp_req[2]),.math_hyp_ready(hyp_ready[2]),
+                .math_hyp_a(hyp_a[64+:32]),.math_hyp_b(hyp_b[64+:32]),
+                .math_hyp_rsp_valid(hyp_rsp[2]),.math_hyp_rsp_ready(hyp_rsp_ready[2]),
+                .math_hyp_result(hyp_result),
                 .val_start(vo_start),.val_busy(!select_refine && val_busy),
                 .val_done(!select_refine && val_done),.val_valid(val_valid),.val_cost(val_cost),
                 .val_rd_en(!select_refine && val_rd_en),.val_rd_addr(val_rd_addr[5:0]),
                 .val_rd_x(vo_x),.val_rd_y(vo_y),
+                .add_req_valid(add_req[2+:1]),.add_req_ready(add_ready[2+:1]),.add_req_sub(add_sub[2+:1]),.add_req_pair(add_pair[2+:1]),.add_rsp_valid(add_rsp[2+:1]),.add_rsp_ready(add_rsp_ready[2+:1]),.add_req_a(add_a[128+:64]),.add_req_b(add_b[128+:64]),.add_result(add_result[128+:64]),
+                .seq_valid(seq_valid && seq_id[7:4]==4'd2),.seq_enter(seq_enter),.seq_id(seq_id),.seq_arg(seq_arg),
+                .seq_done(seq_order_done),.seq_result(seq_order_result),
                 .clk(clk), .rst_n(backend_rst_n),
                 .start(native_start_q), .busy(), .done(bs_order_done), .status(),
                 .pts_valid(inner_v), .pts_ready(inner_rdy),
                 .pts_x(inner_x), .pts_y(inner_y), .pts_done(filter_done),
-                .out_valid(bs_order_v), .out_ready(1'b1),
+                .out_valid(bs_order_v), .out_ready(stage==ST_ORDER),
                 .out_x(bs_order_x), .out_y(bs_order_y),
                 .out_total(order_total), .out_grid_ok(bs_order_gok)
             );
-            grid_refine_ctrl #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.SHARED_VALIDATE(1),.SHARED_SUBPIXEL(1),.VARIABLE_SCALE(1),.USE_CE(USE_CE),
+            grid_refine_ctrl #(.SHARED_ADD(1),.EXTERNAL_SEQ(1),.SHARED_HYPOT(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.SHARED_VALIDATE(1),.SHARED_SUBPIXEL(1),.VARIABLE_SCALE(1),.USE_CE(USE_CE),
                 .ROWS(ROWS), .COLS(COLS), .N_ADDR_W(CORNER_AW),
                 .IMG_W(W0), .IMG_H(H0), .GRAY_ADDR_W(GRAY_ADDR_W)
             ) u_refine (
@@ -450,6 +503,13 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
                 .val_done(select_refine && val_done),.val_valid(val_valid),.val_cost(val_cost),
                 .val_rd_en(select_refine && val_rd_en),.val_rd_addr(val_rd_addr[CORNER_AW-1:0]),
                 .val_rd_x(vr_x),.val_rd_y(vr_y),.sp_start(sr_start),.sp_busy(sr_busy),.sp_done(sr_done),.sp_n_in(sr_n_in),.sp_half_win(sr_half_win),.sp_pt_rd_en(sr_pt_rd_en),.sp_pt_rd_addr(sr_pt_rd_addr),.sp_pt_rd_x(sr_pt_rd_x),.sp_pt_rd_y(sr_pt_rd_y),.sp_gray_rd_en(sr_gray_rd_en),.sp_gray_rd_addr(sr_gray_rd_addr),.sp_out_valid(sr_out_valid),.sp_out_ready(sr_out_ready),.sp_out_x(sr_out_x),.sp_out_y(sr_out_y),.cfg_scale(dl[2:0]),.ce(ce),
+                .math_hyp_valid(hyp_req[3]),.math_hyp_ready(hyp_ready[3]),
+                .math_hyp_a(hyp_a[96+:32]),.math_hyp_b(hyp_b[96+:32]),
+                .math_hyp_rsp_valid(hyp_rsp[3]),.math_hyp_rsp_ready(hyp_rsp_ready[3]),
+                .math_hyp_result(hyp_result),
+                .add_req_valid(add_req[3+:1]),.add_req_ready(add_ready[3+:1]),.add_req_sub(add_sub[3+:1]),.add_req_pair(add_pair[3+:1]),.add_rsp_valid(add_rsp[3+:1]),.add_rsp_ready(add_rsp_ready[3+:1]),.add_req_a(add_a[192+:64]),.add_req_b(add_b[192+:64]),.add_result(add_result[192+:64]),
+                .seq_valid(seq_valid && seq_id[7:4]==4'd3),.seq_enter(seq_enter),.seq_id(seq_id),.seq_arg(seq_arg),
+                .seq_done(seq_grid_done),.seq_result(seq_grid_result),
                 .clk(clk), .rst_n(backend_rst_n),
                 .start(refine_start_q), .busy(), .done(bs_refine_done),
                 .valid_out(bs_refine_val),
@@ -890,6 +950,20 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
     //--------------------------------------------------------------------
     // 块 3：主状态机
     //--------------------------------------------------------------------
+    generate if(SHARE_BACKEND)begin : g_program_flow
+      detection_flow_control #(.USE_CE(USE_CE),.DEPTH(DEPTH),.CORNER_N(CORNER_N),.REPLAY_RESP(REPLAY_RESP)) control(
+       .clk(clk),.rst_n(rst_n),.ce(ce),.start(start),.cfg_resp_dump_en(cfg_resp_dump_en),
+       .busy(busy),.done(done),.status(status),.stage(stage),.dl(dl),.nat_entry(nat_entry),.ref_entry(ref_entry),
+       .child_valid(child_valid),.oc(oc),.rc(rc),.out_oc(out_oc),.o_st(o_st),
+       .order_valid(slot_order_v[dl]),.refine_valid(slot_refine_v[dl]),
+       .refine_done(slot_refine_done[dl]),.refine_ok(slot_refine_val[dl]),.map_done(map_done),.resp_dump_done(resp_dump_done),
+       .corner_x(cram_rd_x[dl]),.corner_y(cram_rd_y[dl]),.out_valid(out_valid),.out_ready(out_ready),
+       .out_x(out_x),.out_y(out_y),.out_total(out_total),.out_grid_ok(out_grid_ok),
+       .seq_valid(seq_valid),.seq_enter(seq_enter),.seq_id(seq_id),.seq_arg(seq_arg),
+       .filter_done(seq_filter_done),.order_done(seq_order_done),.grid_done(seq_grid_done),
+       .filter_result(seq_filter_result),.order_result(seq_order_result),.grid_result(seq_grid_result));
+    end else begin : g_legacy_flow
+      assign seq_valid=0;assign seq_enter=0;assign seq_id=0;assign seq_arg=0;
     always @(posedge clk) begin
         if (!rst_n) begin
             stage      <= ST_IDLE;
@@ -1049,6 +1123,8 @@ module detect_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parame
         end
     end // synchronous clock enable
     end
+
+    end endgenerate
 
     //--------------------------------------------------------------------
     // 块 4：帧级响应图导出（ST_DUMP：读回最深层槽位 resp RAM 全图）

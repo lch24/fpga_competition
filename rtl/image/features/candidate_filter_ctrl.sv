@@ -3,7 +3,11 @@
 // -> fixed integer ring(6) AND (ring(4) OR ring(8)). Merge and subpixel
 // time-share the candidate store; the ring reads one coordinate at a time.
 // No nearest-neighbor radius search or per-candidate radius RAM.
-module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter DDR_CANDIDATES=0, parameter VARIABLE_SCALE=0, parameter SHARED_SUBPIXEL=0,
+// Board EXTERNAL_SEQ=1: the detection program schedules stages and iterates
+// candidates; this adapter performs one requested service and parks in S_WAIT.
+// SHARED_ADD=1 routes paired differences/accumulation to the common FP32 adder.
+// See docs/DETECTION_ENGINE.md for service IDs, entry and completion rules.
+module candidate_filter_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, parameter SHARED_HYPOT=0, parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM=0, parameter USE_CE=0, parameter DDR_CANDIDATES=0, parameter VARIABLE_SCALE=0, parameter SHARED_SUBPIXEL=0,
     parameter IMG_W       = 1280,
     parameter IMG_H       = 720,
     parameter GRAY_ADDR_W = 20,          // ≥ $clog2(W*H)
@@ -13,6 +17,15 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     parameter ROM_FILE    = "data/rom/ring_cos_sin.mem",
     parameter SUB_ROM_FILE = "data/rom/gaussian_weights.mem"
 ) (
+    // Shared add/sub jobs; paired X/Y results are published atomically.
+    output wire [1:0] add_req_valid,add_req_sub,add_req_pair,input wire [1:0] add_req_ready,
+    output wire [127:0] add_req_a,add_req_b,
+    input wire [1:0] add_rsp_valid,output wire [1:0] add_rsp_ready,input wire [127:0] add_result,
+
+    // Shared detection instruction core. External mode removes phase scheduling.
+    input wire seq_valid,seq_enter,input wire [7:0] seq_id,input wire [15:0] seq_arg,
+    output wire seq_done,output wire [31:0] seq_result,
+
     // Global synchronous stall for variable-latency backing memory.
     output wire sp_start,
     input wire sp_busy,
@@ -29,6 +42,12 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     output wire sp_out_ready,
     input wire [32-1:0] sp_out_x,
     input wire [32-1:0] sp_out_y,
+        // Optional shared coordinate-distance service; same reset/CE domain.
+    output wire math_hyp_valid,input wire math_hyp_ready,
+    output wire [31:0] math_hyp_a,math_hyp_b,
+    input wire math_hyp_rsp_valid,output wire math_hyp_rsp_ready,
+    input wire [31:0] math_hyp_result,
+    // Global synchronous stall for variable-latency backing memory.
     input wire ce,
     output wire scratch_rd_en,scratch_wr_en,
     output wire [14:0] scratch_rd_addr,scratch_wr_addr,
@@ -84,6 +103,11 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     localparam S_RING   = 4'd6;   // 逐点 ring 判定（读 B）
     localparam S_DONE   = 4'd7;
     reg [3:0] state;
+    localparam S_WAIT=8;
+    `include "detection_services.vh"
+    assign seq_done=EXTERNAL_SEQ && seq_valid && !seq_enter &&
+      ((seq_id==DET_FILTER_FINISH)?done:(state==S_WAIT));
+
 
     // subpixel 子状态
     localparam SPX_CLR = 2'd0;   // 清 store 写侧（回卷）+ 发 subpixel start
@@ -206,14 +230,20 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     wire merge_owner=(state==S_MERGE5 || state==S_MERGE3);
     assign md_ready=merge_owner && distance_ready;
     assign md_rvalid=merge_owner && distance_valid;
-    fp32_hypot #(.USE_CE(USE_CE)) shared_distance(.ce(ce),.clk(clk),.rst_n(rst_n),
+    hypot_port #(.SHARED(SHARED_HYPOT),.USE_CE(USE_CE)) shared_distance(.ce(ce),
+        .math_hyp_valid(math_hyp_valid),.math_hyp_ready(math_hyp_ready),
+        .math_hyp_a(math_hyp_a),.math_hyp_b(math_hyp_b),
+        .math_hyp_rsp_valid(math_hyp_rsp_valid),.math_hyp_rsp_ready(math_hyp_rsp_ready),
+        .math_hyp_result(math_hyp_result),.clk(clk),.rst_n(rst_n),
         .in_valid(merge_owner && md_valid),
         .in_ready(distance_ready),.in_a(md_x),.in_b(md_y),
         .out_valid(distance_valid),.out_ready(merge_owner&&md_rready),
         .out_r(distance_result));
 
-    candidate_merge #(.SHARED_DISTANCE(1),.USE_CE(USE_CE),.N_ADDR_W(N_ADDR_W)) u_merge (.ce(ce),
+    candidate_merge #(.SHARED_ADD(SHARED_ADD),.SHARED_DISTANCE(1),.USE_CE(USE_CE),.N_ADDR_W(N_ADDR_W)) u_merge (.ce(ce),
 
+        .add_req_valid(add_req_valid),.add_req_ready(add_req_ready),.add_req_sub(add_req_sub),.add_req_pair(add_req_pair),
+        .add_req_a(add_req_a),.add_req_b(add_req_b),.add_rsp_valid(add_rsp_valid),.add_rsp_ready(add_rsp_ready),.add_result(add_result),
         .distance_valid(md_valid),.distance_ready(md_ready),
         .distance_x(md_x),.distance_y(md_y),
         .distance_result_valid(md_rvalid),.distance_result_ready(md_rready),
@@ -320,6 +350,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
     //--------------------------------------------------------------------
     // 块 A：主状态机（state/busy/done/status/N_reg）
     //--------------------------------------------------------------------
+    assign seq_result={N_reg,14'd0,(N_reg==0),(status[1])};
     always @(posedge clk) begin
         if (!rst_n) begin
             state  <= S_IDLE;
@@ -342,18 +373,18 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                 S_CAP: begin
                     if (cnt_cand > MAX_CAND[15:0]) begin
                         status <= 2'b11;
-                        done   <= 1'b1;
+                        done   <= !EXTERNAL_SEQ;
                         busy   <= 1'b0;
-                        state  <= S_DONE;
+                        state  <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                     end else if (cand_done) begin
                         if (cnt_cand < MIN_CAND[15:0]) begin
                             status <= 2'b10;
-                            done   <= 1'b1;
+                            done   <= !EXTERNAL_SEQ;
                             busy   <= 1'b0;
-                            state  <= S_DONE;
+                            state  <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                         end else begin
                             N_reg <= cnt_cand;
-                            state <= S_MERGE5;
+                            state <= EXTERNAL_SEQ?S_WAIT:S_MERGE5;
                         end
                     end
                 end
@@ -361,7 +392,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                 S_MERGE5: begin
                     if (m5_started && merge_done && !merge_busy) begin
                         N_reg <= store_count;   // cnt_b
-                        state <= S_SUBPX;
+                        state <= EXTERNAL_SEQ?S_WAIT:S_SUBPX;
                     end
                 end
 
@@ -374,7 +405,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                         default: begin   // SPX_RUN：等 subpixel 输出流写回 → done
                             if (spx_done) begin
                                 spx_sub <= SPX_CLR;
-                                state   <= S_MERGE3;   // N 不变（subpixel 不增减点数）
+                                state   <= EXTERNAL_SEQ?S_WAIT:S_MERGE3;   // N 不变（subpixel 不增减点数）
                             end
                         end
                     endcase
@@ -383,19 +414,29 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                 S_MERGE3: begin
                     if (m3_started && merge_done && !merge_busy) begin
                         N_reg <= store_count;   // cnt_b（merge3 写 B）
-                        state <= S_RING;
+                        state <= EXTERNAL_SEQ?S_WAIT:S_RING;
                     end
                 end
 
                 S_RING: begin
-                    if (ring_finish) begin
+                    if (ring_finish && (!inner_valid || inner_ready)) begin
                         status <= 2'b01;
-                        done   <= 1'b1;
+                        done   <= !EXTERNAL_SEQ;
                         busy   <= 1'b0;
-                        state  <= S_DONE;
+                        state  <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                     end
                 end
 
+                S_WAIT: if(EXTERNAL_SEQ && seq_valid && seq_enter)begin
+                    case(seq_id)
+                     DET_MERGE5:state<=S_MERGE5;
+                     DET_SUBPIXEL:begin spx_sub<=SPX_CLR;state<=S_SUBPX;end
+                     DET_MERGE3:state<=S_MERGE3;
+                     DET_RING_POINT:state<=S_RING;
+                     DET_FILTER_FINISH:begin done<=1;busy<=0;state<=S_DONE;
+                       if(!status[1])status<=1;end
+                    endcase
+                end
                 S_DONE: begin
                     state <= S_IDLE;
                 end
@@ -432,10 +473,11 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
         end else if(!USE_CE || ce) begin begin
             // probe/inner 输出自清（握手恒收，1 拍）
             probe_valid <= 1'b0;
-            inner_valid <= 1'b0;
+            if(inner_ready)inner_valid <= 1'b0;
             // Keep all ring-substate writes in this clocked process.
-            if (state == S_MERGE3 && m3_started && merge_done && !merge_busy) begin
-                ring_i <= 0;
+            if ((EXTERNAL_SEQ && seq_valid && seq_enter && seq_id==DET_RING_POINT) ||
+                (!EXTERNAL_SEQ && state == S_MERGE3 && m3_started && merge_done && !merge_busy)) begin
+                ring_i <= EXTERNAL_SEQ?seq_arg:0;
                 rg_sub <= RG_RDPT;
                 rsel <= 2'd0;
             end
@@ -492,7 +534,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                             end
                         end
                     end
-                    RG_END: begin
+                    RG_END: if(!inner_valid || inner_ready)begin
                         probe_valid     <= 1'b1;
                         probe_hi        <= d0_hi;
                         probe_lo        <= d0_lo;
@@ -508,7 +550,7 @@ module candidate_filter_ctrl #(parameter FIXED_BILINEAR=0, parameter FIXED_ACCUM
                         end
                         // 总是推进 rg_sub（即使本点结束），防止 finish 拍重复输出 probe
                         rg_sub <= RG_RDPT;
-                        if (ring_i + 16'd1 >= N_reg) begin
+                        if (EXTERNAL_SEQ || ring_i + 16'd1 >= N_reg) begin
                             ring_finish <= 1'b1;
                         end else begin
                             ring_i <= ring_i + 16'd1;

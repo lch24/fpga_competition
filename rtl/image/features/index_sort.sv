@@ -2,7 +2,7 @@
 //==============================================================================
 // index_sort.sv — M4 通用排序核（双 RAM 迭代归并：key + 原索引）
 //------------------------------------------------------------------------------
-// 语义（与 export_m4.cpp::export_sort_cases 位级一致，不得改动）：
+// 语义（与 historical FP32 reference::export_sort_cases 位级一致，不得改动）：
 //   全序比较 less(a,b) = (key_a < key_b) || (key_a==key_b && idx_a<idx_b)
 //   key 为 fp32 位模式，比较采用位模式无符号序（与 C++ 参考
 //   std::vector<uint32_t> 的 operator< 一致）；相等 key 用位模式相等，
@@ -134,7 +134,7 @@ module index_sort #(parameter USE_CE=0,
         {N_ADDR_W+1{1'b0}};
 
     // 取元素判定：段1 优先当 less(cur1,cur0)
-    // 比较语义：key 为位模式无符号比较（与 export_m4.cpp::export_sort_cases
+    // 比较语义：key 为位模式无符号比较（与 historical FP32 reference::export_sort_cases
     //   参考 std::vector<uint32_t> 的 operator< 位级一致，对拍 9/9 全过）。
     //   organize_grid 真实 u/v 投影若为负且需 float 符号语义，由调用侧
     //   预处理 key（见汇报）。

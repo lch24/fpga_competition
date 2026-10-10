@@ -16,7 +16,7 @@ try {
             & "$ModelSimBin\vlib.exe" work
             if ($LASTEXITCODE -ne 0) { throw 'vlib failed' }
         }
-        & "$ModelSimBin\vlog.exe" -work work +incdir+../../../rtl/include +incdir+../../../rtl/compute/float ../../../rtl/compute/float/fp_divsqrt.v ../../../rtl/compute/float/fp_operator.v ../../../rtl/compute/service/fp_calibration_pool.v
+        & "$ModelSimBin\vlog.exe" -work work +incdir+../../../rtl/include +incdir+../../../rtl/compute/float ../../../rtl/compute/float/fp_divsqrt.v ../../../rtl/compute/float/calib_alu.v ../../../rtl/compute/float/fp_math_program.v ../../../rtl/compute/float/fp_operator.v ../../../rtl/compute/service/fp_calibration_pool.v
         if ($LASTEXITCODE -ne 0) { throw 'Arithmetic compilation failed' }
         & "$ModelSimBin\vlog.exe" -sv -work work +incdir+../../../rtl/include ../../../tb/compute/tb_fp_operator.sv
         if ($LASTEXITCODE -ne 0) { throw 'Testbench compilation failed' }

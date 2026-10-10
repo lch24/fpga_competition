@@ -6,7 +6,7 @@
 //   top    = (1-dx)*p00 + dx*p10      （fp32_sub → 2×fp32_mul → fp32_add）
 //   bottom = (1-dx)*p01 + dx*p11      （独立第二路，同上）
 //   out    = (1-dy)*top + dy*bottom   （fp32_sub → 2×fp32_mul → fp32_add）
-// 每次运算都是独立 fp32 RNE 单元逐次舍入（export_m5.cpp bilinear 逐行复刻）。
+// 每次运算都是独立 fp32 RNE 单元逐次舍入（historical FP32 reference bilinear 逐行复刻）。
 // 常量：1.0f = 32'h3F800000（m5_const.txt ONE_F）。
 //
 // 时序：串行状态机（一次一个样例）；子单元弹性握手（sync_fifo 水位冻结，

@@ -5,7 +5,12 @@
 // The initializer fills current state one word per cycle under backpressure.
 // Jobs still identify external transactions; reset cancels work and output
 // backpressure preserves the result until both consumers acknowledge it.
-module calib_top (
+module calib_top #(parameter EXTERNAL_FP=0)(
+    // Optional detection scalar client. Active deassertion cancels its reply.
+    input wire math_req_valid,output wire math_req_ready,input wire [4:0] math_req_op,
+    input wire [63:0] math_req_a,math_req_b,input wire math_active,
+    output wire math_rsp_valid,input wire math_rsp_ready,output wire [63:0] math_result,
+    output wire [4:0] math_flags,
     input wire clk, // core_clk，同一时钟域
     input wire rst_n, // 低有效复位，同步释放；取消全部在途事务
     input wire collect_valid, // 开始收集一个任务；这是新增的显式缓存初始化握手
@@ -49,7 +54,7 @@ module calib_top (
     output wire [7:0] diag_status, // 任务结果
     output wire [3:0] diag_phase, // 0收集/配置,1初值,2LM,3验证,4发布
     output wire diag_metrics_valid, // RMS/pose等数值字段是否有效
-    output wire diag_converged, // 最佳seed最终阶段收敛
+    output wire diag_converged, // 当前单阶段 LM 收敛
     output wire diag_weak_geometry, // 提示位，不单独否定参数
     output wire [63:0] diag_rms_fp64, // sqrt(best_cost/PAR_TOTAL_POINTS)
     output wire [`PAR_VIEW_RMS_W-1:0] diag_view_rms_fp64, // PAR_VIEWS个视图RMS，view0低位
@@ -57,7 +62,7 @@ module calib_top (
     output wire [63:0] diag_max_error_fp64, // 最大角点欧氏误差
     output wire [`PAR_POSES_W-1:0] diag_poses_fp64, // 三视图R和t；平移恢复首角点原点并乘square_size
     output wire [2:0] diag_seed_id, // 2=width-based seed; 7=no valid result
-    output wire [15:0] diag_accepted_steps, // 最佳seed三阶段已接受更新总数
+    output wire [15:0] diag_accepted_steps, // 当前单阶段 LM 已接受更新总数
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
     output wire [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
@@ -178,14 +183,14 @@ module calib_top (
     assign rsp_status=status;
     assign rsp_job_id=job;
 
-     wire [25:0] shared_req_valid;
-     wire [25:0] shared_req_ready;
-     wire [129:0] shared_req_op;
-     wire [1663:0] shared_req_a;
-     wire [1663:0] shared_req_b;
-     wire [25:0] shared_active;
-     wire [25:0] shared_rsp_valid;
-     wire [25:0] shared_rsp_ready;
+     wire [4:0] shared_req_valid;
+     wire [4:0] shared_req_ready;
+     wire [24:0] shared_req_op;
+     wire [319:0] shared_req_a;
+     wire [319:0] shared_req_b;
+     wire [4:0] shared_active;
+     wire [4:0] shared_rsp_valid;
+     wire [4:0] shared_rsp_ready;
     wire [63:0] shared_rsp_result;
     wire [4:0] shared_rsp_flags;
 
@@ -244,10 +249,33 @@ module calib_top (
     assign lm_ext_rsp_cost_fp64=service_rsp_cost_fp64;
     assign check_ext_rsp_cost_fp64=service_rsp_cost_fp64;
     residual_engine #(.FP_SHARED(1)) shared_residual(.clk(clk),.rst_n(service_rst_n),.cmd_valid(service_cmd_valid),.cmd_ready(service_cmd_ready),.cmd_width(service_cmd_width),.cmd_height(service_cmd_height),.cmd_state(service_cmd_state),.point_rd_en(service_point_rd_en),.point_rd_view_id(service_point_rd_view_id),.point_rd_index(service_point_rd_index),.point_rd_valid(service_point_rd_valid),.point_rd_x_fp32(service_point_rd_x_fp32),.point_rd_y_fp32(service_point_rd_y_fp32),.data_valid(service_data_valid),.data_ready(service_data_ready),.data_index(service_data_index),.data_fp64(service_data_fp64),.data_last(service_data_last),.rsp_valid(service_rsp_valid),.rsp_ready(service_rsp_ready),.rsp_status(service_rsp_status),.rsp_cost_fp64(service_rsp_cost_fp64),
-      .shared_req_valid(shared_req_valid[22+:4]),.shared_req_ready(shared_req_ready[22+:4]),.shared_req_op(shared_req_op[110+:20]),.shared_req_a(shared_req_a[1408+:256]),.shared_req_b(shared_req_b[1408+:256]),.shared_active(shared_active[22+:4]),.shared_rsp_valid(shared_rsp_valid[22+:4]),.shared_rsp_ready(shared_rsp_ready[22+:4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags));
-    fp_calibration_pool #(.CLIENTS(26)) arithmetic_pool(
-        .clk(clk),.rst_n(compute_rst_n),
-.c_req_valid(shared_req_valid),.c_req_ready(shared_req_ready),.c_req_op(shared_req_op),.c_req_a(shared_req_a),.c_req_b(shared_req_b),.c_active(shared_active),.c_rsp_valid(shared_rsp_valid),.c_rsp_ready(shared_rsp_ready),
+      .shared_req_valid(shared_req_valid[0+:4]),.shared_req_ready(shared_req_ready[0+:4]),.shared_req_op(shared_req_op[0+:20]),.shared_req_a(shared_req_a[0+:256]),.shared_req_b(shared_req_b[0+:256]),.shared_active(shared_active[0+:4]),.shared_rsp_valid(shared_rsp_valid[0+:4]),.shared_rsp_ready(shared_rsp_ready[0+:4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags));
+    // Calibration program ownership follows the phase FSM, not instruction PC.
+    // Keep ownership through HOST pauses and the final command response.
+    // One engine/RAM below serves all three adapters (ENGINE_SHARED=1).
+    // Reading guide: docs/INSTRUCTION_CONTROL_GUIDE.md.
+    wire [127:0] init_execution_req,lm_execution_req,check_execution_req;
+    wire [95:0] execution_rsp;
+    wire lm_execution_owner=pc==LM_CMD || pc==LM_WAIT;
+    calib_execution_service execution(
+      .clk(clk),.rst_n(compute_rst_n),.request((pc==CHECK_CMD || pc==CHECK_WAIT)?check_execution_req:(lm_execution_owner?lm_execution_req:init_execution_req)),.response(execution_rsp),
+      .shared_req_valid(shared_req_valid[4]),.shared_req_ready(shared_req_ready[4]),
+      .shared_req_op(shared_req_op[20+:5]),.shared_req_a(shared_req_a[256+:64]),.shared_req_b(shared_req_b[256+:64]),
+      .shared_rsp_valid(shared_rsp_valid[4]),.shared_rsp_ready(shared_rsp_ready[4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags));
+    assign shared_active[4]=compute_rst_n;
+    // Child resets cancel only their client. The shared core drains cancelled
+    // work and stays alive for detection even while calibration clears a job.
+    assign math_result=shared_rsp_result;
+    assign math_flags=shared_rsp_flags;
+    fp_calibration_pool #(.CLIENTS(6)) arithmetic_pool(
+        .clk(clk),.rst_n(rst_n),
+.c_req_valid({EXTERNAL_FP?math_req_valid:1'b0,shared_req_valid}),
+.c_req_ready({math_req_ready,shared_req_ready}),
+.c_req_op({EXTERNAL_FP?math_req_op:5'd0,shared_req_op}),
+.c_req_a({EXTERNAL_FP?math_req_a:64'd0,shared_req_a}),
+.c_req_b({EXTERNAL_FP?math_req_b:64'd0,shared_req_b}),
+.c_active({EXTERNAL_FP?math_active:1'b0,shared_active}),
+.c_rsp_valid({math_rsp_valid,shared_rsp_valid}),.c_rsp_ready({EXTERNAL_FP?math_rsp_ready:1'b0,shared_rsp_ready}),
         .result(shared_rsp_result),.flags(shared_rsp_flags));
     corner_store store(.clk(clk),.rst_n(rst_n),.clear(pc==CLEAR),
         .corner_valid(collecting && !input_fault && corner_valid),.corner_ready(store_corner_ready),
@@ -259,13 +287,13 @@ module calib_top (
         .view_format_error(dbg_view_format_error),.view_usable(dbg_view_usable),
         .rd_en(read_en),.rd_view_id(read_view),.rd_point_index(read_index),
         .rd_valid(rd_valid),.rd_x_fp32(rd_x),.rd_y_fp32(rd_y));
-    init_controller #(.FP_SHARED(1)) initializer(.shared_req_valid(shared_req_valid[0 +: 7]),.shared_req_ready(shared_req_ready[0 +: 7]),.shared_req_op(shared_req_op[0 +: 35]),.shared_req_a(shared_req_a[0 +: 448]),.shared_req_b(shared_req_b[0 +: 448]),.shared_active(shared_active[0 +: 7]),.shared_rsp_valid(shared_rsp_valid[0 +: 7]),.shared_rsp_ready(shared_rsp_ready[0 +: 7]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
+    init_controller #(.FP_SHARED(1),.ENGINE_SHARED(1)) initializer(.execution_req(init_execution_req),.execution_rsp(execution_rsp),.shared_req_valid(),.shared_req_ready(7'd0),.shared_req_op(),.shared_req_a(),.shared_req_b(),.shared_active(),.shared_rsp_valid(7'd0),.shared_rsp_ready(),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
         .cmd_valid(rst_n && pc==INIT_CMD),.cmd_ready(init_ready),.cmd_width(width),.cmd_height(height),
         .point_rd_en(init_rd),.point_rd_view_id(init_view),.point_rd_index(init_index),
         .point_rd_valid(init_owner && rd_valid),.point_rd_x_fp32(rd_x),.point_rd_y_fp32(rd_y),
         .seed_valid(seed_valid),.seed_ready(seed_ready),.seed_id(seed_id),.seed_state(seed_state),
         .rsp_valid(init_valid),.rsp_ready(rst_n && pc==INIT_WAIT),.rsp_status(init_status),.rsp_seed_count(init_count));
-    lm_controller #(.FP_SHARED(1),.SHARE_RESIDUAL(1)) optimizer(.ext_rst_n(lm_ext_rst_n),.ext_cmd_valid(lm_ext_cmd_valid),.ext_cmd_ready(lm_ext_cmd_ready),.ext_cmd_width(lm_ext_cmd_width),.ext_cmd_height(lm_ext_cmd_height),.ext_cmd_state(lm_ext_cmd_state),.ext_point_rd_en(lm_ext_point_rd_en),.ext_point_rd_view_id(lm_ext_point_rd_view_id),.ext_point_rd_index(lm_ext_point_rd_index),.ext_point_rd_valid(lm_ext_point_rd_valid),.ext_point_rd_x_fp32(lm_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(lm_ext_point_rd_y_fp32),.ext_data_valid(lm_ext_data_valid),.ext_data_ready(lm_ext_data_ready),.ext_data_index(lm_ext_data_index),.ext_data_fp64(lm_ext_data_fp64),.ext_data_last(lm_ext_data_last),.ext_rsp_valid(lm_ext_rsp_valid),.ext_rsp_ready(lm_ext_rsp_ready),.ext_rsp_status(lm_ext_rsp_status),.ext_rsp_cost_fp64(lm_ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[7 +: 9]),.shared_req_ready(shared_req_ready[7 +: 9]),.shared_req_op(shared_req_op[35 +: 45]),.shared_req_a(shared_req_a[448 +: 576]),.shared_req_b(shared_req_b[448 +: 576]),.shared_active(shared_active[7 +: 9]),.shared_rsp_valid(shared_rsp_valid[7 +: 9]),.shared_rsp_ready(shared_rsp_ready[7 +: 9]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
+    lm_controller #(.FP_SHARED(1),.SHARE_RESIDUAL(1),.ENGINE_SHARED(1)) optimizer(.execution_req(lm_execution_req),.execution_rsp(execution_rsp),.ext_rst_n(lm_ext_rst_n),.ext_cmd_valid(lm_ext_cmd_valid),.ext_cmd_ready(lm_ext_cmd_ready),.ext_cmd_width(lm_ext_cmd_width),.ext_cmd_height(lm_ext_cmd_height),.ext_cmd_state(lm_ext_cmd_state),.ext_point_rd_en(lm_ext_point_rd_en),.ext_point_rd_view_id(lm_ext_point_rd_view_id),.ext_point_rd_index(lm_ext_point_rd_index),.ext_point_rd_valid(lm_ext_point_rd_valid),.ext_point_rd_x_fp32(lm_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(lm_ext_point_rd_y_fp32),.ext_data_valid(lm_ext_data_valid),.ext_data_ready(lm_ext_data_ready),.ext_data_index(lm_ext_data_index),.ext_data_fp64(lm_ext_data_fp64),.ext_data_last(lm_ext_data_last),.ext_rsp_valid(lm_ext_rsp_valid),.ext_rsp_ready(lm_ext_rsp_ready),.ext_rsp_status(lm_ext_rsp_status),.ext_rsp_cost_fp64(lm_ext_rsp_cost_fp64),.shared_req_valid(),.shared_req_ready(9'd0),.shared_req_op(),.shared_req_a(),.shared_req_b(),.shared_active(),.shared_rsp_valid(9'd0),.shared_rsp_ready(),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
         .cmd_valid(rst_n && pc==LM_CMD),.cmd_ready(lm_ready),.cmd_width(width),.cmd_height(height),
         .cmd_state(current),.cmd_stage(stage),
         .point_rd_en(lm_rd),.point_rd_view_id(lm_view),.point_rd_index(lm_index),
@@ -273,7 +301,7 @@ module calib_top (
         .rsp_valid(lm_valid),.rsp_ready(rst_n && pc==LM_WAIT),.rsp_status(lm_status),
         .rsp_state(lm_state),.rsp_cost_fp64(lm_cost),.rsp_converged(lm_converged),
         .rsp_accepted_steps(lm_accepted),.rsp_outer_iterations());
-    validate_result #(.FP_SHARED(1),.SHARE_RESIDUAL(1)) validator(.ext_rst_n(check_ext_rst_n),.ext_cmd_valid(check_ext_cmd_valid),.ext_cmd_ready(check_ext_cmd_ready),.ext_cmd_width(check_ext_cmd_width),.ext_cmd_height(check_ext_cmd_height),.ext_cmd_state(check_ext_cmd_state),.ext_point_rd_en(check_ext_point_rd_en),.ext_point_rd_view_id(check_ext_point_rd_view_id),.ext_point_rd_index(check_ext_point_rd_index),.ext_point_rd_valid(check_ext_point_rd_valid),.ext_point_rd_x_fp32(check_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(check_ext_point_rd_y_fp32),.ext_data_valid(check_ext_data_valid),.ext_data_ready(check_ext_data_ready),.ext_data_index(check_ext_data_index),.ext_data_fp64(check_ext_data_fp64),.ext_data_last(check_ext_data_last),.ext_rsp_valid(check_ext_rsp_valid),.ext_rsp_ready(check_ext_rsp_ready),.ext_rsp_status(check_ext_rsp_status),.ext_rsp_cost_fp64(check_ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[16 +: 6]),.shared_req_ready(shared_req_ready[16 +: 6]),.shared_req_op(shared_req_op[80 +: 30]),.shared_req_a(shared_req_a[1024 +: 384]),.shared_req_b(shared_req_b[1024 +: 384]),.shared_active(shared_active[16 +: 6]),.shared_rsp_valid(shared_rsp_valid[16 +: 6]),.shared_rsp_ready(shared_rsp_ready[16 +: 6]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
+    validate_result #(.FP_SHARED(1),.SHARE_RESIDUAL(1),.ENGINE_SHARED(1)) validator(.execution_req(check_execution_req),.execution_rsp(execution_rsp),.ext_rst_n(check_ext_rst_n),.ext_cmd_valid(check_ext_cmd_valid),.ext_cmd_ready(check_ext_cmd_ready),.ext_cmd_width(check_ext_cmd_width),.ext_cmd_height(check_ext_cmd_height),.ext_cmd_state(check_ext_cmd_state),.ext_point_rd_en(check_ext_point_rd_en),.ext_point_rd_view_id(check_ext_point_rd_view_id),.ext_point_rd_index(check_ext_point_rd_index),.ext_point_rd_valid(check_ext_point_rd_valid),.ext_point_rd_x_fp32(check_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(check_ext_point_rd_y_fp32),.ext_data_valid(check_ext_data_valid),.ext_data_ready(check_ext_data_ready),.ext_data_index(check_ext_data_index),.ext_data_fp64(check_ext_data_fp64),.ext_data_last(check_ext_data_last),.ext_rsp_valid(check_ext_rsp_valid),.ext_rsp_ready(check_ext_rsp_ready),.ext_rsp_status(check_ext_rsp_status),.ext_rsp_cost_fp64(check_ext_rsp_cost_fp64),.shared_req_valid(),.shared_req_ready(6'd0),.shared_req_op(),.shared_req_a(),.shared_req_b(),.shared_active(),.shared_rsp_valid(6'd0),.shared_rsp_ready(),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
         .cmd_valid(rst_n && pc==CHECK_CMD),.cmd_ready(check_ready),.cmd_width(width),.cmd_height(height),
         .cmd_state(best_state),.cmd_square_size_fp64(square_size),.cmd_best_cost_fp64(best_cost),.cmd_converged(best_converged),
         .point_rd_en(check_rd),.point_rd_view_id(check_view),.point_rd_index(check_index),

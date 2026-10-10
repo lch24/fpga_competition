@@ -16,7 +16,7 @@ try {
             & "$ModelSimBin\vlib.exe" work
             if ($LASTEXITCODE -ne 0) { throw 'vlib failed' }
         }
-        & "$ModelSimBin\vlog.exe" -work work +incdir+../../../rtl/include +incdir+../../../rtl/compute/float ../../../rtl/compute/float/fp_divsqrt.v ../../../rtl/compute/float/fp_operator.v ../../../rtl/compute/service/fp_calibration_pool.v ../../../rtl/compute/linalg/jacobi_eigen.v ../../../rtl/compute/service/eigen_endpoint.v ../../../rtl/compute/geometry/rotation.v ../../../rtl/memory/parameters/corner_store.v ../../../rtl/control/calibration/init/homography.v ../../../rtl/control/calibration/init/zhang.v ../../../rtl/control/calibration/init/pose_init.v ../../../rtl/control/calibration/init/init_controller.v
+        & "$ModelSimBin\vlog.exe" -sv -work work +incdir+../../../rtl/include +incdir+../../../rtl/compute/float ../../../rtl/compute/float/fp_divsqrt.v ../../../rtl/compute/float/fp_math_program.v ../../../rtl/compute/float/fp_operator.v ../../../rtl/compute/service/fp_calibration_pool.v ../../../rtl/compute/geometry/rotation.v ../../../rtl/memory/parameters/corner_store.v ../../../rtl/control/calibration/init/pose_init.v ../../../rtl/control/calibration/init/init_controller.v ../../../rtl/compute/float/calib_alu.v ../../../rtl/control/calibration/engine/calib_sequencer.v ../../../rtl/control/calibration/engine/calib_kernel_ctrl.v ../../../rtl/memory/local/calib_workspace.v ../../../rtl/compute/service/calib_datapath.v
         if ($LASTEXITCODE -ne 0) { throw 'RTL compilation failed' }
         & "$ModelSimBin\vlog.exe" -sv -work work +incdir+../../../rtl/include ../../../tb/calibration/tb_pose_init.sv
         if ($LASTEXITCODE -ne 0) { throw 'Testbench compilation failed' }

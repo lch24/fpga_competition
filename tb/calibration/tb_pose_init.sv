@@ -1,15 +1,16 @@
 `timescale 1ns/1ps
+`include "calib_defs.vh"
 // 独立软件参考向量；检查命令锁存、数值、失败状态、响应背压、复位与恢复。
 module tb_pose_init;
  reg clk=0;always #5 clk=~clk;
  reg rst_n=0,cmd_valid=0,rsp_ready=0;wire cmd_ready,rsp_valid;wire [7:0] rsp_status;
  reg [15:0] width,height,cmd_width,cmd_height;
- reg [1727:0] hom,cmd_hom;reg [255:0] k,cmd_k;
+ reg [`PAR_H_ALL_W-1:0] hom,cmd_hom;reg [255:0] k,cmd_k;
  reg [2559:0] points;
  reg [1:0] view,cmd_view;
  integer drop,reads;reg read_valid=0;reg [31:0] read_x,read_y;
  wire read_en;wire [1:0] read_view;wire [5:0] read_index;
- wire [1727:0] result_bits;reg [1727:0] expected,snapshot;
+ wire [`PAR_STATE_W-1:0] result_bits;reg [`PAR_STATE_W-1:0] expected,snapshot;
  reg [7:0] expected_status,status_snapshot;
  reg done=0;integer errors=0,cases=0,protocol_cases=0,max_cycles=0;
  integer fd,report,rc,cycles,j;
@@ -31,7 +32,7 @@ module tb_pose_init;
  task check_result;
  begin check(rsp_status===expected_status,"response status");
    if(expected_status==0)begin
-     for(j=0;j<27;j=j+1)begin av=$bitstoreal(result_bits[j*64 +:64]);ev=$bitstoreal(expected[j*64 +:64]);difference=av-ev;if(difference<0)difference=-difference;
+     for(j=0;j<`PAR_STATE_N;j=j+1)begin av=$bitstoreal(result_bits[j*64 +:64]);ev=$bitstoreal(expected[j*64 +:64]);difference=av-ev;if(difference<0)difference=-difference;
        tolerance=2e-9*(1+(ev<0?-ev:ev));
        if(!((^result_bits[j*64 +:64])!==1'bx && result_bits[j*64+52 +:11]!=2047 && difference<=tolerance))begin
          check(0,"numeric result");$fdisplay(report,"element=%0d actual=%.17g expected=%.17g diff=%.9g tolerance=%.9g",j,av,ev,difference,tolerance);end

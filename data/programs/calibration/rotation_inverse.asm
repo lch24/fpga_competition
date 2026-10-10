@@ -1,0 +1,353 @@
+# Stable R -> quaternion -> rotation vector, preserving original operation order.
+# R columns at 20..28. Outputs rx/ry/rz at 55..57. Scratch 60..67.
+# Constants at 92 zero, 93 one, 94 two, 95 tiny, 96 four.
+# Entry A0=0. Shared LOG/ATAN2 use the existing FP pool during migration.
+inverse_start:
+inverse_118:
+ LD F0,A0,20
+ LD F1,A0,24
+ FADD F2,F0,F1
+ ST F2,A0,60
+inverse_119:
+ LD F0,A0,60
+ LD F1,A0,28
+ FADD F2,F0,F1
+ ST F2,A0,60
+inverse_120:
+ LD F0,A0,60
+ LD F1,A0,92
+ FCMP F0,F1
+ BR.5 inverse_121
+ LD F0,A0,20
+ LD F1,A0,24
+ FCMP F0,F1
+ BR.4 inverse_choose_y
+ LD F1,A0,28
+ FCMP F0,F1
+ BR.5 inverse_132
+inverse_choose_y:
+ LD F0,A0,24
+ LD F1,A0,28
+ FCMP F0,F1
+ BR.5 inverse_145
+ BR inverse_158
+inverse_121:
+ LD F0,A0,60
+ LD F1,A0,93
+ FADD F2,F0,F1
+ ST F2,A0,61
+inverse_122:
+ LD F0,A0,61
+ FSQRT F2,F0
+ ST F2,A0,61
+inverse_123:
+ LD F0,A0,94
+ LD F1,A0,61
+ FMUL F2,F0,F1
+ ST F2,A0,61
+inverse_124:
+ LD F0,A0,61
+ LD F1,A0,96
+ FDIV F2,F0,F1
+ ST F2,A0,64
+inverse_125:
+ LD F0,A0,25
+ LD F1,A0,27
+ FSUB F2,F0,F1
+ ST F2,A0,65
+inverse_126:
+ LD F0,A0,65
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,65
+inverse_127:
+ LD F0,A0,26
+ LD F1,A0,22
+ FSUB F2,F0,F1
+ ST F2,A0,66
+inverse_128:
+ LD F0,A0,66
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,66
+inverse_129:
+ LD F0,A0,21
+ LD F1,A0,23
+ FSUB F2,F0,F1
+ ST F2,A0,67
+inverse_130:
+ LD F0,A0,67
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,67
+inverse_131:
+ BR inverse_171
+inverse_132:
+ LD F0,A0,93
+ LD F1,A0,20
+ FADD F2,F0,F1
+ ST F2,A0,61
+inverse_133:
+ LD F0,A0,61
+ LD F1,A0,24
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_134:
+ LD F0,A0,61
+ LD F1,A0,28
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_135:
+ LD F0,A0,61
+ FSQRT F2,F0
+ ST F2,A0,61
+inverse_136:
+ LD F0,A0,94
+ LD F1,A0,61
+ FMUL F2,F0,F1
+ ST F2,A0,61
+inverse_137:
+ LD F0,A0,25
+ LD F1,A0,27
+ FSUB F2,F0,F1
+ ST F2,A0,64
+inverse_138:
+ LD F0,A0,64
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,64
+inverse_139:
+ LD F0,A0,61
+ LD F1,A0,96
+ FDIV F2,F0,F1
+ ST F2,A0,65
+inverse_140:
+ LD F0,A0,23
+ LD F1,A0,21
+ FADD F2,F0,F1
+ ST F2,A0,66
+inverse_141:
+ LD F0,A0,66
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,66
+inverse_142:
+ LD F0,A0,26
+ LD F1,A0,22
+ FADD F2,F0,F1
+ ST F2,A0,67
+inverse_143:
+ LD F0,A0,67
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,67
+inverse_144:
+ BR inverse_171
+inverse_145:
+ LD F0,A0,93
+ LD F1,A0,24
+ FADD F2,F0,F1
+ ST F2,A0,61
+inverse_146:
+ LD F0,A0,61
+ LD F1,A0,20
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_147:
+ LD F0,A0,61
+ LD F1,A0,28
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_148:
+ LD F0,A0,61
+ FSQRT F2,F0
+ ST F2,A0,61
+inverse_149:
+ LD F0,A0,94
+ LD F1,A0,61
+ FMUL F2,F0,F1
+ ST F2,A0,61
+inverse_150:
+ LD F0,A0,26
+ LD F1,A0,22
+ FSUB F2,F0,F1
+ ST F2,A0,64
+inverse_151:
+ LD F0,A0,64
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,64
+inverse_152:
+ LD F0,A0,23
+ LD F1,A0,21
+ FADD F2,F0,F1
+ ST F2,A0,65
+inverse_153:
+ LD F0,A0,65
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,65
+inverse_154:
+ LD F0,A0,61
+ LD F1,A0,96
+ FDIV F2,F0,F1
+ ST F2,A0,66
+inverse_155:
+ LD F0,A0,27
+ LD F1,A0,25
+ FADD F2,F0,F1
+ ST F2,A0,67
+inverse_156:
+ LD F0,A0,67
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,67
+inverse_157:
+ BR inverse_171
+inverse_158:
+ LD F0,A0,93
+ LD F1,A0,28
+ FADD F2,F0,F1
+ ST F2,A0,61
+inverse_159:
+ LD F0,A0,61
+ LD F1,A0,20
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_160:
+ LD F0,A0,61
+ LD F1,A0,24
+ FSUB F2,F0,F1
+ ST F2,A0,61
+inverse_161:
+ LD F0,A0,61
+ FSQRT F2,F0
+ ST F2,A0,61
+inverse_162:
+ LD F0,A0,94
+ LD F1,A0,61
+ FMUL F2,F0,F1
+ ST F2,A0,61
+inverse_163:
+ LD F0,A0,21
+ LD F1,A0,23
+ FSUB F2,F0,F1
+ ST F2,A0,64
+inverse_164:
+ LD F0,A0,64
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,64
+inverse_165:
+ LD F0,A0,26
+ LD F1,A0,22
+ FADD F2,F0,F1
+ ST F2,A0,65
+inverse_166:
+ LD F0,A0,65
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,65
+inverse_167:
+ LD F0,A0,27
+ LD F1,A0,25
+ FADD F2,F0,F1
+ ST F2,A0,66
+inverse_168:
+ LD F0,A0,66
+ LD F1,A0,61
+ FDIV F2,F0,F1
+ ST F2,A0,66
+inverse_169:
+ LD F0,A0,61
+ LD F1,A0,96
+ FDIV F2,F0,F1
+ ST F2,A0,67
+inverse_170:
+ BR inverse_171
+inverse_171:
+ LD F0,A0,64
+ LD F1,A0,92
+ FCMP F0,F1
+ BR.6 inverse_172
+ LD F0,A0,64
+ FNEG F0,F0
+ ST F0,A0,64
+ LD F0,A0,65
+ FNEG F0,F0
+ ST F0,A0,65
+ LD F0,A0,66
+ FNEG F0,F0
+ ST F0,A0,66
+ LD F0,A0,67
+ FNEG F0,F0
+ ST F0,A0,67
+inverse_172:
+ LD F0,A0,65
+ LD F1,A0,65
+ FMUL F2,F0,F1
+ ST F2,A0,62
+inverse_173:
+ LD F0,A0,66
+ LD F1,A0,66
+ FMUL F2,F0,F1
+ ST F2,A0,63
+inverse_174:
+ LD F0,A0,62
+ LD F1,A0,63
+ FADD F2,F0,F1
+ ST F2,A0,62
+inverse_175:
+ LD F0,A0,67
+ LD F1,A0,67
+ FMUL F2,F0,F1
+ ST F2,A0,63
+inverse_176:
+ LD F0,A0,62
+ LD F1,A0,63
+ FADD F2,F0,F1
+ ST F2,A0,62
+inverse_177:
+ LD F0,A0,62
+ FSQRT F2,F0
+ ST F2,A0,62
+inverse_178:
+ LD F0,A0,62
+ LD F1,A0,95
+ FCMP F0,F1
+ BR.5 inverse_179
+ LD F0,A0,94
+ ST F0,A0,63
+ BR inverse_182
+inverse_179:
+ LD F0,A0,62
+ LD F1,A0,64
+ FATAN2 F2,F0,F1
+ ST F2,A0,63
+inverse_180:
+ LD F0,A0,94
+ LD F1,A0,63
+ FMUL F2,F0,F1
+ ST F2,A0,63
+inverse_181:
+ LD F0,A0,63
+ LD F1,A0,62
+ FDIV F2,F0,F1
+ ST F2,A0,63
+inverse_182:
+ LD F0,A0,65
+ LD F1,A0,63
+ FMUL F2,F0,F1
+ ST F2,A0,55
+inverse_183:
+ LD F0,A0,66
+ LD F1,A0,63
+ FMUL F2,F0,F1
+ ST F2,A0,56
+inverse_184:
+ LD F0,A0,67
+ LD F1,A0,63
+ FMUL F2,F0,F1
+ ST F2,A0,57
+inverse_185:
+ END 0

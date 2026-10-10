@@ -1,0 +1,34 @@
+// Generated initial scalar/constant RAM contents. All other words
+// are initialized before first read by the program or host adapter.
+192: initial_data=64'h0000000000000000;
+193: initial_data=64'h3ff0000000000000;
+194: initial_data=64'h4000000000000000;
+195: initial_data=64'h3f50624dd2f1a9fc;
+196: initial_data=64'h3eb0c6f7a0b5ed8d;
+197: initial_data=64'h3d719799812dea11;
+198: initial_data=64'h3c9cd2b297d889bc;
+199: initial_data=64'h3e45798ee2308c3a;
+200: initial_data=64'h3fd3333333333333;
+201: initial_data=64'h4024000000000000;
+202: initial_data=64'h3da5fd7fe1796495;
+203: initial_data=64'h3e112e0be826d695;
+204: initial_data=64'h3ee4f8b588e368f1;
+205: initial_data=64'h7ff0000000000000;
+206: initial_data=64'h3fe0000000000000;
+207: initial_data=64'h4008000000000000;
+208: initial_data=64'h4018000000000000;
+209: initial_data=64'h4038000000000000;
+210: initial_data=64'h4040000000000000;
+211: initial_data=64'h3fa999999999999a;
+212: initial_data=64'h4034000000000000;
+213: initial_data=64'h3f847ae147ae147b;
+214: initial_data=64'h3fc5c28f5c28f5c3;
+215: initial_data=64'h3f1a36e2eb1c432d;
+216: initial_data=64'h3ff6a09e667f3bcd;
+217: initial_data=64'h39b4484bfeebc2a0;
+218: initial_data=64'h3d06849b86a12b9b;
+219: initial_data=64'h3ddb7cdfd9d7bdbb;
+280: initial_data=64'h39b4484bfeebc2a0;
+281: initial_data=64'h3d06849b86a12b9b;
+282: initial_data=0;
+283: initial_data=64'h7fefffffffffffff;

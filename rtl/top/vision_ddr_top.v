@@ -5,7 +5,7 @@
 // One job and one frame lease at a time. Last input frame is the correction input.
 // Result memory remains owned by caller until rsp_ready; next start may overwrite.
 module vision_ddr_top #(
- parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,
+ parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,PACKED_MAP=0,
  parameter GRAY_BASE=32'h03000000,DST_BASE=32'h01000000,
  parameter FIXED_BILINEAR=1, parameter FIXED_ACCUM=1,
  parameter CANDIDATE_BASE=32'h03200000,
@@ -58,6 +58,8 @@ module vision_ddr_top #(
   end
  endfunction
  localparam [63:0] IMAGE_BYTES=64'd2*WIDTH*HEIGHT,GRAY_BYTES=pyramid_bytes(1'b0),MAP_BYTES=64'd4*WIDTH*HEIGHT;
+ // Packed mode occupies the SAME combined size as the former two FP32 planes.
+ localparam [63:0] MX_BYTES=PACKED_MAP?2*MAP_BYTES:MAP_BYTES,MY_BYTES=PACKED_MAP?0:MAP_BYTES;
  function disjoint;
   input [63:0] a,an,b,bn;begin disjoint=(a+an<=b)||(b+bn<=a);end
  endfunction
@@ -66,19 +68,19 @@ module vision_ddr_top #(
   CANDIDATE_BASE+CANDIDATE_BYTES<=64'h40000000 &&
   disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,GRAY_BASE,GRAY_BYTES)&&
   disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,DST_BASE,IMAGE_BYTES)&&
-  disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,MAP_X_BASE,MAP_BYTES)&&
-  disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,MAP_Y_BASE,MAP_BYTES)&&WIDTH>=32&&HEIGHT>=32&&WIDTH<=1920&&HEIGHT<=1080&&DEPTH>=1&&DEPTH<=4&&
+  disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,MAP_X_BASE,MX_BYTES)&&
+  disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,MAP_Y_BASE,MY_BYTES)&&WIDTH>=32&&HEIGHT>=32&&WIDTH<=1920&&HEIGHT<=1080&&DEPTH>=1&&DEPTH<=4&&
   (WIDTH>>(DEPTH-1))>=16&&(HEIGHT>>(DEPTH-1))>=16&&
   `PAR_BOARD_ROWS>=2&&`PAR_BOARD_COLS>=2&&`PAR_POINTS<=64&&
   GRAY_BASE+GRAY_BYTES<=64'h40000000&&DST_BASE+IMAGE_BYTES<=64'h40000000&&
-  MAP_X_BASE+MAP_BYTES<=64'h40000000&&MAP_Y_BASE+MAP_BYTES<=64'h40000000&&
-  disjoint(GRAY_BASE,GRAY_BYTES,DST_BASE,IMAGE_BYTES)&&disjoint(GRAY_BASE,GRAY_BYTES,MAP_X_BASE,MAP_BYTES)&&
-  disjoint(GRAY_BASE,GRAY_BYTES,MAP_Y_BASE,MAP_BYTES)&&disjoint(DST_BASE,IMAGE_BYTES,MAP_X_BASE,MAP_BYTES)&&
-  disjoint(DST_BASE,IMAGE_BYTES,MAP_Y_BASE,MAP_BYTES)&&disjoint(MAP_X_BASE,MAP_BYTES,MAP_Y_BASE,MAP_BYTES);
+  MAP_X_BASE+MX_BYTES<=64'h40000000&&MAP_Y_BASE+MY_BYTES<=64'h40000000&&
+  disjoint(GRAY_BASE,GRAY_BYTES,DST_BASE,IMAGE_BYTES)&&disjoint(GRAY_BASE,GRAY_BYTES,MAP_X_BASE,MX_BYTES)&&
+  disjoint(GRAY_BASE,GRAY_BYTES,MAP_Y_BASE,MY_BYTES)&&disjoint(DST_BASE,IMAGE_BYTES,MAP_X_BASE,MX_BYTES)&&
+  disjoint(DST_BASE,IMAGE_BYTES,MAP_Y_BASE,MY_BYTES)&&disjoint(MAP_X_BASE,MX_BYTES,MAP_Y_BASE,MY_BYTES);
  wire [63:0] frame_bytes=64'd1*(HEIGHT-1)*frame_stride+64'd2*WIDTH;
  wire frame_ok=disjoint(frame_base,frame_bytes,CANDIDATE_BASE,CANDIDATE_BYTES)&&frame_stride>=2*WIDTH&&frame_bytes<=frame_capacity&&{32'd0,frame_base}+frame_bytes<=64'h40000000&&
   disjoint(frame_base,frame_bytes,GRAY_BASE,GRAY_BYTES)&&disjoint(frame_base,frame_bytes,DST_BASE,IMAGE_BYTES)&&
-  disjoint(frame_base,frame_bytes,MAP_X_BASE,MAP_BYTES)&&disjoint(frame_base,frame_bytes,MAP_Y_BASE,MAP_BYTES);
+  disjoint(frame_base,frame_bytes,MAP_X_BASE,MX_BYTES)&&disjoint(frame_base,frame_bytes,MAP_Y_BASE,MY_BYTES);
  assign result_base=DST_BASE;assign result_stride=2*WIDTH;assign result_width=WIDTH;assign result_height=HEIGHT;
  wire ar;wire [31:0] src,ss,capacity;wire [63:0] square;
  wire gv,gr,gdone,gack;wire [7:0] gs;
@@ -115,7 +117,7 @@ module vision_ddr_top #(
  wire [2:0] c_b_ready;
  wire [15:0] c_b_tag;
  wire c_b_error;
- vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL)) sequence_ctrl(
+ vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL),.BUILD_ONLY(PACKED_MAP)) sequence_ctrl(
   .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_remap(start_remap),.remap_base(remap_base),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
   .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(frame_stride),.frame_capacity(frame_capacity),
   .frame_status(frame_status),.frame_config_ok(frame_ok),.frame_release_valid(frame_release_valid),.frame_release_ready(frame_release_ready),
@@ -233,6 +235,27 @@ module vision_ddr_top #(
   else if(start_valid&&start_ready)result_rms<=0;
   else if(diag_v&&diag_metrics)result_rms<=diag_rms;
  end
+ generate if(PACKED_MAP)begin : g_packed
+ assign c_rd_valid[2]=0;assign c_rd_addr[64+:32]=0;assign c_rd_len[64+:32]=0;assign c_rd_tag[32+:16]=0;assign c_r_ready[2]=1;
+ packed_map_builder correction(
+  .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_params(result_params),
+  .cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_map_base(MAP_X_BASE),
+  .rsp_valid(udone),.rsp_ready(uack),.rsp_status(us),
+  .wr_valid(c_wr_valid[2]),
+  .wr_ready(c_wr_ready[2]),
+  .wr_addr(c_wr_addr[64+:32]),
+  .wr_len(c_wr_len[64+:32]),
+  .wr_tag(c_wr_tag[32+:16]),
+  .w_valid(c_w_valid[2]),
+  .w_ready(c_w_ready[2]),
+  .w_data(c_w_data[64+:32]),
+  .w_keep(c_w_keep[8+:4]),
+  .w_last(c_w_last[2]),
+  .b_valid(c_b_valid[2]),
+  .b_ready(c_b_ready[2]),
+  .b_tag(c_b_tag),
+  .b_error(c_b_error));
+ end else begin : g_static
  undistort_top correction(
   .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_job_id(debug_job),.cmd_calib_id(debug_job),
   .cmd_camera_valid(1'b1),.cmd_params(result_params),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),
@@ -266,6 +289,7 @@ module vision_ddr_top #(
   .b_ready(c_b_ready[2]),
   .b_tag(c_b_tag),
   .b_error(c_b_error));
+ end endgenerate
  ddr_service #(.CLIENTS(3)) memory_service(.clk(clk),.rst_n(rst_n),
   .c_rd_valid(c_rd_valid),.rd_valid(rd_valid),
   .c_rd_ready(c_rd_ready),.rd_ready(rd_ready),

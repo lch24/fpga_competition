@@ -13,7 +13,7 @@ import struct
 import time
 
 UI = ['idle', 'drain_display', 'capture_command', 'capture', 'start_algorithm',
-      'offer_frame', 'wait_frame_release', 'wait_result']
+      'offer_frame', 'wait_frame_release', 'wait_result', 'live_video', 'drain_video']
 ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'detect_start', 'detect_arm', 'detect_wait', 'view_response',
              'release_frame', 'calibration_command', 'calibration_wait',
@@ -72,6 +72,7 @@ def decode(frame):
         'ui_phase': UI[(word >> 12) & 15] if ((word >> 12) & 15) < len(UI) else 'unknown',
         'camera_configured': bool(word & (1 << 24)),
         'display_corrected': bool(word & (1 << 26)),
+        'video_active': bool(word & (1 << 27)), 'map_ready': bool(word & (1 << 28)),
         'status': (word >> 16) & 255, 'selected': (word >> 10) & 3,
         'captured_mask': (word >> 7) & 7, 'calibrated': bool(word & 64),
         'corrected': bool(word & 32), 'busy': bool(word & 16),
@@ -92,6 +93,16 @@ def decode(frame):
         'last_status': alg[14], 'last_error': alg[15],
         'corner_count': int.from_bytes(alg[60:62], 'little'), 'page': tag,
     }
+    if frame[3] == 0x56 and result['page_matches']:
+        for key in ('ui_dwell_cycles', 'ddr_read_requests', 'ddr_return_activity',
+                    'ddr_write_requests', 'last_hmic_word_address', 'core_reset_released',
+                    'sticky_display_error', 'sticky_underflow', 'first_ui_error', 'ignored_busy_keys'):
+            result.pop(key, None)
+        cycles = u32(core, 28)
+        result['video'] = dict(captured_frames=u32(core, 8), corrected_frames=u32(core, 12),
+            displayed_new_frames=u32(core, 16), failed_frames=u32(core, 20),
+            skipped_camera_frames_since_reset=u32(core, 24), last_remap_cycles=cycles,
+            last_remap_ms=cycles / 125000.0)
     if tag == 0xffff:
         result['params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 2 else None
         result['rms'] = struct.unpack_from('<d', alg, 52)[0] if flag & 4 else None
@@ -109,7 +120,7 @@ def decode(frame):
             'last_accepted_steps': int.from_bytes(alg[46:48], 'little'),
             'last_error_job': u32(alg, 48),
         }
-    else:
+    elif tag != 0xfffd:
         result['corner_valid'] = bool(flag & 16)
         result['corner_xy'] = struct.unpack_from('<2f', alg, 16) if flag & 16 else None
     return result
@@ -128,7 +139,7 @@ class Monitor:
         return [decode(f) for f in self.framer.feed(self.port.read(1024))]
 
     def query(self, op, index=0):
-        tag = 0xffff if op == 0x53 else 0xfffe if op == 0x44 else index
+        tag = 0xffff if op == 0x53 else 0xfffe if op == 0x44 else 0xfffd if op == 0x56 else index
         # Bounded retries also handle a busy notification/query slot.
         for _ in range(3):
             self.port.write(command(op, index))
@@ -158,14 +169,27 @@ def self_test():
     assert len(frames) == 2 and framer.bad_crc == 1
     assert decode(frames[0])['sequence'] == 0x1234
     assert command(0x43, 0x1234) == bytes([0xa5, 0x5a, 0x43, 0x34, 0x12, 0x65])
-    print('PASS UART decoder: fragmentation, noise, CRC rejection, resynchronization')
+    payload[5] = 8  # Both requested pages match.
+    struct.pack_into('<8I', payload, 24, (1 << 27) | (1 << 28), 17, 90, 89, 88, 1, 2, 3000000)
+    payload[118:120] = b'\xfd\xff'
+    video_header = header[:3] + b'\x56' + header[4:]
+    data = video_header + payload
+    result = decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
+    assert result['video_active'] and result['map_ready']
+    assert result['video']['corrected_frames'] == 89 and result['video']['displayed_new_frames'] == 88
+    assert result['video']['last_remap_ms'] == 24.0 and 'ddr_read_requests' not in result
+    payload[5] = 0
+    data = video_header + payload
+    assert 'video' not in decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
+    print('PASS UART decoder: fragmentation, noise, CRC rejection, resynchronization, video counters/page validity')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('port', nargs='?')
     parser.add_argument('--baud', type=int, default=115200)
-    parser.add_argument('--once', choices=['status', 'progress'])
+    parser.add_argument('--once', choices=['status', 'progress', 'video'])
+    parser.add_argument('--video-seconds', type=float, help='Measure NEW-frame counter deltas over this interval')
     parser.add_argument('--corners', type=Path)
     parser.add_argument('--log', type=Path)
     parser.add_argument('--self-test', action='store_true')
@@ -196,8 +220,26 @@ def main():
             args.corners.parent.mkdir(parents=True, exist_ok=True)
             args.corners.write_text(json.dumps({'status': state, 'corners': points}, indent=2), encoding='utf-8')
             print(f'Saved {len(points)} corners to {args.corners}')
+        elif args.video_seconds is not None:
+            if args.video_seconds < 1:
+                parser.error('--video-seconds must be at least 1')
+            a = monitor.query(0x56)
+            deadline = time.monotonic() + args.video_seconds
+            while time.monotonic() < deadline:
+                monitor.read()  # Drain heartbeats; do not overrun host serial buffer.
+            b = monitor.query(0x56)
+            if not all(s['query_page_valid'] and not s['core_stale'] and s['video_active'] and 'video' in s for s in (a, b)):
+                raise RuntimeError('Need two fresh video snapshots while video remains active')
+            seconds = ((b['uptime_ms'] - a['uptime_ms']) & 0xffffffff) / 1000.0
+            if seconds <= 0 or a['ui_events'] != b['ui_events'] or a['calibration_job'] != b['calibration_job']:
+                raise RuntimeError('UI/job changed during measurement; retry a steady interval')
+            deltas = {k: (b['video'][k] - a['video'][k]) & 0xffffffff for k in
+                ('captured_frames', 'corrected_frames', 'displayed_new_frames', 'failed_frames', 'skipped_camera_frames_since_reset')}
+            print(json.dumps(dict(seconds=seconds, deltas=deltas,
+                new_frame_fps={k: deltas[k]/seconds for k in ('captured_frames', 'corrected_frames', 'displayed_new_frames')},
+                last=b), indent=2))
         elif args.once:
-            print(json.dumps(monitor.query(0x53 if args.once == 'status' else 0x44), indent=2))
+            print(json.dumps(monitor.query({'status': 0x53, 'progress': 0x44, 'video': 0x56}[args.once]), indent=2))
         else:
             if args.log:
                 args.log.parent.mkdir(parents=True, exist_ok=True)

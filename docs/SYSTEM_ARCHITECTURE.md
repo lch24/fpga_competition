@@ -1,5 +1,7 @@
 # 整体处理流程与设计架构
 
+> 2026-10-12 实时版：默认 `REALTIME_VIDEO=1`。本文下方照片校正和分时 DDR 段落保留为旧模式说明。默认板级改为一次性打包建表、连续原图三槽、结果双槽、原生 DDR 突发仲裁与定点缓存采样，完整说明见 [REALTIME_VIDEO.md](REALTIME_VIDEO.md)。标定与检测数值架构不变；资源和帧率需本版重新测量。
+
 ## 1. 两个入口
 
 [calibrated_view_top](../rtl/top/calibrated_view_top.v) 连接摄像头、DDR IP、算法时钟、任务控制和 HDMI。[vision_ddr_top](../rtl/top/vision_ddr_top.v) 连接灰度 DMA、角点检测、标定、建表和去畸变，是算法的 DDR 到 DDR 边界。

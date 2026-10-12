@@ -7,7 +7,7 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
  input wire clk,rx,output wire tx,output wire debug_rst_n,
  input wire camera_clk,camera_vsync,
  input wire core_clk,algorithm_clk,input wire [255:0] core_data,
- input wire [511:0] algorithm_data,output wire [15:0] algorithm_argument,
+ input wire [511:0] algorithm_data,output wire [15:0] algorithm_argument,core_argument,
  input wire [7:0] health
 );
  reg [7:0] por=0;
@@ -20,7 +20,7 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
  always @(posedge clk)if(!rst_n)begin divider<=0;uptime<=0;end
  else if(tick)begin divider<=0;uptime<=uptime+1'b1;end else divider<=divider+1'b1;
  wire [255:0] core_snapshot;wire [511:0] alg_snapshot;
- wire cu,au;wire [15:0] atag;
+ wire cu,au;wire [15:0] atag,ctag;
  reg [15:0] argument;
  wire camera_rst_n;
  reset_sync camera_reset(.clk(camera_clk),.arst_n(rst_n),.rst_n(camera_rst_n));
@@ -40,8 +40,8 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
   else if(camera_update)begin camera_age<=0;camera_seen<=1;end
   else if(tick&&camera_age!=255)camera_age<=camera_age+1'b1;
  end
- debug_snapshot #(.WIDTH(256)) cs(.clk(clk),.rst_n(rst_n),.poll(tick),.argument(16'b0),
-  .data(core_snapshot),.tag(),.update(cu),.src_clk(core_clk),.src_data(core_data),.src_argument());
+ debug_snapshot #(.WIDTH(256)) cs(.clk(clk),.rst_n(rst_n),.poll(tick),.argument(argument),
+  .data(core_snapshot),.tag(ctag),.update(cu),.src_clk(core_clk),.src_data(core_data),.src_argument(core_argument));
  debug_snapshot #(.WIDTH(512)) als(.clk(clk),.rst_n(rst_n),.poll(tick),.argument(argument),
   .data(alg_snapshot),.tag(atag),.update(au),.src_clk(algorithm_clk),.src_data(algorithm_data),.src_argument(algorithm_argument));
  reg [31:0] core_age,alg_age;
@@ -94,7 +94,7 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
     if(pending&&wait_ms<255)wait_ms<=wait_ms+1'b1;
    end
    // Coalesce change reports. Event counter exposes intermediate transitions.
-   if(core_snapshot[63:32]!=previous_events)begin
+   if(ctag!=16'hfffd&&core_snapshot[63:32]!=previous_events)begin
     previous_events<=core_snapshot[63:32];
     if(!pending)begin pending<=1;pending_op<=8'h53;argument<=16'hffff;wait_ms<=0;end
    end
@@ -109,17 +109,17 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
      4:begin hi<=rdata;parser<=5;end
      5:begin
       parser<=0;
-      if(rdata!=(op^lo^hi)||(op!=8'h53&&op!=8'h43&&op!=8'h44))rx_errors<=rx_errors+1'b1;
+      if(rdata!=(op^lo^hi)||(op!=8'h53&&op!=8'h43&&op!=8'h44&&op!=8'h56))rx_errors<=rx_errors+1'b1;
       else if(pending)rejected<=rejected+1'b1;
-      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:{hi,lo};wait_ms<=0;end
+      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:op==8'h56 ?16'hfffd:{hi,lo};wait_ms<=0;end
      end
      default:parser<=0;
     endcase
    end
    // Bounded wait: a stopped domain must never prevent a UART response.
-   if(!sending&&pending&&wait_ms>=4&&((atag==argument&&alg_age<100)||wait_ms>=20))begin
+   if(!sending&&pending&&wait_ms>=4&&((atag==argument&&ctag==argument&&alg_age<100&&core_age<100)||wait_ms>=20))begin
     packet<={alg_snapshot,core_snapshot,rejected,rx_errors,alg_age,core_age,
-     camera_snapshot,hs2,4'b0,(atag==argument),alg_seen,core_seen,1'b0,
+     camera_snapshot,hs2,4'b0,(atag==argument&&ctag==argument),alg_seen,core_seen,1'b0,
      2'b0,camera_seen,(camera_age>=100),(alg_age>=100),(core_age>=100),2'b0,uptime};
     packet_seq<=packet_number;packet_number<=packet_number+1'b1;packet_op<=pending_op;
     pending<=0;sending<=1;pos<=0;crc<=16'hffff;

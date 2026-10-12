@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
 // Real sequence controller, protocol models for numerical workers.
-module tb_vision_manual;
+module tb_vision_manual #(parameter BUILD_ONLY=0);
  reg clk=0,rst_n=0,finished=0,start_valid=0,start_remap=0;
  reg [31:0] remap_base=0,frame_base=0;
  reg frame_valid=0,frame_release_ready=0,rsp_ready=0,gray_rsp_valid=0;
@@ -12,7 +12,7 @@ module tb_vision_manual;
  wire [7:0] rsp_status,view_status,view_id;wire [1:0] remap_opcode;
  wire [31:0] job,src_base;wire [287:0] params;wire algorithm_rst_n;
  always #12.5 clk=~clk;
- vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1)) dut(
+ vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1),.BUILD_ONLY(BUILD_ONLY)) dut(
  .clk(clk),.rst_n(rst_n),.layout_ok(1'b1),.start_valid(start_valid),.start_ready(start_ready),
  .start_remap(start_remap),.remap_base(remap_base),.square_size_fp64(64'h3ff0000000000000),
  .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(32'd128),.frame_capacity(32'd4096),
@@ -52,9 +52,12 @@ module tb_vision_manual;
  task correct(input integer base,input integer code);
   begin remap_base=base;start(1);
    wait(remap_cmd_valid);if(remap_opcode!=1||src_base!=base||params!=288'h12345678)$fatal(1,"map descriptor/params");
-   wait(remap_rsp_ready);tick();remap_status=0;remap_rsp_valid=1;tick();remap_rsp_valid=0;
-   wait(remap_cmd_valid);if(remap_opcode!=2)$fatal(1,"remap opcode");
-   wait(remap_rsp_ready);tick();remap_status=code;remap_rsp_valid=1;tick();remap_rsp_valid=0;response(code);
+   wait(remap_rsp_ready);tick();remap_status=BUILD_ONLY?code:0;remap_rsp_valid=1;tick();remap_rsp_valid=0;
+   if(!BUILD_ONLY)begin
+    wait(remap_cmd_valid);if(remap_opcode!=2)$fatal(1,"remap opcode");
+    wait(remap_rsp_ready);tick();remap_status=code;remap_rsp_valid=1;tick();remap_rsp_valid=0;
+   end
+   response(code);if(BUILD_ONLY&&remap_cmd_valid)$fatal(1,"map-only issued pixel remap");
   end
  endtask
  initial begin

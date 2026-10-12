@@ -9,6 +9,7 @@ module board_display_hmic #(
  parameter DYNAMIC_BASE=0,WIDTH=1280,HEIGHT=720,RAW_BASE=32'h0,DST_BASE=32'h01000000
 )(
  input wire clk,rst_n,enable,input wire [31:0] frame_base,output wire idle,
+ output wire frame_start,
  output wire pixel_valid,input wire pixel_ready,output wire [15:0] pixel,
  output wire pixel_first,pixel_last,output reg error,
  output wire [27:0] axi_araddr,output wire [3:0] axi_arlen,axi_aruser_id,
@@ -23,6 +24,7 @@ module board_display_hmic #(
  localparam LINE_PIXELS=DYNAMIC_BASE?WIDTH:WIDTH/2;
  wire [31:0] byte_addr=(DYNAMIC_BASE?base:(half?DST_BASE:RAW_BASE))+y*(2*WIDTH)+2*x;
  assign idle=state==0||state==4;
+ assign frame_start=state==0&&enable&&x==0&&y==0&&!half;
  assign axi_araddr=byte_addr>>2;
  assign axi_arlen=beats-1;assign axi_aruser_id=0;assign axi_arvalid=state==1;
  assign pixel_valid=state==3&&enable;

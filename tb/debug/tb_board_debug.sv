@@ -4,7 +4,7 @@ module tb_board_debug;
  always #5 clk=~clk;
  always #4 if(run_core)core=~core;
  always #13 if(run_alg)alg=~alg;
- wire tx,rst;wire [15:0] arg;wire [511:0] ad;
+ wire tx,rst;wire [15:0] arg,core_arg;wire [511:0] ad;
  reg [255:0] cd=0;reg [7:0] health=0;
  reg fn=0,start=0,cv=0,pv=0,dv=0,rv=0,camvs=0;integer before_heartbeat;
  reg [31:0] x=0,y=0,job=0;
@@ -18,7 +18,7 @@ module tb_board_debug;
  .rsp_valid(rv),.rsp_status(status),.argument(arg),.snapshot(ad),
  .live(72'h98765432123456789a),.rd_accept(1'b0),.rd_return(1'b0),.wr_accept(1'b0),.bus_state(12'h123),.address(32'b0));
  board_debug #(.CLOCK_HZ(1000000),.BAUD(100000)) dut(.clk(clk),.rx(rx),.tx(tx),.debug_rst_n(rst),
- .camera_clk(alg),.camera_vsync(camvs),.core_clk(core),.algorithm_clk(alg),.core_data(cd),.algorithm_data(ad),.algorithm_argument(arg),.health(health));
+ .camera_clk(alg),.camera_vsync(camvs),.core_clk(core),.algorithm_clk(alg),.core_data(cd),.algorithm_data(ad),.algorithm_argument(arg),.core_argument(core_arg),.health(health));
  reg [7:0] bytes[0:129];reg [7:0] last_packet[0:129];
  integer trace;initial trace=$fopen("uart_packets.hex","w");
  integer packets=0,i,j;reg [15:0] crc;
@@ -71,6 +71,7 @@ module tb_board_debug;
   query(8'h43,9);if(last_packet[70][4])$fatal(1,"invalid corner accepted");
   query(8'h44,0);
   if(last_packet[80]!=8'h9a||last_packet[84]!=8'h12)$fatal(1,"progress");
+  query(8'h56,0);if(core_arg!=16'hfffd||{last_packet[127],last_packet[126]}!=16'hfffd||!last_packet[13][3])$fatal(1,"video page/tag mismatch");
   fn=0;query(8'h53,0);
   if(last_packet[70][0]||!last_packet[70][1])$fatal(1,"reset/result retention");
   run_alg=0;repeat(110000)@(posedge clk);query(8'h53,0);

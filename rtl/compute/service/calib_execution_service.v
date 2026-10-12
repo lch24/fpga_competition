@@ -8,6 +8,7 @@
 // Program source: scripts/calibration/engine/build_rom.py; entry PCs are
 // generated in calibration_program_defs.vh. Do not edit ROM words by hand.
 module calib_execution_service(
+ output wire [15:0] debug_pc,output wire [31:0] debug_instructions,
  input wire clk,rst_n,input wire [127:0] request,output wire [95:0] response,
  output wire shared_req_valid,input wire shared_req_ready,output wire [4:0] shared_req_op,
  output wire [63:0] shared_req_a,shared_req_b,output wire shared_rsp_ready,
@@ -35,7 +36,7 @@ module calib_execution_service(
    .host_ready(host_ready),.host_valid(host_valid),.host_error(host_error),.host_result(host_result),
    .busy(busy),.rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),
    .svc_valid(svc_valid),.svc_ready(svc_ready),.svc_id(svc_id),
-   .debug_pc(),.cycle_count(),.instruction_count(),
+   .debug_pc(debug_pc),.cycle_count(),.instruction_count(debug_instructions),
    .shared_req_valid(shared_req_valid),.shared_req_ready(shared_req_ready),.shared_req_op(shared_req_op),
    .shared_req_a(shared_req_a),.shared_req_b(shared_req_b),.shared_rsp_ready(shared_rsp_ready),
    .shared_rsp_valid(shared_rsp_valid),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags));

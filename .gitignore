@@ -9,6 +9,11 @@
 
 Debug/
 Release/
+# Source directories named debug are not compiler outputs (Windows is case-insensitive).
+!/rtl/debug/
+!/scripts/debug/
+!/tb/debug/
+/data/debug/
 /sim/
 /integration/build/
 /logbackup/

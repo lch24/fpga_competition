@@ -40,6 +40,8 @@ python scripts/compute/microcode/build_math.py
 | 投影模型 | `scripts/compute/run_project_point.ps1` |
 | 角点存储 | `scripts/memory/run_corner_store.ps1` |
 | 板级任务与连接 | `run_checks.ps1 -Board -OnlyTest tb_board_flow` |
+| 串口与主机协议 | `run_checks.ps1 -Board -OnlyTest tb_board_debug` |
+| 调试快照与历史错误 | `run_checks.ps1 -OnlyTest tb_debug_snapshot`、`tb_core_debug` |
 
 表中的 `run_checks.ps1` 位于 `scripts/system`。例如：
 
@@ -50,6 +52,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps
 初值和检查脚本支持 `--quick`，仅做编译可用 `--compile-only`。完整 LM 单独运行，避免每次局部修改都重复长仿真。数值参考部分使用 Node.js 或 Python，依赖见 `data/generators/requirements.txt`。
 
 ## 其余目录
+
+`debug/uart_monitor.py` 是电脑端串口入口：`python scripts/debug/uart_monitor.py COM5` 持续接收状态，`--once progress` 查询执行进度，`--corners data/debug/corners.json` 导出角点。依赖为 `pyserial`；`--self-test` 仅需 Python 标准库。协议和操作见[板上操作](../docs/BOARD_OPERATION.md#串口调试)。
 
 `memory`、`image`、`remap`、`video` 保存各功能的仿真驱动；`system/integration_tests.json` 定义联合测试清单；`common` 负责工具定位。输入数据生成器放在 `data/generators`，不与运行器混放。
 

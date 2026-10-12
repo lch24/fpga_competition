@@ -48,6 +48,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     output wire [15:0] camera_height, // 绑定图像高度
     output wire camera_usable, // 根README中的camera_valid有效性字段；与流valid区分
     output wire [`PAR_CAMERA_W-1:0] camera_params, // 低位起fx,fy,cx,cy,k1,k2,k3,p1,p2，各FP32
+    output wire [71:0] debug_live,
     output wire diag_valid, // 每任务一笔诊断；包括失败任务
     input wire diag_ready, // 必须接收；不用的诊断可始终ready=1
     output wire [31:0] diag_job_id, // 任务号
@@ -76,12 +77,14 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     localparam IDLE=0, CLEAR=1, COLLECT=2, WAIT_CMD=3,
                INIT_CMD=4, INIT_WAIT=5, LOAD_SEED=6, LM_CMD=7, LM_WAIT=8,
                NEXT_SEED=9, CHECK_CMD=10, CHECK_WAIT=11, OUTPUT=12, RESPONSE=13, SEED_FETCH=14, SEED_LATCH=15;
+    wire [15:0] lm_debug,execution_pc;wire [31:0] execution_instructions;
     reg [3:0] pc;
     reg [31:0] job;
     reg [15:0] width,height;
     reg [63:0] square_size;
     reg [7:0] status;
     reg [3:0] phase;
+    assign debug_live={execution_instructions,phase,pc,execution_pc,lm_debug};
     reg camera_pending,diag_pending,metrics,weak_geometry;
     reg [287:0] camera_q;
     reg [63:0] rms_q,max_error_q;
@@ -257,7 +260,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     wire [127:0] init_execution_req,lm_execution_req,check_execution_req;
     wire [95:0] execution_rsp;
     wire lm_execution_owner=pc==LM_CMD || pc==LM_WAIT;
-    calib_execution_service execution(
+    calib_execution_service execution(.debug_pc(execution_pc),.debug_instructions(execution_instructions),
       .clk(clk),.rst_n(compute_rst_n),.request((pc==CHECK_CMD || pc==CHECK_WAIT)?check_execution_req:(lm_execution_owner?lm_execution_req:init_execution_req)),.response(execution_rsp),
       .shared_req_valid(shared_req_valid[4]),.shared_req_ready(shared_req_ready[4]),
       .shared_req_op(shared_req_op[20+:5]),.shared_req_a(shared_req_a[256+:64]),.shared_req_b(shared_req_b[256+:64]),
@@ -300,7 +303,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
         .point_rd_valid(lm_owner && rd_valid),.point_rd_x_fp32(rd_x),.point_rd_y_fp32(rd_y),
         .rsp_valid(lm_valid),.rsp_ready(rst_n && pc==LM_WAIT),.rsp_status(lm_status),
         .rsp_state(lm_state),.rsp_cost_fp64(lm_cost),.rsp_converged(lm_converged),
-        .rsp_accepted_steps(lm_accepted),.rsp_outer_iterations());
+        .rsp_accepted_steps(lm_accepted),.debug_live(lm_debug),.rsp_outer_iterations());
     validate_result #(.FP_SHARED(1),.SHARE_RESIDUAL(1),.ENGINE_SHARED(1)) validator(.execution_req(check_execution_req),.execution_rsp(execution_rsp),.ext_rst_n(check_ext_rst_n),.ext_cmd_valid(check_ext_cmd_valid),.ext_cmd_ready(check_ext_cmd_ready),.ext_cmd_width(check_ext_cmd_width),.ext_cmd_height(check_ext_cmd_height),.ext_cmd_state(check_ext_cmd_state),.ext_point_rd_en(check_ext_point_rd_en),.ext_point_rd_view_id(check_ext_point_rd_view_id),.ext_point_rd_index(check_ext_point_rd_index),.ext_point_rd_valid(check_ext_point_rd_valid),.ext_point_rd_x_fp32(check_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(check_ext_point_rd_y_fp32),.ext_data_valid(check_ext_data_valid),.ext_data_ready(check_ext_data_ready),.ext_data_index(check_ext_data_index),.ext_data_fp64(check_ext_data_fp64),.ext_data_last(check_ext_data_last),.ext_rsp_valid(check_ext_rsp_valid),.ext_rsp_ready(check_ext_rsp_ready),.ext_rsp_status(check_ext_rsp_status),.ext_rsp_cost_fp64(check_ext_rsp_cost_fp64),.shared_req_valid(),.shared_req_ready(6'd0),.shared_req_op(),.shared_req_a(),.shared_req_b(),.shared_active(),.shared_rsp_valid(6'd0),.shared_rsp_ready(),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
         .cmd_valid(rst_n && pc==CHECK_CMD),.cmd_ready(check_ready),.cmd_width(width),.cmd_height(height),
         .cmd_state(best_state),.cmd_square_size_fp64(square_size),.cmd_best_cost_fp64(best_cost),.cmd_converged(best_converged),

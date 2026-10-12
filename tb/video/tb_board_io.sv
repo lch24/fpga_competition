@@ -1,7 +1,9 @@
 `timescale 1ns/1ps
 module tb_board_io;
+ reg finished=0;
  reg clk=0,pclk=0,rst=0;
  always #5 clk=~clk;always #7 pclk=~pclk;
+ reg [31:0] cmd_base=32'h200000,expected_base=32'h200000;
  reg cmd=0,vs=0,pv=0;reg [15:0] pix=0;
  wire cr,rv;reg rr=0;wire [7:0] status;
  wire [27:0] awaddr;wire [3:0] awlen,awid;wire awvalid;
@@ -9,9 +11,9 @@ module tb_board_io;
  wire [255:0] wdata;wire [31:0] mask;
  reg stall=0;integer writes=0,delay_count=0,writer_state=0,k,j,expected=0;
  reg [27:0] saved_addr;
- board_capture_hmic #(.WIDTH(64),.HEIGHT(2),.BASE(32'h100),.FIFO_BITS(2)) cap(
+ board_capture_hmic #(.WIDTH(64),.HEIGHT(2),.BASE(32'h100),.FIFO_BITS(2),.DYNAMIC_BASE(1)) cap(
   .clk(clk),.rst_n(rst),.pclk(pclk),.prst_n(rst),.vsync(vs),.pixel_valid(pv),.pixel(pix),
-  .cmd_valid(cmd),.cmd_ready(cr),.rsp_valid(rv),.rsp_ready(rr),.rsp_status(status),
+  .cmd_base(cmd_base),.cmd_valid(cmd),.cmd_ready(cr),.rsp_valid(rv),.rsp_ready(rr),.rsp_status(status),
   .axi_awaddr(awaddr),.axi_awlen(awlen),.axi_awuser_id(awid),.axi_awvalid(awvalid),.axi_awready(awready),
   .axi_wdata(wdata),.axi_wstrb(mask),.axi_wready(wready),.axi_wusero_last(wlast),.axi_wusero_id(wid));
  always @(negedge clk)begin
@@ -21,7 +23,7 @@ module tb_board_io;
    0:if(awvalid&&!stall&&$urandom_range(0,2)!=0)begin
     awready=1;saved_addr=awaddr;
     if(awlen!=0||awid!=0||mask!==32'hffffffff)$fatal(1,"capture descriptor");
-    if(awaddr!==28'h40+8*writes)$fatal(1,"capture address");
+    if(awaddr!==(expected_base>>2)+8*writes)$fatal(1,"capture address");
     writer_state=1;
    end
    1:if($urandom_range(0,2)!=0)begin
@@ -88,9 +90,9 @@ module tb_board_io;
  end
  initial begin
   repeat(6)@(negedge clk);rst=1;
-  start_capture();frame(128);take_response(0);
+  start_capture();cmd_base=32'h400000;frame(128);take_response(0);
   if(writes!=8)$fatal(1,"capture writes");
-  @(negedge clk);writes=0;expected=1;
+  @(negedge clk);writes=0;expected=1;expected_base=cmd_base;
   start_capture();frame(117);take_response(3);
   @(negedge clk);writes=0;stall=1;
   start_capture();frame(128);stall=0;take_response(3);
@@ -99,7 +101,7 @@ module tb_board_io;
   // Malformed response must drain to RLAST then stop, without publishing it.
   rid=1;wait(de);repeat(600)@(negedge clk);
   if(dv||arvalid)$fatal(1,"display did not stop after bad RID");
-  $display("PASS tb_board_io packed capture, overflow, partial frame, delayed completion, 5120 display pixels, burst error");$finish;
+  finished=1;$display("PASS tb_board_io packed capture, overflow, partial frame, delayed completion, 5120 display pixels, burst error");$finish;
  end
  initial begin #3000000;$fatal(1,"timeout board IO");end
 endmodule

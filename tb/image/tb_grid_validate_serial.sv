@@ -14,6 +14,7 @@ module tb_grid_validate_serial;
         .rd_x(rd_x),.rd_y(rd_y),.valid_out(valid_out),.cost_out(cost_out));
     always @(posedge clk) if(ce && rd_en) begin rd_x<=px[rd_addr];rd_y<=py[rd_addr];end
     integer checked=0,cycles=0,requests=0,responses=0;
+    integer max_job_cycles=0,total_job_cycles=0;
     reg finished=0;
     integer t,i,fd,rc;
     reg [63:0] expected_bits;
@@ -61,6 +62,8 @@ module tb_grid_validate_serial;
             if(!valid_out || cost_out!==((t%2==0)?32'h7149f2ca:32'd0))
                 $fatal(1,"grid case=%0d cost=%h",t,cost_out);
             if(requests!=responses)$fatal(1,"unconsumed arithmetic result");
+            if(cycles>max_job_cycles)max_job_cycles=cycles;
+            total_job_cycles=total_job_cycles+cycles;
             checked=checked+1;
             repeat(3)@(negedge clk);
         end
@@ -75,6 +78,8 @@ module tb_grid_validate_serial;
             error=actual_cost-expected_cost;if(error<0)error=-error;
             if(!valid_out || error>1e-4*(1+expected_cost))$fatal(1,"grid numeric fixture=%0d",t);
             if(requests!=responses)$fatal(1,"pending arithmetic");checked=checked+1;
+            if(cycles>max_job_cycles)max_job_cycles=cycles;
+            total_job_cycles=total_job_cycles+cycles;
             repeat(3)@(negedge clk);
         end
         $fclose(fd);

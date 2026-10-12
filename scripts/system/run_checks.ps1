@@ -124,7 +124,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $build 'run.do'),"onerror {quit -code 1 -f}`nonbreak {quit -code 1 -f}`nrun -all`nquit -code 0 -f`n",[Text.Encoding]::ASCII)
     $simArgs=@('-c',('work.'+$test),'-do','run.do')
     # Check completion counters in Tcl as well as HDL diagnostics on ModelSim 10.1c.
-    if($test -in @('tb_detection_capture','tb_board_flow_cdc','tb_algorithm_clock','tb_vision_clock_bridge','tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
+    if($test -in @('tb_core_debug','tb_debug_snapshot','tb_board_debug','tb_board_video','tb_board_io','tb_board_buttons','tb_vision_manual','tb_board_display_switch','tb_fp32_basic_pipeline','tb_gray_dma','tb_detection_capture','tb_board_flow_cdc','tb_algorithm_clock','tb_vision_clock_bridge','tb_board_flow','tb_detection_fixed','tb_grid_shared','tb_subpixel_patch','tb_candidate_recovery','tb_merge_bitmap','tb_vision_ddr','tb_candidate_cache','tb_undistort','tb_vision_numeric','tb_fp64_add_bounds','tb_detection_compat','tb_reg_config_clock','tb_fp64_sqrt_serial','tb_grid_validate_serial','tb_response_replay','tb_replay_pyramid')) {
       $doName=$test.Replace('tb_','run_')+'.do'
       $simArgs=@('-c','-voptargs=+acc',('work.'+$test),'-do',(Find-DoFile $doName))
       if($test -eq 'tb_vision_numeric'){$simArgs=@('-c','-voptargs=+acc=rn+tb_vision_numeric -O5',('work.'+$test),'-do',(Find-DoFile $doName))}
@@ -144,5 +144,9 @@ try {
     $out=Invoke-Tool 'vsim.exe' $simArgs ($test+'.log')
     if($out -notmatch '(?m)^# (PASS[: ]|TB RESULT: ALL ((ARBITER|ADAPTER) )?TESTS PASSED|CORNER_STORE_PASS |CALIB_TOP_PASS )' -or $out -match '\*\* (Error|Fatal):'){throw "Missing PASS or simulator error in $test"}
     Write-Host "SIM PASS $test"
+    if($test -eq 'tb_board_debug'){
+      & $PythonBin (Join-Path $root 'tb/debug/check_uart_trace.py') (Join-Path $build 'uart_packets.hex')
+      if($LASTEXITCODE -ne 0){throw 'UART host decoder disagrees with RTL trace'}
+    }
   }
 } finally {Pop-Location}

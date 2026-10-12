@@ -4,6 +4,8 @@ module tb_vision_clock_bridge;
  always #4 core_clk=~core_clk;
  initial begin #1.3;forever #12.5 algorithm_clk=~algorithm_clk;end
  integer checked=0;reg finished=0;
+reg start_remap=0;reg [31:0] start_base=0,frame_base=0;
+wire a_start_remap;wire [31:0] a_start_base,a_frame_base;
 wire a_start_valid;
 reg start_valid=0;
 reg a_start_ready=0;
@@ -77,16 +79,17 @@ reg [15:0] b_tag=0;
 wire a_b_error;
 reg b_error=0;
 vision_clock_bridge dut(.*);
-integer sent_start=0,got_start=0; reg take_start=0; reg [0:0] expect_start[0:255];
+integer sent_start=0,got_start=0; reg take_start=0; reg [32:0] expect_start[0:255];
 always @(negedge core_clk) begin
  if(!core_rst_n)begin start_valid<=0;sent_start=0;end
  else if(!start_valid || take_start)begin
+  start_remap<=$random;start_base<=$random;
   start_valid <= sent_start<200 && ($random & 3)!=0;
  end
 end
 always @(posedge core_clk) take_start <= core_rst_n && start_valid && start_ready;
 always @(posedge core_clk)if(core_rst_n && start_valid && start_ready)begin
- expect_start[sent_start]=1'b0;sent_start=sent_start+1;
+ expect_start[sent_start]={start_remap,start_base};sent_start=sent_start+1;
 end
 always @(negedge algorithm_clk)begin
  if(!algorithm_rst_n)a_start_ready<=0;
@@ -95,20 +98,22 @@ end
 always @(posedge algorithm_clk)begin
  if(!algorithm_rst_n)got_start=0;
  else if(a_start_valid && a_start_ready)begin
+ if({a_start_remap,a_start_base}!==expect_start[got_start])$fatal(1,"start payload mismatch");
  got_start=got_start+1;checked=checked+1; if(got_start>sent_start)$fatal(1,"CDC start duplicate");
  end
 end
-integer sent_frame=0,got_frame=0; reg take_frame=0; reg [7:0] expect_frame[0:255];
+integer sent_frame=0,got_frame=0; reg take_frame=0; reg [39:0] expect_frame[0:255];
 always @(negedge core_clk) begin
  if(!core_rst_n)begin frame_valid<=0;sent_frame=0;end
  else if(!frame_valid || take_frame)begin
   frame_valid <= sent_frame<200 && ($random & 3)!=0;
+  frame_base<=$random;
   frame_status <= {$random,$random,$random};
  end
 end
 always @(posedge core_clk) take_frame <= core_rst_n && frame_valid && frame_ready;
 always @(posedge core_clk)if(core_rst_n && frame_valid && frame_ready)begin
- expect_frame[sent_frame]=frame_status;sent_frame=sent_frame+1;
+ expect_frame[sent_frame]={frame_status,frame_base};sent_frame=sent_frame+1;
 end
 always @(negedge algorithm_clk)begin
  if(!algorithm_rst_n)a_frame_ready<=0;
@@ -117,7 +122,7 @@ end
 always @(posedge algorithm_clk)begin
  if(!algorithm_rst_n)got_frame=0;
  else if(a_frame_valid && a_frame_ready)begin
- if(a_frame_status !== expect_frame[got_frame])$fatal(1,"CDC frame data/order mismatch %0d",got_frame);
+ if({a_frame_status,a_frame_base} !== expect_frame[got_frame])$fatal(1,"CDC frame data/order mismatch %0d",got_frame);
  got_frame=got_frame+1;checked=checked+1; if(got_frame>sent_frame)$fatal(1,"CDC frame duplicate");
  end
 end

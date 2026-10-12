@@ -3,6 +3,7 @@ Use --update to regenerate source manifests after adding/removing RTL files.
 Does not run synthesis or modify the PDS project.
 """
 from pathlib import Path
+from datetime import datetime
 import argparse,collections,json,re,xml.etree.ElementTree as ET
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -37,6 +38,10 @@ def main():
         assert not any(p.suffix in ('.v','.sv','.vh') for p in (ROOT/old).rglob('*')), 'Old RTL remains: '+old
     project=ET.parse(BOARD/'DualView_OV5640.pds')
     design=project.find(".//task[@name='DESIGN_SET']")
+    # Design sources require timestamps; generated task artifacts may be empty.
+    for item in design.findall("action[@name='design']/inputs/item[@type='FILE']"):
+        assert item.get('timespec'), 'Missing PDS timespec: '+str(item.get('file'))
+        datetime.fromisoformat(item.get('timespec'))
     assert design.find("options/option[@name='top_module']").get('value')=='calibrated_view_top'
     saved=[(BOARD/p.get('file')).resolve() for p in design.findall("action[@name='design']/inputs/item[@type='FILE']")]
     assert len(saved)==len(set(saved)), 'Duplicate PDS source'

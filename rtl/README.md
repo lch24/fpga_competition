@@ -22,6 +22,8 @@
 | `image/kernels` | 窗口、梯度、张量、插值 | 局部像素数据通路 |
 | `image/remap` | 建表、读取邻域、插值写回 | 校正图从 DDR 到 DDR |
 | `video` | 摄像头/HDMI 配置、DMA、像素和跨域通路 | 持续采集显示 |
+| `io/uart` | 8N1 串口字节收发 | 数据锁存、RX 同步和停止位检查 |
+| `debug` | 独立状态快照、错误记录、角点与参数查询 | `board_debug`、`debug_snapshot`、`algorithm_debug` |
 | `common`、`clock` | FIFO、复位、时钟 | 时钟域边界 |
 | `include` | 配置、接口定义、指令编码和生成的 ROM | `.vh` 的来源及数据位宽 |
 

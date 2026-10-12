@@ -2,7 +2,7 @@
 module calibrated_view_top#(
 	parameter FIXED_BILINEAR = 1, parameter FIXED_ACCUM=1,
     parameter CAMERA_SELECT = 2,
-    parameter CAPTURE_WAIT_CYCLES = 625000000,
+    parameter KEY_DEBOUNCE_CYCLES = 2500000,
     parameter [63:0] SQUARE_SIZE_FP64 = 64'h3ff0000000000000,
     parameter [31:0] CANDIDATE_BASE = 32'h03200000,
     parameter MEM_ROW_ADDR_WIDTH   = 15         ,
@@ -12,10 +12,12 @@ module calibrated_view_top#(
 	parameter MEM_DQS_WIDTH        = 32/8
 )(
 	input                                sys_clk              ,// Original PLL configuration expects approximately 27 MHz
+    input uart_rx,output uart_tx,
+    input [4:0]                          key_n, // KEY0..4, active low
+    output [7:0]                         led,   // active high
     input                                clk_p ,
     input                                clk_n ,
 //OV5640
-    output  [1:0]                        cmos_init_done       ,//OV5640寄存器初始化完成
     //coms1	
     inout                                cmos1_scl            ,//cmos1 i2c 
     inout                                cmos1_sda            ,//cmos1 i2c 
@@ -48,13 +50,12 @@ module calibrated_view_top#(
     inout       [MEM_DQ_WIDTH/8-1:0]     mem_dqs_n                 ,
     inout       [MEM_DQ_WIDTH-1:0]       mem_dq                    ,
     output      [MEM_DQ_WIDTH/8-1:0]     mem_dm                    ,
-    output reg                           heart_beat_led            ,
-    output                               ddr_init_done             ,
+
+
 //MS72xx       
     output                               rstn_out                  ,
     output                               iic_tx_scl                ,
     inout                                iic_tx_sda                ,
-    output                               hdmi_int_led              ,//HDMI_OUT初始化完成
 //HDMI_OUT
     output                               pix_clk                   ,//pixclk                           
     output     reg                       vs_out                    , 
@@ -65,12 +66,16 @@ module calibrated_view_top#(
     output     reg[7:0]                  b_out         
 );
 
+wire debug_por_n,debug_core_rst_n,debug_algorithm_rst_n;
+wire [15:0] debug_argument;wire [511:0] debug_algorithm_data;
+wire [255:0] debug_core_data;
 localparam WIDTH=1280,HEIGHT=720;
 localparam [31:0] RAW_BASE=0,DST_BASE=32'h01000000;
 localparam TH_1S=33000000;
 wire cfg_clk,clk_25M,locked,init_over_rx,initial_en,core_clk,clk_125Mhz;
 wire pll_lock,phy_pll_lock,gpll_lock,rst_gpll_lock,ddrphy_cpd_lock;
-reg [15:0] rstn_1ms=0;reg [26:0] cnt;
+wire ddr_init_done;wire [1:0] cmos_init_done;
+reg [15:0] rstn_1ms=0;reg [26:0] cnt;reg heart_beat_led;
 wire board_rst_n,core_rst_n,pixel_rst_n,camera_rst_n;
 wire algorithm_clk,algorithm_locked,algorithm_rst_n;
 algorithm_clock algorithm_clock_gen(.clkin(clk_125Mhz),.clkout(algorithm_clk),.locked(algorithm_locked));
@@ -109,7 +114,7 @@ wire init_over_tx;
         .iic_scl         (  iic_tx_scl        ), //output      iic_scl,
         .iic_sda         (  iic_tx_sda        )  //inout       iic_sda
     );
-//   assign    hdmi_int_led    =    init_over_tx; 
+// HDMI configuration completion is available internally as init_over_tx.
     
     always @(posedge cfg_clk)
     begin
@@ -208,23 +213,35 @@ wire [7:0] debug_view /* synthesis PAP_MARK_DEBUG="1" */;
 wire [5:0] debug_phase /* synthesis PAP_MARK_DEBUG="1" */;
 wire [7:0] debug_status /* synthesis PAP_MARK_DEBUG="1" */;
 assign debug_status=status;
-board_flow #(.CAPTURE_WAIT_CYCLES(CAPTURE_WAIT_CYCLES)) flow(
- .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),
- .start_valid(start_valid),.start_ready(start_ready),.frame_ready(frame_ready),.frame_valid(frame_valid),.frame_status(frame_status),
+wire [4:0] pressed;
+wire display_idle,display_owner,ui_busy,calibrated,corrected;
+wire [2:0] captured;wire [1:0] selected;
+wire [31:0] cap_base,display_base,frame_base,start_base;
+wire start_remap;
+board_buttons #(.DEBOUNCE_CYCLES(KEY_DEBOUNCE_CYCLES)) buttons(
+ .clk(core_clk),.rst_n(core_rst_n),.key_n(key_n),.pressed(pressed));
+board_flow flow(
+ .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),
+ .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
+ .frame_ready(frame_ready),.frame_valid(frame_valid),.frame_status(frame_status),.frame_base(frame_base),
  .frame_release_valid(release_valid),.frame_release_ready(release_ready),
- .cap_cmd_valid(cap_cmd_valid),.cap_cmd_ready(cap_cmd_ready),.cap_rsp_valid(cap_rsp_valid),.cap_rsp_ready(cap_rsp_ready),.cap_status(cap_status),
- .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.capture_owner(capture_owner),.display_enable(display_enable),
- .status(status),.waiting(waiting),.phase(phase));
+ .cap_cmd_valid(cap_cmd_valid),.cap_cmd_ready(cap_cmd_ready),.cap_base(cap_base),
+ .cap_rsp_valid(cap_rsp_valid),.cap_rsp_ready(cap_rsp_ready),.cap_status(cap_status),
+ .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.capture_owner(capture_owner),
+ .display_enable(display_enable),.display_owner(display_owner),.display_base(display_base),
+ .status(status),.waiting(waiting),.phase(phase),.captured(captured),.calibrated(calibrated),
+ .corrected(corrected),.selected(selected),.busy(ui_busy));
 wire cam_pixel_valid;wire [15:0] cam_pixel;
 camera_byte_unpack unpack(.pclk(cam_clk),.rst_n(camera_rst_n),.vsync(cam_vs),.href(cam_href),.data(cam_data),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel));
 wire [27:0] cap_awaddr;wire [3:0] cap_awlen,cap_awid;wire cap_awvalid;
 wire [255:0] cap_wdata;wire [31:0] cap_wstrb;
-board_capture_hmic #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.BASE(RAW_BASE)) capture(
+board_capture_hmic #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.BASE(RAW_BASE),.DYNAMIC_BASE(1)) capture(
  .clk(core_clk),.rst_n(core_rst_n),.pclk(cam_clk),.prst_n(camera_rst_n),.vsync(cam_vs),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel),
- .cmd_valid(cap_cmd_valid),.cmd_ready(cap_cmd_ready),.rsp_valid(cap_rsp_valid),.rsp_ready(cap_rsp_ready),.rsp_status(cap_status),
+ .cmd_valid(cap_cmd_valid),.cmd_ready(cap_cmd_ready),.cmd_base(cap_base),.rsp_valid(cap_rsp_valid),.rsp_ready(cap_rsp_ready),.rsp_status(cap_status),
  .axi_awaddr(cap_awaddr),.axi_awlen(cap_awlen),.axi_awuser_id(cap_awid),.axi_awvalid(cap_awvalid),.axi_awready(axi_awready&&capture_owner),
  .axi_wdata(cap_wdata),.axi_wstrb(cap_wstrb),.axi_wready(axi_wready&&capture_owner),.axi_wusero_last(axi_wusero_last&&capture_owner),.axi_wusero_id(axi_wusero_id));
 // Independent 40 MHz algorithm domain; board/DDR remain at 125 MHz.
+wire a_start_remap;wire [31:0] a_start_base,a_frame_base;
 wire a_start_valid;
 wire a_start_ready;
 wire a_frame_valid;
@@ -263,6 +280,8 @@ wire [15:0] a_b_tag;
 wire a_b_error;
 vision_clock_bridge algorithm_cdc(.core_clk(core_clk),.core_rst_n(core_rst_n),
  .algorithm_clk(algorithm_clk),.algorithm_rst_n(algorithm_rst_n),
+ .start_remap(start_remap),.start_base(start_base),.a_start_remap(a_start_remap),.a_start_base(a_start_base),
+ .frame_base(frame_base),.a_frame_base(a_frame_base),
  .a_start_valid(a_start_valid),
  .start_valid(start_valid),
  .a_start_ready(a_start_ready),
@@ -335,14 +354,15 @@ vision_clock_bridge algorithm_cdc(.core_clk(core_clk),.core_rst_n(core_rst_n),
  .b_tag(b_tag),
  .a_b_error(a_b_error),
  .b_error(b_error));
-vision_ddr_top #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
- .clk(algorithm_clk),.rst_n(algorithm_rst_n),.start_valid(a_start_valid),.start_ready(a_start_ready),.square_size_fp64(SQUARE_SIZE_FP64),
- .frame_valid(a_frame_valid),.frame_ready(a_frame_ready),.frame_base(RAW_BASE),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(a_frame_status),
+vision_ddr_top #(.DEBUG_ENABLE(1),.MANUAL_CONTROL(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
+ .clk(algorithm_clk),.rst_n(algorithm_rst_n),.start_valid(a_start_valid),.start_ready(a_start_ready),.square_size_fp64(SQUARE_SIZE_FP64),.start_remap(a_start_remap),.remap_base(a_start_base),
+ .frame_valid(a_frame_valid),.frame_ready(a_frame_ready),.frame_base(a_frame_base),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(a_frame_status),
  .frame_release_valid(a_release_valid),.frame_release_ready(a_release_ready),
  .rsp_valid(a_rsp_valid),.rsp_ready(a_rsp_ready),.rsp_status(a_rsp_status),
  .debug_view(debug_view),.debug_phase(debug_phase),
  .result_base(),.result_stride(),.result_width(),.result_height(),
  .result_params(),.result_rms(),.debug_job(),.busy(),
+ .debug_rst_n(debug_algorithm_rst_n),.debug_argument(debug_argument),.debug_snapshot(debug_algorithm_data),
  .rd_valid(a_rd_valid),
  .rd_ready(a_rd_ready),
  .rd_addr(a_rd_addr),
@@ -369,7 +389,7 @@ vision_ddr_top #(.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CAND
  .b_ready(a_b_ready),
  .b_tag(a_b_tag),
  .b_error(a_b_error));
-wire algorithm_owner=!capture_owner&&!display_enable;
+wire algorithm_owner=!capture_owner&&!display_owner;
 hmic_ddr_adapter adapter(.clk(core_clk),.rst_n(core_rst_n),.ddr_ready(ddr_init_done&&algorithm_owner),
  .rd_valid(rd_valid),
  .rd_ready(rd_ready),
@@ -413,17 +433,17 @@ hmic_ddr_adapter adapter(.clk(core_clk),.rst_n(core_rst_n),.ddr_ready(ddr_init_d
  .axi_wready(axi_wready&&algorithm_owner),.axi_wusero_last(axi_wusero_last&&algorithm_owner),.axi_wusero_id(axi_wusero_id),
  .axi_rdata(axi_rdata),.axi_rvalid(axi_rvalid&&algorithm_owner),.axi_rlast(axi_rlast),.axi_rid(axi_rid));
 wire [27:0] disp_araddr;wire [3:0] disp_arlen,disp_arid;wire disp_arvalid;
-wire pv,pre,first,last,display_error;wire [15:0] pixel;
-board_display_hmic #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.RAW_BASE(RAW_BASE),.DST_BASE(DST_BASE)) display(
- .clk(core_clk),.rst_n(core_rst_n),.enable(display_enable),.pixel_valid(pv),.pixel_ready(pre),.pixel(pixel),.pixel_first(first),.pixel_last(last),.error(display_error),
- .axi_araddr(disp_araddr),.axi_arlen(disp_arlen),.axi_aruser_id(disp_arid),.axi_arvalid(disp_arvalid),.axi_arready(axi_arready&&display_enable),
- .axi_rdata(axi_rdata),.axi_rvalid(axi_rvalid&&display_enable),.axi_rlast(axi_rlast),.axi_rid(axi_rid));
+wire pv,pre,bridge_ready,first,last,display_error;wire [15:0] pixel;
+board_display_hmic #(.DYNAMIC_BASE(1),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.RAW_BASE(RAW_BASE),.DST_BASE(DST_BASE)) display(
+ .clk(core_clk),.rst_n(core_rst_n),.enable(display_enable),.frame_base(display_base),.idle(display_idle),.pixel_valid(pv),.pixel_ready(pre),.pixel(pixel),.pixel_first(first),.pixel_last(last),.error(display_error),
+ .axi_araddr(disp_araddr),.axi_arlen(disp_arlen),.axi_aruser_id(disp_arid),.axi_arvalid(disp_arvalid),.axi_arready(axi_arready&&display_owner),
+ .axi_rdata(axi_rdata),.axi_rvalid(axi_rvalid&&display_owner),.axi_rlast(axi_rlast),.axi_rid(axi_rid));
 // Ownership switches only after the old client has completed every transaction.
-assign axi_araddr=display_enable?disp_araddr:alg_araddr;
-assign axi_arlen=display_enable?disp_arlen:alg_arlen;
-assign axi_aruser_id=display_enable?disp_arid:alg_aruser_id;
+assign axi_araddr=display_owner?disp_araddr:alg_araddr;
+assign axi_arlen=display_owner?disp_arlen:alg_arlen;
+assign axi_aruser_id=display_owner?disp_arid:alg_aruser_id;
 assign axi_aruser_ap=0;
-assign axi_arvalid=display_enable?disp_arvalid:algorithm_owner&&alg_arvalid;
+assign axi_arvalid=display_owner?disp_arvalid:algorithm_owner&&alg_arvalid;
 assign axi_awaddr=capture_owner?cap_awaddr:alg_awaddr;
 assign axi_awlen=capture_owner?cap_awlen:alg_awlen;
 assign axi_awuser_id=capture_owner?cap_awid:alg_awuser_id;
@@ -434,17 +454,40 @@ assign axi_wstrb=capture_owner?cap_wstrb:alg_wstrb;
 wire vs_o,hs_o,de_o;wire [7:0] video_r,video_g,video_b;wire underflow;
 reg [1:0] display_sync /* synthesis PAP_ASYNC_REG=1 */;
 sync_vg timing(.clk(pix_clk),.rstn(pixel_rst_n),.vs_out(vs_o),.hs_out(hs_o),.de_out(de_o),.de_re(),.x_act(),.y_act());
-hdmi_pixel_bridge #(.FIFO_BITS(11)) bridge(.clk(core_clk),.rst_n(core_rst_n),.in_valid(pv),.in_ready(pre),.in_pixel(pixel),.in_first(first),.in_last(last),
- .pclk(pix_clk),.prst_n(pixel_rst_n),.de(de_o),.vsync(vs_o),.clear_error(!display_sync[1]),.r(video_r),.g(video_g),.b(video_b),.underflow(underflow));
+wire video_core_rst_n,video_pixel_rst_n;
+assign pre=bridge_ready&&video_core_rst_n;
+reset_sync vcr(.clk(core_clk),.arst_n(core_rst_n&&display_enable),.rst_n(video_core_rst_n));
+reset_sync vpr(.clk(pix_clk),.arst_n(pixel_rst_n&&display_enable),.rst_n(video_pixel_rst_n));
+hdmi_pixel_bridge #(.FIFO_BITS(11)) bridge(.clk(core_clk),.rst_n(video_core_rst_n),.in_valid(pv&&video_core_rst_n),.in_ready(bridge_ready),.in_pixel(pixel),.in_first(first),.in_last(last),
+ .pclk(pix_clk),.prst_n(video_pixel_rst_n),.de(de_o),.vsync(vs_o),.clear_error(!display_sync[1]),.r(video_r),.g(video_g),.b(video_b),.underflow(underflow));
 always @(posedge pix_clk or negedge pixel_rst_n)
  if(!pixel_rst_n)display_sync<=0;else display_sync<={display_sync[0],display_enable};
 always @(posedge pix_clk)begin
  vs_out<=vs_o;hs_out<=hs_o;de_out<=de_o;
  r_out<=video_r;g_out<=video_g;b_out<=video_b;
 end
-// Configuration LED remains the original HDMI-configured indicator.
-assign hdmi_int_led=init_over_tx;
+// Active-high status LEDs: error, result, calibration, busy, photos, heartbeat.
+reg [1:0] underflow_sync /* synthesis PAP_ASYNC_REG=1 */;
+always @(posedge core_clk or negedge core_rst_n)
+ if(!core_rst_n)underflow_sync<=0;else underflow_sync<={underflow_sync[0],underflow};
+assign led={status!=0||display_error||(display_enable&&underflow_sync[1]),
+ corrected,calibrated,ui_busy,captured,heart_beat_led};
 
+
+// Debug continues before DDR initialization and across functional resets.
+reset_sync dcr(.clk(core_clk),.arst_n(debug_por_n),.rst_n(debug_core_rst_n));
+reset_sync dar(.clk(algorithm_clk),.arst_n(debug_por_n),.rst_n(debug_algorithm_rst_n));
+core_debug core_recorder(.clk(core_clk),.rst_n(debug_core_rst_n),.functional_reset_n(core_rst_n),
+ .state_word({5'b0,(display_base==DST_BASE),start_remap,ready_sync[1],status,phase,selected,captured,calibrated,corrected,ui_busy,
+              display_enable,display_owner,capture_owner,display_idle}),
+ .pressed(pressed),.busy(ui_busy),.display_error(display_error),.underflow(underflow_sync[1]&&display_enable),
+ .read_accept(axi_arvalid&&axi_arready),.read_return(axi_rvalid),
+ .write_accept(axi_awvalid&&axi_awready),.write_return(axi_wusero_last),
+ .read_addr({4'b0,axi_araddr}),.write_addr({4'b0,axi_awaddr}),.snapshot(debug_core_data));
+board_debug diagnostics(.clk(sys_clk),.rx(uart_rx),.tx(uart_tx),.debug_rst_n(debug_por_n),
+ .camera_clk(cam_clk),.camera_vsync(cam_vs),.core_clk(core_clk),.algorithm_clk(algorithm_clk),.core_data(debug_core_data),
+ .algorithm_data(debug_algorithm_data),.algorithm_argument(debug_argument),
+ .health({algorithm_rst_n,core_rst_n,init_over_tx,cmos_init_done,ddr_init_done,algorithm_locked,locked}));
 
 GTP_INBUFGDS #(
     .IOSTANDARD("DEFAULT"),

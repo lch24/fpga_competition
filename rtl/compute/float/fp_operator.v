@@ -24,6 +24,137 @@ module fp_operator #(parameter FP_W=64, parameter ENABLE_EXP=1,ENABLE_LOG=1,
  end endgenerate
 endmodule
 `include "calib_defs.vh"
+// FP32 ADD/SUB/MUL/COMPARE backend; DIV/SQRT keep their iterative engine.
+// 24 significand bits + guard/round/sticky + carry = 28 bits, not 256.
+// Order operands before alignment so one shifter and one add/sub carry chain
+// suffice. Each stage is registered; normalization shifts one bit per cycle.
+// RNE, signed zero, subnormals and exception flags match fp_eval(width=32).
+// Kept in this compilation unit so all existing project source lists include it.
+module fp32_basic_alu (
+ input wire clk,rst_n,req_valid, output wire req_ready,
+ input wire [4:0] req_op, input wire [31:0] req_a,req_b,
+ output reg rsp_valid, input wire rsp_ready,
+ output reg [31:0] rsp_result, output reg [4:0] rsp_flags
+);
+ localparam IDLE=0,DECODE=1,ALIGN=2,ARITH=3,NORMALIZE=4,ROUND=5;
+ reg [2:0] state;
+ reg [4:0] op;
+ reg [31:0] a,b;
+ reg [23:0] ma,mb;
+ reg signed [10:0] ea,eb,exponent;
+ reg sign,subtract;
+ reg [27:0] va,vb,magnitude;
+ wire na=(&a[30:23]) && |a[22:0], nb=(&b[30:23]) && |b[22:0];
+ wire sna=na && !a[22], snb=nb && !b[22];
+ wire ia=(&a[30:23]) && !(|a[22:0]), ib=(&b[30:23]) && !(|b[22:0]);
+ wire za=!(|a[30:0]), zb=!(|b[30:0]);
+ wire effective_sb=b[31]^(op==`PAR_FP_SUB);
+ wire swap=a[30:0]<b[30:0];
+ wire [47:0] product=ma*mb;
+ // Explicit two's-complement operand mux shares the ADD and SUB carry chain.
+ wire [27:0] sum=va+(vb^{28{subtract}})+{{27{1'b0}},subtract};
+ wire [24:0] rounded={1'b0,magnitude[26:3]}+
+     {24'd0,(magnitude[2] && (magnitude[1] || magnitude[0] || magnitude[3]))};
+ wire [24:0] mantissa=rounded[24] ? rounded>>1 : rounded;
+ wire signed [10:0] final_exp=exponent+(rounded[24]?11'sd1:11'sd0);
+ wire [10:0] biased=final_exp+11'sd127;
+ wire lost=|magnitude[2:0];
+ function [27:0] jam;
+  input [27:0] x; input [10:0] distance;
+  reg [27:0] q;
+  begin
+   // Constant shift stages fold discarded bits directly into sticky, avoiding
+   // a second variable shifter and a subtractor just to build a lost-bit mask.
+   q=x;
+   if(distance[4])q={16'd0,q[27:17],|q[16:0]};
+   if(distance[3])q={8'd0,q[27:9],|q[8:0]};
+   if(distance[2])q={4'd0,q[27:5],|q[4:0]};
+   if(distance[1])q={2'd0,q[27:3],|q[2:0]};
+   if(distance[0])q={1'b0,q[27:2],|q[1:0]};
+   jam=distance>=28?{27'd0,|x}:q;
+  end
+ endfunction
+ task finish;
+  input [31:0] value;input [4:0] flags;
+  begin rsp_result<=value;rsp_flags<=flags;rsp_valid<=1;state<=IDLE;end
+ endtask
+ assign req_ready=rst_n && state==IDLE && !rsp_valid;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin
+   state<=IDLE;rsp_valid<=0;rsp_result<=0;rsp_flags<=0;
+   op<=0;a<=0;b<=0;ma<=0;mb<=0;ea<=0;eb<=0;exponent<=0;
+   sign<=0;subtract<=0;va<=0;vb<=0;magnitude<=0;
+  end else begin
+   if(rsp_valid && rsp_ready)rsp_valid<=0;
+   case(state)
+    IDLE:if(req_valid && req_ready)begin
+     a<=req_a;b<=req_b;op<=req_op;state<=DECODE;
+    end
+    DECODE:begin
+     if(op==`PAR_FP_COMPARE)finish(0,{4'd0,sna||snb});
+     else if(op>`PAR_FP_MUL)finish(32'h7fc00000,1);
+     else if(na||nb)finish(32'h7fc00000,{4'd0,sna||snb});
+     else if(op==`PAR_FP_MUL)begin
+      if((ia&&zb)||(ib&&za))finish(32'h7fc00000,1);
+      else if(ia||ib)finish({a[31]^b[31],8'hff,23'd0},0);
+      else begin
+       ma<={|a[30:23],a[22:0]};mb<={|b[30:23],b[22:0]};
+       ea<=a[30:23]==0?-11'sd126:$signed({3'd0,a[30:23]})-11'sd127;
+       eb<=b[30:23]==0?-11'sd126:$signed({3'd0,b[30:23]})-11'sd127;
+       sign<=a[31]^b[31];state<=ALIGN;
+      end
+     end else if(ia&&ib&&(a[31]!=effective_sb))finish(32'h7fc00000,1);
+     else if(ia)finish({a[31],8'hff,23'd0},0);
+     else if(ib)finish({effective_sb,8'hff,23'd0},0);
+     else begin
+      ma<=swap?{|b[30:23],b[22:0]}:{|a[30:23],a[22:0]};
+      mb<=swap?{|a[30:23],a[22:0]}:{|b[30:23],b[22:0]};
+      ea<=swap?(b[30:23]==0?-11'sd126:$signed({3'd0,b[30:23]})-11'sd127):
+               (a[30:23]==0?-11'sd126:$signed({3'd0,a[30:23]})-11'sd127);
+      eb<=swap?(a[30:23]==0?-11'sd126:$signed({3'd0,a[30:23]})-11'sd127):
+               (b[30:23]==0?-11'sd126:$signed({3'd0,b[30:23]})-11'sd127);
+      subtract<=a[31]^effective_sb;
+      sign<=swap?effective_sb:a[31];state<=ALIGN;
+     end
+    end
+    ALIGN:begin
+     if(op==`PAR_FP_MUL)begin
+      // Normalize tiny inputs before discarding product low bits.
+      if(ma!=0 && !ma[23])begin ma<=ma<<1;ea<=ea-11'sd1;end
+      if(mb!=0 && !mb[23])begin mb<=mb<<1;eb<=eb-11'sd1;end
+      if((ma==0 || ma[23]) && (mb==0 || mb[23]))begin
+       exponent<=ea+eb+11'sd1;state<=ARITH;
+      end
+     end else begin
+      exponent<=ea;va<={1'b0,ma,3'd0};vb<=jam({1'b0,mb,3'd0},ea-eb);
+      state<=ARITH;
+     end
+    end
+    ARITH:begin
+     if(op==`PAR_FP_MUL)magnitude<={1'b0,product[47:22],|product[21:0]};
+     else begin magnitude<=sum;if(subtract && sum==0)sign<=0;end
+     state<=NORMALIZE;
+    end
+    NORMALIZE:begin
+     if(magnitude==0)state<=ROUND;
+     else if(exponent < -11'sd154)begin magnitude<=1;exponent<=-11'sd126;state<=ROUND;end
+     else if(exponent < -11'sd126 || magnitude[27])begin
+      magnitude<={1'b0,magnitude[27:2],magnitude[1]|magnitude[0]};exponent<=exponent+11'sd1;
+     end else if(!magnitude[26] && exponent > -11'sd126)begin
+      magnitude<=magnitude<<1;exponent<=exponent-11'sd1;
+     end else state<=ROUND;
+    end
+    ROUND:begin
+     if(magnitude==0)finish({sign,31'd0},0);
+     else if(final_exp>11'sd127)finish({sign,8'hff,23'd0},5'b10100);
+     else finish({sign,(mantissa[23]?biased[7:0]:8'd0),mantissa[22:0]},
+                 {lost,lost&&!mantissa[23],3'd0});
+    end
+    default:state<=IDLE;
+   endcase
+  end
+ end
+endmodule
 /*
 自主浮点运算器：FP_W仅32或64，所有操作均由可综合整数/位运算实现。
 基础运算/转换采用最近偶数舍入，支持非规格化数、带符号零、Inf和NaN。
@@ -200,8 +331,8 @@ module fp_operator_narrow #(parameter ENABLE_EXP=1, ENABLE_LOG=1,
     wire [4:0] seq_flags;
 
     // One arithmetic request mux for external instructions and LOG/ACOS.
-    // FP64 uses the compact multi-cycle ALU; FP32 keeps its small existing
-    // combinational basic path. Never instantiate one ALU per calling state.
+    // Basic FP32 operations use a registered, mantissa-width datapath.
+    // External operations and LOG/ACOS share this same arithmetic unit.
     reg [4:0] eval_op;
     reg [63:0] eval_a,eval_b;
     always @* begin
@@ -268,9 +399,16 @@ module fp_operator_narrow #(parameter ENABLE_EXP=1, ENABLE_LOG=1,
         assign seq_result=result;
         assign seq_flags=flags;
     end else begin: g_fp32_basic
-        assign eval_result=fp_eval(eval_op,eval_a,eval_b,FP_W);
-        assign eval_valid=1'b1;
-        assign basic_ready=1'b0;
+        wire [31:0] result;
+        wire [4:0] flags;
+        fp32_basic_alu arithmetic (
+            .clk(clk),.rst_n(rst_n),
+            .req_valid(rst_n && (state==BASIC_REQ || internal_basic)),
+            .req_ready(basic_ready),.req_op(eval_op),
+            .req_a(eval_a[31:0]),.req_b(eval_b[31:0]),
+            .rsp_valid(eval_valid),.rsp_ready(state==BASIC_WAIT || internal_basic),
+            .rsp_result(result),.rsp_flags(flags));
+        assign eval_result={flags,32'd0,result};
         fp_divsqrt #(.FP_W(FP_W)) divsqrt (
             .ce(1'b1),.clk(clk),.rst_n(rst_n),
             .req_valid(rst_n && state==SEQ_REQ),.req_ready(seq_req_ready),
@@ -375,14 +513,13 @@ module fp_operator_narrow #(parameter ENABLE_EXP=1, ENABLE_LOG=1,
                 else if (req_op==`PAR_FP_DIV || req_op==`PAR_FP_SQRT)
                     start_divsqrt(req_op==`PAR_FP_SQRT,a,b,0);
                 else if (req_op<=`PAR_FP_MUL || req_op>=`PAR_FP_F32_TO_F64) begin
-                    computed=eval_result;
                     if (req_op==`PAR_FP_COMPARE) begin
                         rsp_unordered<=a_nan||b_nan;
                         rsp_equal<=!(a_nan||b_nan) && ((a==b)||(a_zero&&b_zero));
                         rsp_less<=!(a_nan||b_nan) && !(a_zero&&b_zero) &&
                                   ((a_sign!=b_sign)?a_sign:(a_sign?(a>b):(a<b)));
                     end
-                    if(FP_W==64) state<=BASIC_REQ; else finish(computed);
+                    state<=BASIC_REQ;
                 end else if (a_nan || ((req_op==`PAR_FP_ATAN2)&&b_nan)) begin
                     finish({4'd0,(a_snan||((req_op==`PAR_FP_ATAN2)&&b_snan)),NAN_BITS});
                 end else case (req_op)

@@ -50,6 +50,7 @@ rtl/control/frame/camera_system_top.v
 rtl/control/frame/descriptor_check.v
 rtl/control/frame/frame_manager.v
 rtl/control/frame/undistort_top.v
+rtl/control/system/board_buttons.v
 rtl/control/system/board_flow.v
 rtl/control/system/vision_sequence.v
 rtl/image/features/candidate_filter_ctrl.sv
@@ -108,3 +109,8 @@ rtl/video/dma/capture_dma.v
 rtl/video/dma/display_dma.v
 rtl/video/stream/hdmi_pixel_bridge.v
 rtl/video/stream/rgb565_format.v
+rtl/io/uart/debug_uart.v
+rtl/debug/debug_snapshot.v
+rtl/debug/algorithm_debug.v
+rtl/debug/core_debug.v
+rtl/debug/board_debug.v

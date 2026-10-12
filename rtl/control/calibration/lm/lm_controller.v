@@ -55,6 +55,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     output reg [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
     output wire [`PAR_STATE_W-1:0] rsp_state, // 最后已接受的current，未收敛也保留
     output wire [63:0] rsp_cost_fp64, // 该状态cost；无有效残差时+Inf
+    output wire [15:0] debug_live,
     output wire rsp_converged, // 本阶段算法收敛
     output wire [7:0] rsp_accepted_steps, // 该阶段接受更新数0..150
     output wire [7:0] rsp_outer_iterations // 实际开始的外迭代数，独立于接受数
@@ -205,6 +206,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     assign rsp_valid=rst_n && state==RESPONSE;
     assign rsp_state=payload;assign rsp_cost_fp64=cost_q;
     assign rsp_converged=converged_q;assign rsp_accepted_steps=accepted_q;
+    assign debug_live={outer_q,8'(state)};
     assign rsp_outer_iterations=outer_q;
     always @(posedge clk or negedge rst_n)begin
       if(!rst_n)begin

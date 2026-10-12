@@ -7,6 +7,7 @@ module tb_gray_dma;
  rgb565_gray_dma dut(.*);
  `include "logical_memory.vh"
  integer x,y,i,p,r,g,b,expected,transactions=0;
+ reg finished=0;
  always @(posedge clk)if(rd_valid&&rd_ready)transactions<=transactions+1;
  task launch;
   begin @(negedge clk);cmd_valid=1;do @(posedge clk);while(!cmd_ready);@(negedge clk);cmd_valid=0;end
@@ -35,6 +36,7 @@ module tb_gray_dma;
   memory.inj_addr_min=511;memory.inj_addr_max=511;launch();finish_job(5);
   memory.inj_en=0;launch();finish_job(0);
   if(violations!=0)$fatal(1,"memory protocol");
+  finished=1;
   $display("PASS gray DMA: pixel reference, odd starts, padding, read/write errors, retry and completion backpressure");$finish;
  end
  initial begin #5000000;$fatal(1,"gray timeout");end

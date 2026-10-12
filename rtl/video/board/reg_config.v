@@ -30,6 +30,13 @@
 		  output reg [8:0]reg_index
 	  );
 
+     // The power-on reset originates in sys_clk. Release independently in
+     // the divider and generated I2C domains; the slow reset asserts even
+     // while its clock is stopped by the divider reset.
+     wire divider_rst_n, i2c_rst_n;
+     reset_sync div_reset(.clk(clk_25M),.arst_n(camera_rstn),.rst_n(divider_rst_n));
+     reset_sync i2c_reset(.clk(clock_20k),.arst_n(camera_rstn),.rst_n(i2c_rst_n));
+
      // 24.75 MHz / (2 * 1200) = 10.3125 kHz. Keep FDC divide_by=2400.
      reg [15:0]clock_20k_cnt;
      reg [1:0]config_step;	  
@@ -39,7 +46,7 @@
 	 reg reg_conf_done_reg;
 	  
      i2c_com u1(.clock_i2c(clock_20k),
-               .camera_rstn(camera_rstn),
+               .camera_rstn(i2c_rst_n),
                .ack(ack),
                .i2c_data(i2c_data),
                .start(start),
@@ -49,9 +56,9 @@
 
 assign reg_conf_done=reg_conf_done_reg;
 // I2C control clock: 10.3125 kHz with the current 24.75 MHz input.
-always@(posedge clk_25M)   
+always@(posedge clk_25M or negedge divider_rst_n)
 begin
-   if(!camera_rstn) begin
+   if(!divider_rst_n) begin
         clock_20k<=0;
         clock_20k_cnt<=0;
    end
@@ -65,9 +72,9 @@ end
 
 
 ////iic寄存器配置过程控制    
-always@(posedge clock_20k)    
+always@(posedge clock_20k or negedge i2c_rst_n)
 begin
-   if(!camera_rstn) begin
+   if(!i2c_rst_n) begin
        config_step<=0;
        start<=0;
        reg_index<=0;

@@ -189,15 +189,17 @@ module fp_divsqrt_checker #(parameter W=64)(
     localparam [W-1:0] FOUR=(W==32)?64'h40800000:64'h4010000000000000;
     localparam [W-1:0] ONE_HALF=(W==32)?64'h3fc00000:64'h3ff8000000000000;
     reg clk=0;always #5 clk=~clk;
-    reg rst_n=0,valid=0,is_sqrt=0,ready_out=0;
+    reg rst_n=0,valid=0,is_sqrt=0,ready_out=0,ce=1;
     reg [W-1:0] a=0,b=0;
     wire ready,valid_out;
     wire [W-1:0] result;
     wire [4:0] flags;
-    integer cycles,rounds,report,i;
+    integer cycles,rounds,report,i,wall_cycles;
+    reg [2:0] held_state;
+    reg [F+4:0] held_digits;
     reg [W-1:0] held;
     reg [4:0] held_flags;
-    fp_divsqrt #(.FP_W(W)) dut(.clk(clk),.rst_n(rst_n),.req_valid(valid),.req_ready(ready),
+    fp_divsqrt #(.FP_W(W),.USE_CE(1)) dut(.ce(ce),.clk(clk),.rst_n(rst_n),.req_valid(valid),.req_ready(ready),
       .req_sqrt(is_sqrt),.req_a(a),.req_b(b),.rsp_valid(valid_out),.rsp_ready(ready_out),
       .rsp_result(result),.rsp_flags(flags));
     task check;
@@ -206,7 +208,7 @@ module fp_divsqrt_checker #(parameter W=64)(
     endtask
     task reset_core;
         begin
-            @(negedge clk);rst_n=0;valid=0;ready_out=0;
+            @(negedge clk);rst_n=0;valid=0;ready_out=0;ce=1;
             #1;check(!ready&&!valid_out,"reset cancels core");
             @(negedge clk);rst_n=1;
         end
@@ -224,12 +226,19 @@ module fp_divsqrt_checker #(parameter W=64)(
         input sqrt_op;input [W-1:0] x,y,expected;
         input integer expected_cycles;
         begin
-            cases=cases+1;start(sqrt_op,x,y);cycles=0;rounds=0;
-            while(!valid_out&&cycles<200)begin
+            cases=cases+1;start(sqrt_op,x,y);cycles=0;rounds=0;wall_cycles=0;
+            while(!valid_out&&wall_cycles<800)begin
                 // Count visits before the active edge: each is a distinct registered iteration.
-                if(dut.state==3||dut.state==4)rounds=rounds+1;
-                @(posedge clk);#1;cycles=cycles+1;check(!ready,"busy blocks new request");
+                ce=(wall_cycles%4!=1);
+                held_state=dut.state;held_digits=dut.digits;held=result;held_flags=flags;
+                if(ce && (dut.state==3||dut.state==4))rounds=rounds+1;
+                @(posedge clk);#1;wall_cycles=wall_cycles+1;
+                if(ce)cycles=cycles+1;
+                else check(dut.state===held_state && dut.digits===held_digits && result===held && flags===held_flags,"CE freezes pack/iteration/response registers");
+                check(!ready,"busy blocks new request");
+                @(negedge clk);
             end
+            ce=1;
             check(valid_out&&result===expected&&flags===0,"core exact result");
             check(cycles==expected_cycles,"expected multi-cycle latency including normalization");
             check(rounds==(sqrt_op?F+4:F+5),"one registered step per quotient/root digit");
@@ -245,9 +254,9 @@ module fp_divsqrt_checker #(parameter W=64)(
         if(W==64)report=$fopen("divsqrt64_results.txt","w");else report=$fopen("divsqrt32_results.txt","w");
         if(!report)begin errors=1;done=1;end else begin
             reset_core;
-            run_case(0,THREE,TWO,ONE_HALF,F+8);
-            run_case(1,FOUR,0,TWO,F+7);
-            run_case(0,{{(W-1){1'b0}},1'b1},ONE,{{(W-1){1'b0}},1'b1},2*F+8);
+            run_case(0,THREE,TWO,ONE_HALF,F+10);
+            run_case(1,FOUR,0,TWO,F+8);
+            run_case(0,{{(W-1){1'b0}},1'b1},ONE,{{(W-1){1'b0}},1'b1},3*F+10);
             // Reset in quotient iteration, root iteration, and subnormal normalization.
             for(i=0;i<3;i=i+1)begin
                 cases=cases+1;
@@ -256,7 +265,7 @@ module fp_divsqrt_checker #(parameter W=64)(
                 reset_core;
                 repeat(130)begin @(posedge clk);#1;check(!valid_out&&ready,"no stale result after core reset");end
             end
-            run_case(0,THREE,TWO,ONE_HALF,F+8);
+            run_case(0,THREE,TWO,ONE_HALF,F+10);
             $fdisplay(report,"RESULT W=%0d cases=%0d errors=%0d",W,cases,errors);
             $fclose(report);done=1;
         end

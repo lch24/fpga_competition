@@ -25,19 +25,21 @@ const top=`
 // One job and one frame lease at a time. Last input frame is the correction input.
 // Result memory remains owned by caller until rsp_ready; next start may overwrite.
 module vision_ddr_top #(
- parameter WIDTH=1280,HEIGHT=720,DEPTH=2,
+ parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,
  parameter GRAY_BASE=32'h03000000,DST_BASE=32'h01000000,
  parameter FIXED_BILINEAR=1, parameter FIXED_ACCUM=1,
  parameter CANDIDATE_BASE=32'h03200000,
  parameter MAP_X_BASE=32'h02000000,MAP_Y_BASE=32'h02800000
 )(
  input wire clk,rst_n,start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
+ input wire start_remap,input wire [31:0] remap_base,
  input wire frame_valid,output wire frame_ready,input wire [31:0] frame_base,frame_stride,frame_capacity,
  input wire [7:0] frame_status,output wire frame_release_valid,input wire frame_release_ready,
  output wire rsp_valid,input wire rsp_ready,output wire [7:0] rsp_status,
  output wire [31:0] result_base,result_stride,output wire [15:0] result_width,result_height,
  output wire busy,output wire [31:0] debug_job,output wire [7:0] debug_view,output wire [5:0] debug_phase,
  output wire [287:0] result_params,output reg [63:0] result_rms,
+ input wire debug_rst_n,input wire [15:0] debug_argument,output wire [511:0] debug_snapshot,
  ${portDecl}
 );
  function [63:0] pyramid_bytes;
@@ -79,11 +81,12 @@ module vision_ddr_top #(
  wire collect_v,collect_r,cv,cr,last,vr,va,ccv,ccr;wire [7:0] index,view_status;
  wire cbv,cbr,mv,mr;wire [7:0] ms;wire [31:0] mid;wire [15:0] mw,mh;wire [287:0] mp;
  wire pv,pr,usable,rv,rr;wire [31:0] pid,rid;wire [15:0] pw,ph;wire [287:0] pp;wire [7:0] rs;
- wire diag_v,diag_metrics;wire [63:0] diag_rms;
+ wire diag_v,diag_metrics,diag_converged;wire [63:0] diag_rms;
+ wire [3:0] diag_phase;wire [7:0] diag_status;wire [71:0] calibration_live;wire [15:0] diag_accepted;
  wire uv,ur,udone,uack;wire [1:0] opcode;wire [7:0] us;
  ${wireDecl}
- vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) sequence_ctrl(
-  .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
+ vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL)) sequence_ctrl(
+  .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_remap(start_remap),.remap_base(remap_base),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
   .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(frame_stride),.frame_capacity(frame_capacity),
   .frame_status(frame_status),.frame_config_ok(frame_ok),.frame_release_valid(frame_release_valid),.frame_release_ready(frame_release_ready),
   .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.busy(busy),.job(debug_job),.view_id(debug_view),.debug_phase(debug_phase),
@@ -98,6 +101,8 @@ module vision_ddr_top #(
   .clk(clk),.rst_n(rst_n),.cmd_valid(gv),.cmd_ready(gr),.width(16'(WIDTH)),.height(16'(HEIGHT)),
   .src_base(src),.src_stride(ss),.dst_base(GRAY_BASE),.dst_stride(32'(WIDTH)),.rsp_valid(gdone),.rsp_ready(gack),.rsp_status(gs),
   ${client(0)});
+ // Detection refinement and calibration issue to the same FP64 pool.
+ // They have independent reset/CE lifetimes and explicit response ownership.
  wire feature_req_valid,feature_req_ready,feature_active,feature_rsp_valid,feature_rsp_ready;
  wire [4:0] feature_req_op,feature_flags;
  wire [63:0] feature_req_a,feature_req_b,feature_result;
@@ -122,8 +127,22 @@ module vision_ddr_top #(
   .view_rsp_valid(vr),.view_rsp_ready(va),.view_rsp_job_id(debug_job),.view_rsp_view_id(debug_view),.view_rsp_status(view_status),
   .cmd_valid(ccv),.cmd_ready(ccr),.cmd_job_id(debug_job),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_square_size_fp64(square),
   .camera_valid(pv),.camera_ready(pr),.camera_calib_id(pid),.camera_width(pw),.camera_height(ph),.camera_usable(usable),.camera_params(pp),
-  .diag_valid(diag_v),.diag_ready(1'b1),.diag_metrics_valid(diag_metrics),.diag_rms_fp64(diag_rms),
+  .debug_live(calibration_live),.diag_valid(diag_v),.diag_ready(1'b1),.diag_phase(diag_phase),.diag_status(diag_status),.diag_converged(diag_converged),.diag_accepted_steps(diag_accepted),.diag_metrics_valid(diag_metrics),.diag_rms_fp64(diag_rms),
   .rsp_valid(rv),.rsp_ready(rr),.rsp_status(rs),.rsp_job_id(rid));
+ generate if(DEBUG_ENABLE)begin : g_debug
+ algorithm_debug recorder(.clk(clk),.rst_n(debug_rst_n),.functional_reset_n(rst_n),
+  .start_cal(start_valid&&start_ready&&!(MANUAL_CONTROL&&start_remap)),
+  .job(debug_job),.phase(debug_phase),.view(debug_view),
+  .detect_done(ddone&&debug_phase==7),.detect_count(total),.detect_flags({5'b0,grid_ok,dstatus}),
+  .corner_valid(cv&&cr),.corner_x(dx),.corner_y(dy),
+  .result_valid(pv&&pr&&usable),.params(pp),.diag_valid(diag_v),.metrics_valid(diag_metrics),
+  .accepted_steps(diag_accepted),.converged(diag_converged),.cal_phase(diag_phase),.diag_status(diag_status),.rms(diag_rms),
+  .rsp_valid(rsp_valid&&rsp_ready),.rsp_status(rsp_status),
+  .argument(debug_argument),.snapshot(debug_snapshot),.live(calibration_live),
+  .rd_accept(rd_valid&&rd_ready),.rd_return(r_valid&&r_ready),.wr_accept(wr_valid&&wr_ready),
+  .bus_state({b_error,r_error,b_ready,b_valid,w_ready,w_valid,wr_ready,wr_valid,r_ready,r_valid,rd_ready,rd_valid}),
+  .address(rd_addr));
+ end else begin assign debug_snapshot=0;end endgenerate
  calibration_mailbox mailbox(
   .clk(clk),.rst_n(ar),.begin_valid(cbv),.begin_ready(cbr),.begin_job_id(debug_job),
   .param_valid(pv),.param_ready(pr),.param_calib_id(pid),.param_width(pw),.param_height(ph),.param_camera_valid(usable),.param_values(pp),

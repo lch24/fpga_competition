@@ -15,6 +15,10 @@ module tb_reg_config_clock;
     initial begin
         repeat(3) @(negedge clk);
         rst_n=1;
+        // The divider now releases reset on its own clock, two edges after
+        // the asynchronous power-on reset. Counting starts after release.
+        wait(dut.divider_rst_n===1'b1);
+        @(negedge clk);
         repeat(7200) begin
             @(posedge clk); #1;
             ticks=ticks+1;
@@ -30,6 +34,9 @@ module tb_reg_config_clock;
         end
         if(edges!=6) $fatal(1,"missing divider edges");
         @(negedge clk);rst_n=0;
+        #1;
+        if(dut.i2c_rst_n!==0 || done!==0 || index!==0)
+            $fatal(1,"stopped I2C domain did not reset asynchronously");
         @(posedge clk);#1;
         if(cfg_clk!==0 || dut.clock_20k_cnt!==0) $fatal(1,"divider reset failed");
         finished=1;

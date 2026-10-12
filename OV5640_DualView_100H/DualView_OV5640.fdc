@@ -718,22 +718,8 @@ define_attribute {p:mem_we_n} {PAP_IO_SLEW} {SLOW}
 
               
 #led0
-define_attribute {p:heart_beat_led} {PAP_IO_DIRECTION} {OUTPUT}  
-define_attribute {p:heart_beat_led} {PAP_IO_LOC} {A20}
-define_attribute {p:heart_beat_led} {PAP_IO_VCCIO} {3.3}
-define_attribute {p:heart_beat_led} {PAP_IO_STANDARD} {LVCMOS33}
-define_attribute {p:heart_beat_led} {PAP_IO_DRIVE} {8}
-define_attribute {p:heart_beat_led} {PAP_IO_PULLUP} {TRUE}
-define_attribute {p:heart_beat_led} {PAP_IO_SLEW} {FAST}
 
 #led1
-define_attribute {p:ddr_init_done} {PAP_IO_DIRECTION} {OUTPUT}
-define_attribute {p:ddr_init_done} {PAP_IO_LOC} {C18}
-define_attribute {p:ddr_init_done} {PAP_IO_VCCIO} {3.3}
-define_attribute {p:ddr_init_done} {PAP_IO_STANDARD} {LVCMOS33}
-define_attribute {p:ddr_init_done} {PAP_IO_DRIVE} {8}
-define_attribute {p:ddr_init_done} {PAP_IO_PULLUP} {TRUE}
-define_attribute {p:ddr_init_done} {PAP_IO_SLEW} {FAST}
 
 ###==== BEGIN Clocks
 create_clock -name {sys_clk} [get_ports {sys_clk}] -period {37.037037} -waveform {0.000 18.518519}
@@ -940,20 +926,6 @@ define_attribute {p:cmos2_vsync} {PAP_IO_LOC} {V23}
 define_attribute {p:cmos2_vsync} {PAP_IO_VCCIO} {3.3}
 define_attribute {p:cmos2_vsync} {PAP_IO_STANDARD} {LVCMOS33}
 define_attribute {p:cmos2_vsync} {PAP_IO_NONE} {TRUE}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_DIRECTION} {OUTPUT}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_LOC} {E18}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_VCCIO} {3.3}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_STANDARD} {LVCMOS33}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_DRIVE} {4}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_NONE} {TRUE}
-define_attribute {p:cmos_init_done[1]} {PAP_IO_SLEW} {FAST}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_DIRECTION} {OUTPUT}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_LOC} {A17}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_VCCIO} {3.3}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_STANDARD} {LVCMOS33}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_DRIVE} {4}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_NONE} {TRUE}
-define_attribute {p:cmos_init_done[0]} {PAP_IO_SLEW} {FAST}
 define_attribute {p:iic_tx_sda} {PAP_IO_DIRECTION} {INOUT}
 define_attribute {p:iic_tx_sda} {PAP_IO_LOC} {K23}
 define_attribute {p:iic_tx_sda} {PAP_IO_VCCIO} {3.3}
@@ -961,13 +933,6 @@ define_attribute {p:iic_tx_sda} {PAP_IO_STANDARD} {LVCMOS33}
 define_attribute {p:iic_tx_sda} {PAP_IO_DRIVE} {4}
 define_attribute {p:iic_tx_sda} {PAP_IO_NONE} {TRUE}
 define_attribute {p:iic_tx_sda} {PAP_IO_SLEW} {FAST}
-define_attribute {p:hdmi_int_led} {PAP_IO_DIRECTION} {OUTPUT}
-define_attribute {p:hdmi_int_led} {PAP_IO_LOC} {C19}
-define_attribute {p:hdmi_int_led} {PAP_IO_VCCIO} {3.3}
-define_attribute {p:hdmi_int_led} {PAP_IO_STANDARD} {LVCMOS33}
-define_attribute {p:hdmi_int_led} {PAP_IO_DRIVE} {4}
-define_attribute {p:hdmi_int_led} {PAP_IO_NONE} {TRUE}
-define_attribute {p:hdmi_int_led} {PAP_IO_SLEW} {FAST}
 define_attribute {p:iic_tx_scl} {PAP_IO_DIRECTION} {OUTPUT}
 define_attribute {p:iic_tx_scl} {PAP_IO_LOC} {K22}
 define_attribute {p:iic_tx_scl} {PAP_IO_VCCIO} {3.3}
@@ -985,3 +950,107 @@ set_max_delay -datapath_only 8.0 -from [get_clocks {algorithm_clk}] -to [get_clo
 set_max_delay -datapath_only 8.0 -from [get_clocks {ddrphy_sysclk}] -to [get_clocks {algorithm_clk}]
 # Board configuration and camera/video domains are asynchronous to the algorithm.
 set_clock_groups -name algorithm_external_async -asynchronous -group [get_clocks {algorithm_clk}] -group [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c_clk cam2_i2c_clk cmos1_pclk cmos2_pclk}]
+
+# Asynchronous assertion inputs of explicit two-flop reset synchronizers.
+# Cut only their reset-input paths, not the synchronizer Q -> consumer reset
+# paths: reset release and all functional data remain timed in the target domain.
+set_false_path -through [get_pins {pr/arst_n}]
+set_false_path -through [get_pins {comos1_reg_config/div_reset/arst_n}]
+set_false_path -through [get_pins {comos1_reg_config/i2c_reset/arst_n}]
+set_false_path -through [get_pins {comos2_reg_config/div_reset/arst_n}]
+set_false_path -through [get_pins {comos2_reg_config/i2c_reset/arst_n}]
+
+# User controls: hardware manual printed pages 46-47. Keys low, LEDs high.
+define_attribute {p:key_n[0]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key_n[0]} {PAP_IO_LOC} {C22}
+define_attribute {p:key_n[0]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key_n[0]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key_n[0]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key_n[1]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key_n[1]} {PAP_IO_LOC} {C23}
+define_attribute {p:key_n[1]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key_n[1]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key_n[1]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key_n[2]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key_n[2]} {PAP_IO_LOC} {B22}
+define_attribute {p:key_n[2]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key_n[2]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key_n[2]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key_n[3]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key_n[3]} {PAP_IO_LOC} {A22}
+define_attribute {p:key_n[3]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key_n[3]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key_n[3]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key_n[4]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key_n[4]} {PAP_IO_LOC} {B20}
+define_attribute {p:key_n[4]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key_n[4]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key_n[4]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:led[0]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[0]} {PAP_IO_LOC} {A20}
+define_attribute {p:led[0]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[0]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[0]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[0]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[1]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[1]} {PAP_IO_LOC} {C18}
+define_attribute {p:led[1]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[1]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[1]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[1]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[2]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[2]} {PAP_IO_LOC} {C19}
+define_attribute {p:led[2]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[2]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[2]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[2]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[3]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[3]} {PAP_IO_LOC} {E18}
+define_attribute {p:led[3]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[3]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[3]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[3]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[4]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[4]} {PAP_IO_LOC} {A17}
+define_attribute {p:led[4]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[4]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[4]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[4]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[5]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[5]} {PAP_IO_LOC} {A18}
+define_attribute {p:led[5]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[5]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[5]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[5]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[6]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[6]} {PAP_IO_LOC} {C17}
+define_attribute {p:led[6]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[6]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[6]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[6]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[7]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[7]} {PAP_IO_LOC} {B17}
+define_attribute {p:led[7]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[7]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[7]} {PAP_IO_DRIVE} {4}
+define_attribute {p:led[7]} {PAP_IO_SLEW} {SLOW}
+# key_n only feeds buttons/meta, the first synchronizer stage.
+set_false_path -from [get_ports {key_n[*]}]
+set_false_path -through [get_pins {vcr/arst_n}]
+set_false_path -through [get_pins {vpr/arst_n}]
+
+# Independent 27 MHz UART diagnostics; only RX first synchronizer is asynchronous.
+define_attribute {p:uart_rx} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:uart_rx} {PAP_IO_LOC} {B24}
+define_attribute {p:uart_rx} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:uart_rx} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:uart_tx} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:uart_tx} {PAP_IO_LOC} {C24}
+define_attribute {p:uart_tx} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:uart_tx} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:uart_tx} {PAP_IO_DRIVE} {4}
+define_attribute {p:uart_tx} {PAP_IO_SLEW} {SLOW}
+set_false_path -from [get_ports {uart_rx}]
+# Debug POR assertion only; synchronizer release remains timed.
+set_false_path -through [get_pins {dcr/arst_n}]
+set_false_path -through [get_pins {dar/arst_n}]

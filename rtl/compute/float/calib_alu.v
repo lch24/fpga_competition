@@ -19,13 +19,16 @@ module calib_alu #(parameter USE_CE=0) (
  reg signed [12:0] ea,eb,exponent;
  reg sa,sb,sign,narrow;
  reg [56:0] va,vb,magnitude;
+ wire subtract=sa^sb;
+ wire [56:0] addsub=va+(vb^{57{subtract}})+{{56{1'b0}},subtract};
  wire [105:0] product=ma*mb;
  wire na=(&a[62:52]) && |a[51:0], nb=(&b[62:52]) && |b[51:0];
  wire sna=na && !a[51], snb=nb && !b[51];
  wire ia=(&a[62:52]) && !(|a[51:0]), ib=(&b[62:52]) && !(|b[51:0]);
  wire za=!(|a[62:0]), zb=!(|b[62:0]);
  wire div_ready,div_valid; wire [63:0] div_result; wire [4:0] div_flags;
- wire [5:0] target=narrow?6'd26:6'd55;
+ wire above_hidden=narrow?magnitude[27]:magnitude[56];
+ wire at_hidden=narrow?magnitude[26]:magnitude[55];
  wire signed [12:0] emin=narrow?-13'sd126:-13'sd1022;
  wire signed [12:0] emax=narrow?13'sd127:13'sd1023;
  wire [53:0] rounded={1'b0,magnitude[55:3]} +
@@ -40,9 +43,14 @@ module calib_alu #(parameter USE_CE=0) (
   input [56:0] x; input [12:0] distance;
   reg [56:0] q;
   begin
-   if(distance==0)jam=x;
-   else if(distance>=57)jam={56'd0,|x};
-   else begin q=x>>distance;q[0]=q[0] || |(x<<(57-distance));jam=q;end
+   q=x;
+   if(distance[5])q={32'd0,q[56:33],|q[32:0]};
+   if(distance[4])q={16'd0,q[56:17],|q[16:0]};
+   if(distance[3])q={8'd0,q[56:9],|q[8:0]};
+   if(distance[2])q={4'd0,q[56:5],|q[4:0]};
+   if(distance[1])q={2'd0,q[56:3],|q[2:0]};
+   if(distance[0])q={1'b0,q[56:2],|q[1:0]};
+   jam=distance>=57?{56'd0,|x}:q;
   end
  endfunction
  task finish;
@@ -72,6 +80,14 @@ module calib_alu #(parameter USE_CE=0) (
      ea<=a[62:52]==0?-13'sd1022:$signed({2'b0,a[62:52]})-13'sd1023;
      eb<=b[62:52]==0?-13'sd1022:$signed({2'b0,b[62:52]})-13'sd1023;
      sa<=a[63];sb<=b[63]^(op==`PAR_FP_SUB);
+     // Order finite add/sub operands before ALIGN: one alignment shifter and
+     // one carry chain suffice; the larger magnitude determines the sign.
+     if((op==`PAR_FP_ADD || op==`PAR_FP_SUB) && a[62:0]<b[62:0])begin
+      ma<={|b[62:52],b[51:0]};mb<={|a[62:52],a[51:0]};
+      ea<=b[62:52]==0?-13'sd1022:$signed({2'b0,b[62:52]})-13'sd1023;
+      eb<=a[62:52]==0?-13'sd1022:$signed({2'b0,a[62:52]})-13'sd1023;
+      sa<=b[63]^(op==`PAR_FP_SUB);sb<=a[63];
+     end
      if(op==`PAR_FP_DIV || op==`PAR_FP_SQRT)state<=DREQ;
      else if(op==`PAR_FP_COMPARE)begin
       rsp_unordered<=na||nb;rsp_equal<=!(na||nb) && (a==b || (za&&zb));
@@ -117,17 +133,15 @@ module calib_alu #(parameter USE_CE=0) (
       end
      end
      else begin
-      exponent<=ea>=eb?ea:eb;
-      va<=ea>=eb?{1'b0,ma,3'd0}:jam({1'b0,ma,3'd0},eb-ea);
-      vb<=eb>=ea?{1'b0,mb,3'd0}:jam({1'b0,mb,3'd0},ea-eb);
+      exponent<=ea;
+      va<={1'b0,ma,3'd0};
+      vb<=jam({1'b0,mb,3'd0},ea-eb);
       state<=ARITH;
      end
     end
     ARITH:begin
      if(op==`PAR_FP_MUL)magnitude<={1'b0,product[105:51],|product[50:0]};
-     else if(sa==sb)begin magnitude<=va+vb;sign<=sa;end
-     else if(va>=vb)begin magnitude<=va-vb;sign<=sa && (va!=vb || sb);end
-     else begin magnitude<=vb-va;sign<=sb;end
+     else begin magnitude<=addsub;sign<=sa && (!subtract || (|addsub));end
      state<=NORMALIZE;
     end
     NORMALIZE:begin
@@ -135,9 +149,9 @@ module calib_alu #(parameter USE_CE=0) (
      // normalization barrel; exponent clamps bound extreme underflow latency.
      if(magnitude==0)state<=ROUND;
      else if(exponent<emin-13'sd57)begin magnitude<=1;exponent<=emin;state<=ROUND;end
-     else if(exponent<emin || magnitude[target+1'b1])begin
+     else if(exponent<emin || above_hidden)begin
       magnitude<={1'b0,magnitude[56:2],magnitude[1]|magnitude[0]};exponent<=exponent+13'sd1;
-     end else if(!magnitude[target] && exponent>emin)begin magnitude<=magnitude<<1;exponent<=exponent-13'sd1;end
+     end else if(!at_hidden && exponent>emin)begin magnitude<=magnitude<<1;exponent<=exponent-13'sd1;end
      else state<=ROUND;
     end
     ROUND:begin

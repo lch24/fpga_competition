@@ -5,10 +5,10 @@
 // accepted FIFO words, then reports success/overflow/DDR error. Never publish
 // a partial frame. Descriptor/constants remain stable across both clocks.
 module board_capture_hmic #(
- parameter WIDTH=1280,HEIGHT=720,BASE=32'h0,FIFO_BITS=8
+ parameter WIDTH=1280,HEIGHT=720,BASE=32'h0,FIFO_BITS=8,DYNAMIC_BASE=0
 )(
  input wire clk,rst_n,pclk,prst_n,vsync,pixel_valid,input wire [15:0] pixel,
- input wire cmd_valid,output wire cmd_ready,
+ input wire cmd_valid,output wire cmd_ready,input wire [31:0] cmd_base,
  output wire rsp_valid,input wire rsp_ready,output reg [7:0] rsp_status,
  output wire [27:0] axi_awaddr,output wire [3:0] axi_awlen,axi_awuser_id,
  output wire axi_awvalid,input wire axi_awready,
@@ -16,6 +16,8 @@ module board_capture_hmic #(
  input wire axi_wready,axi_wusero_last,input wire [3:0] axi_wusero_id
 );
  localparam TOTAL=WIDTH*HEIGHT;
+ reg [31:0] base;
+ wire [31:0] requested_base=DYNAMIC_BASE?cmd_base:BASE;
  reg request,finished,seen,armed,active,vs_d,bad;
  reg [1:0] req_sync,done_sync /* synthesis PAP_ASYNC_REG=1 */;
  reg [31:0] count,accepted,final_words;reg final_bad;
@@ -29,7 +31,7 @@ module board_capture_hmic #(
   .wclk(pclk),.wrst_n(prst_n),.wvalid(fw),.wready(fr),.wdata(complete_word),
   .rclk(clk),.rrst_n(rst_n),.rvalid(fv),.rready(state==1),.rdata(fd));
  assign cmd_ready=state==0;assign rsp_valid=state==6;
- assign axi_awaddr=(BASE>>2)+(written<<3);
+ assign axi_awaddr=(base>>2)+(written<<3);
  assign axi_awlen=0;assign axi_awuser_id=0;assign axi_awvalid=state==2;
  assign axi_wdata=payload;assign axi_wstrb=32'hffffffff;
  always @(posedge pclk or negedge prst_n)begin
@@ -53,13 +55,13 @@ module board_capture_hmic #(
   end
  end
  always @(posedge clk or negedge rst_n)begin
-  if(!rst_n)begin state<=0;request<=0;done_sync<=0;written<=0;payload<=0;rsp_status<=0;end
+  if(!rst_n)begin state<=0;request<=0;done_sync<=0;written<=0;payload<=0;base<=0;rsp_status<=0;end
   else begin
    done_sync<={done_sync[0],finished};
    case(state)
     0:if(cmd_valid)begin
-     written<=0;rsp_status<=0;
-     if(WIDTH%16!=0||WIDTH==0||HEIGHT==0||BASE%32!=0)begin rsp_status<=1;state<=6;end
+     written<=0;rsp_status<=0;base<=requested_base;
+     if(WIDTH%16!=0||WIDTH==0||HEIGHT==0||requested_base%32!=0)begin rsp_status<=1;state<=6;end
      else begin request<=~request;state<=1;end
     end
     1:if(fv)begin payload<=fd;state<=2;end

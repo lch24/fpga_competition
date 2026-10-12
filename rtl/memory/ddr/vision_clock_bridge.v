@@ -2,6 +2,9 @@
 // Reset both sides together; clocks may start/stop independently during reset.
 module vision_clock_bridge(
  input wire core_clk,core_rst_n,algorithm_clk,algorithm_rst_n,
+ input wire start_remap,input wire [31:0] start_base,
+ output wire a_start_remap,output wire [31:0] a_start_base,
+ input wire [31:0] frame_base,output wire [31:0] a_frame_base,
  output wire a_start_valid,
  input wire start_valid,
  input wire a_start_ready,
@@ -75,18 +78,18 @@ module vision_clock_bridge(
  output wire a_b_error,
  input wire b_error
 );
-wire unused_start,unused_release,frame_fifo_ready;
+wire unused_release,frame_fifo_ready;
 reg [1:0] frame_demand_sync /* synthesis PAP_ASYNC_REG=1 */;
 always @(posedge core_clk or negedge core_rst_n)
  if(!core_rst_n) frame_demand_sync<=0; else frame_demand_sync<={frame_demand_sync[0],a_frame_ready};
 // WAIT must see algorithm demand, not merely free space in the frame FIFO.
-assign frame_ready=frame_fifo_ready && (frame_valid || frame_demand_sync[1]);
-async_fifo #(.WIDTH(1),.ADDR_BITS(2)) cdc_start(
- .wclk(core_clk),.wrst_n(core_rst_n),.wvalid(start_valid),.wready(start_ready),.wdata(1'b0),
- .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(a_start_valid),.rready(a_start_ready),.rdata(unused_start));
-async_fifo #(.WIDTH(8),.ADDR_BITS(2)) cdc_frame(
- .wclk(core_clk),.wrst_n(core_rst_n),.wvalid(frame_valid),.wready(frame_fifo_ready),.wdata(frame_status),
- .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(a_frame_valid),.rready(a_frame_ready),.rdata(a_frame_status));
+assign frame_ready=frame_fifo_ready && frame_demand_sync[1];
+async_fifo #(.WIDTH(33),.ADDR_BITS(2)) cdc_start(
+ .wclk(core_clk),.wrst_n(core_rst_n),.wvalid(start_valid),.wready(start_ready),.wdata({start_remap,start_base}),
+ .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(a_start_valid),.rready(a_start_ready),.rdata({a_start_remap,a_start_base}));
+async_fifo #(.WIDTH(40),.ADDR_BITS(2)) cdc_frame(
+ .wclk(core_clk),.wrst_n(core_rst_n),.wvalid(frame_valid&&frame_demand_sync[1]),.wready(frame_fifo_ready),.wdata({frame_status,frame_base}),
+ .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(a_frame_valid),.rready(a_frame_ready),.rdata({a_frame_status,a_frame_base}));
 async_fifo #(.WIDTH(1),.ADDR_BITS(2)) cdc_release(
  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(a_release_valid),.wready(a_release_ready),.wdata(1'b0),
  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(release_valid),.rready(release_ready),.rdata(unused_release));
@@ -96,9 +99,25 @@ async_fifo #(.WIDTH(8),.ADDR_BITS(2)) cdc_result(
 async_fifo #(.WIDTH(80),.ADDR_BITS(2)) cdc_read_cmd(
  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(a_rd_valid),.wready(a_rd_ready),.wdata({a_rd_addr,a_rd_len,a_rd_tag}),
  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(rd_valid),.rready(rd_ready),.rdata({rd_addr,rd_len,rd_tag}));
+// Terminate bundled-data CDC at an algorithm-clock register, before any
+// consumer arithmetic. The elastic slot can dequeue/refill in the same cycle
+// and holds the complete beat (including tag/error/last) under backpressure.
+wire read_fifo_valid,read_fifo_ready;
+wire [53:0] read_fifo_data;
+reg read_pending;
+reg [53:0] read_payload;
+assign read_fifo_ready=algorithm_rst_n && (!read_pending || a_r_ready);
+assign a_r_valid=algorithm_rst_n && read_pending;
+assign {a_r_data,a_r_keep,a_r_tag,a_r_last,a_r_error}=read_payload;
+always @(posedge algorithm_clk or negedge algorithm_rst_n)
+ if(!algorithm_rst_n)begin read_pending<=0;read_payload<=0;end
+ else if(read_fifo_ready)begin
+  read_pending<=read_fifo_valid;
+  if(read_fifo_valid)read_payload<=read_fifo_data;
+ end
 async_fifo #(.WIDTH(54),.ADDR_BITS(2)) cdc_read_data(
  .wclk(core_clk),.wrst_n(core_rst_n),.wvalid(r_valid),.wready(r_ready),.wdata({r_data,r_keep,r_tag,r_last,r_error}),
- .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(a_r_valid),.rready(a_r_ready),.rdata({a_r_data,a_r_keep,a_r_tag,a_r_last,a_r_error}));
+ .rclk(algorithm_clk),.rrst_n(algorithm_rst_n),.rvalid(read_fifo_valid),.rready(read_fifo_ready),.rdata(read_fifo_data));
 async_fifo #(.WIDTH(80),.ADDR_BITS(2)) cdc_write_cmd(
  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(a_wr_valid),.wready(a_wr_ready),.wdata({a_wr_addr,a_wr_len,a_wr_tag}),
  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(wr_valid),.rready(wr_ready),.rdata({wr_addr,wr_len,wr_tag}));

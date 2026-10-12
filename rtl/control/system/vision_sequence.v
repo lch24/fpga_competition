@@ -2,10 +2,12 @@
 `include "calib_defs.vh"
 // Serial orchestration only; no numerical algorithm is replaced here.
 // External callers supply ordered frame descriptors, never job/view/index IDs.
-// The last supplied RGB565 frame is retained until remap completes.
-module vision_sequence #(parameter WIDTH=1280,HEIGHT=720)(
+// Manual board mode returns after calibration and retains parameters here.
+// A later start_remap corrects remap_base; default mode chains all stages.
+module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0)(
  input wire clk,rst_n,layout_ok,
  input wire start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
+ input wire start_remap,input wire [31:0] remap_base,
  input wire frame_valid,output wire frame_ready,input wire [31:0] frame_base,frame_stride,frame_capacity,
  input wire [7:0] frame_status,input wire frame_config_ok,
  output wire frame_release_valid,input wire frame_release_ready,
@@ -34,10 +36,12 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720)(
  localparam IDLE=0,COLLECT=1,FRAME=2,GRAY_CMD=3,GRAY_WAIT=4,DET_START=5,
  DET_ARM=6,DET_WAIT=7,VIEW_RSP=8,RELEASE=9,CAL_CMD=10,CAL_WAIT=11,
  BUILD_CMD=12,BUILD_WAIT=13,REMAP_CMD=14,REMAP_WAIT=15,RESPONSE=16;
+ reg params_valid;
  reg [5:0] state;reg held,release_to_frame;reg [8:0] point_count;
  assign start_ready=state==IDLE;assign busy=state!=IDLE;
  assign frame_ready=state==FRAME;assign frame_release_valid=state==RELEASE;
  assign rsp_valid=state==RESPONSE;assign debug_phase=state;
+ // Parameters live in this controller, outside the worker reset domain.
  assign algorithm_rst_n=rst_n&&state!=IDLE;
  assign gray_cmd_valid=state==GRAY_CMD;assign gray_rsp_ready=state==GRAY_WAIT;
  assign det_process=state==DET_START;
@@ -55,14 +59,20 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720)(
  assign remap_rsp_ready=state==BUILD_WAIT||state==REMAP_WAIT;
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin state<=IDLE;job<=0;view_id<=0;src_base<=0;src_stride<=0;src_capacity<=0;
-   square<=0;params<=0;rsp_status<=0;view_status<=0;point_count<=0;held<=0;release_to_frame<=0;end
+   square<=0;params<=0;params_valid<=0;rsp_status<=0;view_status<=0;point_count<=0;held<=0;release_to_frame<=0;end
   else begin
    if(det_valid&&det_ready&&point_count<511)point_count<=point_count+1'b1;
    case(state)
     IDLE:if(start_valid)begin
-     job<=job+1'b1;view_id<=0;square<=square_size_fp64;held<=0;params<=0;rsp_status<=0;
-     if(!layout_ok||square_size_fp64[63]||square_size_fp64[62:0]==0||square_size_fp64[62:52]==2047)
-      begin rsp_status<=1;state<=RESPONSE;end else state<=COLLECT;
+     held<=0;rsp_status<=0;
+     if(MANUAL_CONTROL&&start_remap)begin
+      if(!params_valid)begin rsp_status<=8'h82;state<=RESPONSE;end
+      else begin src_base<=remap_base;src_stride<=2*WIDTH;src_capacity<=2*WIDTH*HEIGHT;state<=BUILD_CMD;end
+     end else begin
+      job<=job+1'b1;view_id<=0;square<=square_size_fp64;params<=0;params_valid<=0;
+      if(!layout_ok||square_size_fp64[63]||square_size_fp64[62:0]==0||square_size_fp64[62:52]==2047)
+       begin rsp_status<=1;state<=RESPONSE;end else state<=COLLECT;
+     end
     end
     COLLECT:if(collect_ready&&mb_begin_ready)state<=FRAME;
     FRAME:if(frame_valid)begin
@@ -101,7 +111,11 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720)(
     CAL_WAIT:if(mb_valid)begin
      if(mb_status!=0||mb_id!=job||mb_width!=WIDTH||mb_height!=HEIGHT)begin
       rsp_status<=mb_status!=0?mb_status:8'd4;release_to_frame<=0;state<=held?RELEASE:RESPONSE;
-     end else begin params<=mb_params;state<=BUILD_CMD;end
+     end else begin
+      params<=mb_params;params_valid<=1;
+      if(MANUAL_CONTROL)begin release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
+      else state<=BUILD_CMD;
+     end
     end
     BUILD_CMD:if(remap_cmd_ready)state<=BUILD_WAIT;
     BUILD_WAIT:if(remap_rsp_valid)begin

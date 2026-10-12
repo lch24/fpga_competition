@@ -6,6 +6,9 @@ reg finished=0;integer captures=0,n;reg cap_rsp_valid=0;
 wire cap_cmd_valid,cap_rsp_ready,capture_owner,display_enable;
 wire cap_cmd_ready=1;
 wire [7:0] status;wire waiting;wire [3:0] phase;
+reg [4:0] pressed=0;wire start_remap,a_start_remap;
+wire [31:0] start_base,a_start_base,frame_base,a_frame_base;
+wire [2:0] captured;wire calibrated,corrected;
 wire a_start_valid;
 wire start_valid;
 reg a_start_ready=0;
@@ -79,7 +82,9 @@ reg [15:0] b_tag=0;
 wire a_b_error;
 reg b_error=0;
 vision_clock_bridge dut(.*);
-board_flow #(.CAPTURE_WAIT_CYCLES(3)) flow(.clk(core_clk),.rst_n(core_rst_n),.camera_ready(1'b1),
+board_flow flow(.clk(core_clk),.rst_n(core_rst_n),.camera_ready(1'b1),.pressed(pressed),.display_idle(1'b1),
+ .start_remap(start_remap),.start_base(start_base),.frame_base(frame_base),
+ .captured(captured),.calibrated(calibrated),.corrected(corrected),
  .start_valid(start_valid),.start_ready(start_ready),.frame_valid(frame_valid),.frame_ready(frame_ready),.frame_status(frame_status),
  .frame_release_valid(release_valid),.frame_release_ready(release_ready),
  .cap_cmd_valid(cap_cmd_valid),.cap_cmd_ready(cap_cmd_ready),.cap_rsp_valid(cap_rsp_valid),.cap_rsp_ready(cap_rsp_ready),.cap_status(8'd0),
@@ -93,20 +98,42 @@ initial forever begin
   @(negedge core_clk);cap_rsp_valid=0;
  end
 end
+task press(input integer key);
+ begin @(negedge core_clk);pressed=1<<key;@(negedge core_clk);pressed=0;end
+endtask
 initial begin
  repeat(5)@(negedge core_clk);core_rst_n=1;
- repeat(3)@(negedge algorithm_clk);algorithm_rst_n=1;a_start_ready=1;
+ repeat(3)@(negedge algorithm_clk);algorithm_rst_n=1;
+ repeat(30)@(negedge core_clk);
+ if(captures!=0||a_start_valid)$fatal(1,"automatic start survived");
+ // Capture in arbitrary order, before algorithm has requested any frames.
+ press(2);wait(captured[2]);press(0);wait(captured[0]);press(1);wait(captured[1]);
+ press(0);wait(waiting);if(captures!=3)$fatal(1,"selection recaptured");
+ press(3);repeat(10)@(negedge algorithm_clk);a_start_ready=1;
+ do @(posedge algorithm_clk);while(!a_start_valid);
+ if(a_start_remap)$fatal(1,"wrong opcode");
+ @(negedge algorithm_clk);a_start_ready=0;
+ // Fail the first detection after releasing its frame. No unused frame may
+ // remain in the CDC FIFO and poison a retry.
+ a_frame_ready=1;
+ do @(posedge algorithm_clk);while(!a_frame_valid);
+ @(negedge algorithm_clk);a_frame_ready=0;
+ repeat(20)@(negedge algorithm_clk);a_release_valid=1;
+ do @(posedge algorithm_clk);while(!a_release_ready);
+ @(negedge algorithm_clk);a_release_valid=0;a_rsp_status=4;a_rsp_valid=1;
+ do @(posedge algorithm_clk);while(!a_rsp_ready);
+ @(negedge algorithm_clk);a_rsp_valid=0;
+ wait(waiting);repeat(20)@(negedge algorithm_clk);
+ if(a_frame_valid||calibrated)$fatal(1,"failure left queued frame");
+ press(3);a_start_ready=1;
  do @(posedge algorithm_clk);while(!a_start_valid);
  @(negedge algorithm_clk);a_start_ready=0;
- for(n=1;n<=3;n=n+1)begin
-  repeat(20)@(negedge algorithm_clk);
-  if(captures!=n-1)$fatal(1,"capture without algorithm frame demand");
-  a_frame_ready=1;
+ for(n=0;n<3;n=n+1)begin
+  repeat(20)@(negedge algorithm_clk);a_frame_ready=1;
   do @(posedge algorithm_clk);while(!a_frame_valid);
-  if(a_frame_status!=0)$fatal(1,"frame status corrupted");
+  if(a_frame_status!=0||a_frame_base!=n*32'h00200000)$fatal(1,"frame descriptor corrupted");
   @(negedge algorithm_clk);a_frame_ready=0;
   repeat(20)@(negedge algorithm_clk);
-  if(captures!=n)$fatal(1,"lease failed: unexpected capture");
   a_release_valid=1;
   do @(posedge algorithm_clk);while(!a_release_ready);
   @(negedge algorithm_clk);a_release_valid=0;
@@ -114,9 +141,17 @@ initial begin
  a_rsp_status=0;a_rsp_valid=1;
  do @(posedge algorithm_clk);while(!a_rsp_ready);
  @(negedge algorithm_clk);a_rsp_valid=0;
- wait(display_enable);repeat(20)@(negedge core_clk);
- if(captures!=3 || capture_owner || status!=0)$fatal(1,"ownership handoff failed");
- finished=1;$display("PASS board flow CDC: three leases, demand gating, display handoff");$finish;
+ wait(calibrated);wait(waiting);press(4);
+ a_start_ready=1;
+ do @(posedge algorithm_clk);while(!a_start_valid);
+ if(!a_start_remap||a_start_base!=0)$fatal(1,"remap selected descriptor");
+ @(negedge algorithm_clk);a_start_ready=0;
+ repeat(20)@(negedge algorithm_clk);a_rsp_valid=1;
+ do @(posedge algorithm_clk);while(!a_rsp_ready);
+ @(negedge algorithm_clk);a_rsp_valid=0;
+ wait(corrected);repeat(20)@(negedge core_clk);
+ if(captures!=3||!display_enable||capture_owner||status!=0)$fatal(1,"ownership handoff failed");
+ finished=1;$display("PASS board flow CDC: manual slots, ordered leases, separate calibration/remap");$finish;
 end
 initial begin #100000;$fatal(1,"flow timeout");end
 endmodule

@@ -3,7 +3,8 @@
 FP32/FP64除法和平方根的逐拍算术核，供fp_operator独占调用。
 NORMALIZE每拍左移一位处理非规格化数；DIV_STEP每拍产生一位商，
 SQRT_STEP每拍带入两位被开方数并产生一位根，均只有一次比较/减法。
-最后独立PACK状态进行规格化/最近偶数舍入，余数非零形成sticky。
+最后PACK逐拍规格化、ROUND最近偶数舍入，余数非零形成sticky。
+尾数通路仅F+5位；正常数收尾2或3拍，非规格化结果逐拍右移。
 正常除法F+5轮，开方F+4轮；非规格化输入最多增加F轮归一化。
 不含组合整数除法、求余或展开的开方迭代；特殊值可提前返回。
 valid/ready一次一事务；返回背压保持，复位取消在途请求。
@@ -22,19 +23,18 @@ module fp_divsqrt #(parameter FP_W=64, USE_CE=0) (
     output reg [FP_W-1:0] rsp_result,
     output reg [4:0] rsp_flags
 );
-    `include "fp_bits.vh"
     localparam F=(FP_W==32)?23:52;
     localparam BIAS=(FP_W==32)?127:1023;
     localparam E=FP_W-F-1;
     localparam RW=2*(F+4);
     localparam [FP_W-1:0] INF_BITS=({FP_W{1'b1}} >> (F+1)) << F;
     localparam [FP_W-1:0] NAN_BITS=INF_BITS | ({{(FP_W-1){1'b0}},1'b1} << (F-1));
-    localparam IDLE=0,NORMALIZE=1,PREPARE=2,DIV_STEP=3,SQRT_STEP=4,PACK=5,RESPONSE=6;
+    localparam IDLE=0,NORMALIZE=1,PREPARE=2,DIV_STEP=3,SQRT_STEP=4,PACK=5,RESPONSE=6,ROUND=7;
     reg [2:0] state;
     reg sqrt_mode,result_sign;
     reg [F:0] sig_a,sig_b;
     reg signed [12:0] exp_a,exp_b;
-    integer pack_exp;
+    reg signed [12:0] pack_exp;
     reg [F+5:0] remainder_q,denominator;
     reg [F+4:0] digits;
     reg [RW-1:0] radicand;
@@ -42,10 +42,14 @@ module fp_divsqrt #(parameter FP_W=64, USE_CE=0) (
     reg sticky;
     wire [F+5:0] sqrt_bring=(remainder_q<<2) | {{(F+4){1'b0}},radicand[RW-1:RW-2]};
     wire [F+5:0] sqrt_trial=({1'b0,digits}<<2) | {{(F+5){1'b0}},1'b1};
-    wire div_take=(remainder_q>=denominator);
-    wire [F+5:0] div_rest=div_take?(remainder_q-denominator):remainder_q;
-    wire sqrt_take=(sqrt_bring>=sqrt_trial);
-    wire [F+5:0] sqrt_rest=sqrt_take?(sqrt_bring-sqrt_trial):sqrt_bring;
+    // DIV and SQRT are mutually exclusive for an entire transaction. Share
+    // one subtractor; its extra bit provides unsigned borrow, replacing both
+    // separate comparisons and both mode-specific subtraction datapaths.
+    wire [F+5:0] step_lhs=sqrt_mode?sqrt_bring:remainder_q;
+    wire [F+5:0] step_rhs=sqrt_mode?sqrt_trial:denominator;
+    wire [F+6:0] step_difference={1'b0,step_lhs}-{1'b0,step_rhs};
+    wire step_take=!step_difference[F+6];
+    wire [F+5:0] step_rest=step_take?step_difference[F+5:0]:step_lhs;
     wire [E-1:0] field_a=req_a[FP_W-2:F],field_b=req_b[FP_W-2:F];
     wire nan_a=(&field_a) && (|req_a[F-1:0]);
     wire nan_b=(&field_b) && (|req_b[F-1:0]);
@@ -55,8 +59,15 @@ module fp_divsqrt #(parameter FP_W=64, USE_CE=0) (
     wire zero_a=!(|req_a[FP_W-2:0]),zero_b=!(|req_b[FP_W-2:0]);
     wire sign_a=req_a[FP_W-1],sign_b=req_b[FP_W-1];
     wire [FP_W-1:0] div_sign_bits={(sign_a^sign_b),{(FP_W-1){1'b0}}};
-    reg [68:0] packed_value;
-    reg [255:0] pack_magnitude;
+    // Hidden bit at F+3, followed by guard/round/sticky bits. The digit
+    // generator already guarantees this position or one bit above it.
+    // Gradual underflow reuses the digit register and shifts one bit/cycle.
+    wire lost=(|digits[2:0]) || sticky;
+    wire [F+1:0] rounded={1'b0,digits[F+3:3]} +
+        {{(F+1){1'b0}},(digits[2] && (digits[1] || digits[0] || sticky || digits[3]))};
+    wire [F:0] rounded_sig=rounded[F+1]?rounded[F+1:1]:rounded[F:0];
+    wire signed [12:0] final_exp=pack_exp+(rounded[F+1]?13'sd1:13'sd0);
+    wire [12:0] biased_exp=final_exp+BIAS;
 
     assign req_ready=rst_n && state==IDLE;
     assign rsp_valid=rst_n && state==RESPONSE;
@@ -103,36 +114,48 @@ module fp_divsqrt #(parameter FP_W=64, USE_CE=0) (
                 // e调整到偶数；移位及除2只作用于小位宽整数指数。
                 if(exp_a[0])begin
                     radicand<=({{(RW-F-1){1'b0}},sig_a}<<(F+7));
-                    pack_exp<=(($signed(exp_a)-1)>>>1)-F-3;
+                    pack_exp<=(($signed(exp_a)-1)>>>1);
                 end else begin
                     radicand<=({{(RW-F-1){1'b0}},sig_a}<<(F+6));
-                    pack_exp<=($signed(exp_a)>>>1)-F-3;
+                    pack_exp<=($signed(exp_a)>>>1);
                 end
                 steps_left<=F+4;state<=SQRT_STEP;
             end else begin
                 remainder_q<=sig_a;denominator<=sig_b;
-                pack_exp<=$signed(exp_a)-$signed(exp_b)-F-4;
+                pack_exp<=$signed(exp_a)-$signed(exp_b)-13'sd1;
                 steps_left<=F+5;state<=DIV_STEP;
             end
         end
         DIV_STEP:begin
-            digits<=(digits<<1)|div_take;
+            digits<=(digits<<1)|step_take;
             if(steps_left==1)begin
-                remainder_q<=div_rest;sticky<=|div_rest;state<=PACK;
+                remainder_q<=step_rest;sticky<=|step_rest;state<=PACK;
             end else begin
-                remainder_q<=div_rest<<1;steps_left<=steps_left-1'b1;
+                remainder_q<=step_rest<<1;steps_left<=steps_left-1'b1;
             end
         end
         SQRT_STEP:begin
-            digits<=(digits<<1)|sqrt_take;
-            remainder_q<=sqrt_rest;radicand<=radicand<<2;
-            if(steps_left==1)begin sticky<=|sqrt_rest;state<=PACK;end
+            digits<=(digits<<1)|step_take;
+            remainder_q<=step_rest;radicand<=radicand<<2;
+            if(steps_left==1)begin sticky<=|step_rest;state<=PACK;end
             else steps_left<=steps_left-1'b1;
         end
         PACK:begin
-            pack_magnitude=0;pack_magnitude[F+4:0]=digits;
-            packed_value=fp_pack(result_sign,pack_magnitude,pack_exp,sticky,FP_W);
-            rsp_result<=packed_value[FP_W-1:0];rsp_flags<=packed_value[68:64];state<=RESPONSE;
+            if(pack_exp < (1-BIAS)-(F+5))begin
+                // Everything is below half an ulp of the smallest subnormal.
+                sticky<=sticky || (|digits);digits<=0;pack_exp<=1-BIAS;state<=ROUND;
+            end else if(digits[F+4] || pack_exp < 1-BIAS)begin
+                sticky<=sticky || digits[0];digits<=digits>>1;pack_exp<=pack_exp+13'sd1;
+            end else state<=ROUND;
+        end
+        ROUND:begin
+            if(final_exp>BIAS)begin
+                rsp_result<={result_sign,INF_BITS[FP_W-2:0]};rsp_flags<=5'b10100;
+            end else begin
+                rsp_result<={result_sign,(rounded_sig[F]?biased_exp[E-1:0]:{E{1'b0}}),rounded_sig[F-1:0]};
+                rsp_flags<={lost,(lost && !rounded_sig[F]),3'b000};
+            end
+            state<=RESPONSE;
         end
         RESPONSE:if(rsp_ready)state<=IDLE;
         default:state<=IDLE;

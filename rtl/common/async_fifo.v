@@ -4,7 +4,8 @@
 // Gray-bus skew/delay and final synchronizer placement still need timing review.
 module async_fifo #(parameter WIDTH=16,ADDR_BITS=8)(
  input wire wclk,wrst_n,wvalid,output wire wready,input wire [WIDTH-1:0] wdata,
- input wire rclk,rrst_n,output wire rvalid,input wire rready,output wire [WIDTH-1:0] rdata
+ input wire rclk,rrst_n,output wire rvalid,input wire rready,output wire [WIDTH-1:0] rdata,
+ output wire [ADDR_BITS:0] wlevel
 );
  localparam DEPTH=1<<ADDR_BITS;
  reg [WIDTH-1:0] mem[0:DEPTH-1];
@@ -14,6 +15,9 @@ module async_fifo #(parameter WIDTH=16,ADDR_BITS=8)(
  wire [ADDR_BITS:0] rn=rb+{{ADDR_BITS{1'b0}},rvalid&&rready};
  wire [ADDR_BITS:0] wgn=(wn>>1)^wn,rgn=(rn>>1)^rn;
  wire full=wg=={~rg2[ADDR_BITS:ADDR_BITS-1],rg2[ADDR_BITS-2:0]};
+ reg [ADDR_BITS:0] read_binary;integer bi;
+ always @*begin read_binary[ADDR_BITS]=rg2[ADDR_BITS];for(bi=ADDR_BITS-1;bi>=0;bi=bi-1)read_binary[bi]=read_binary[bi+1]^rg2[bi];end
+ assign wlevel=wb-read_binary;
  assign wready=!full;assign rvalid=rg!=wg2;assign rdata=mem[rb[ADDR_BITS-1:0]];
  always @(posedge wclk or negedge wrst_n)begin
   if(!wrst_n)begin wb<=0;wg<=0;rg1<=0;rg2<=0;end

@@ -3,6 +3,7 @@ module tb_board_display_switch;
  reg clk=0,rst_n=0,enable=0,finished=0,pixel_ready=1,axi_arready=0,axi_rvalid=0,axi_rlast=0;
  reg [31:0] frame_base=0;reg [255:0] axi_rdata=0;
  wire idle,pixel_valid,pixel_first,pixel_last,error,axi_arvalid;
+ wire frame_start;
  wire [15:0] pixel;wire [27:0] axi_araddr;wire [3:0] axi_arlen,axi_aruser_id;
  reg [3:0] axi_rid=0;
  integer pending=0,base=0,beat=0,i,checked=0,expected_base=0,index=0;

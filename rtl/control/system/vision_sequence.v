@@ -4,7 +4,7 @@
 // External callers supply ordered frame descriptors, never job/view/index IDs.
 // Manual board mode returns after calibration and retains parameters here.
 // A later start_remap corrects remap_base; default mode chains all stages.
-module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0)(
+module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_ONLY=0)(
  input wire clk,rst_n,layout_ok,
  input wire start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
  input wire start_remap,input wire [31:0] remap_base,
@@ -120,6 +120,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0)(
     BUILD_CMD:if(remap_cmd_ready)state<=BUILD_WAIT;
     BUILD_WAIT:if(remap_rsp_valid)begin
      if(remap_status!=0)begin rsp_status<=remap_status;release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
+     else if(BUILD_ONLY)begin release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
      else state<=REMAP_CMD;
     end
     REMAP_CMD:if(remap_cmd_ready)state<=REMAP_WAIT;

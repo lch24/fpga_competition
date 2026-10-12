@@ -1,4 +1,5 @@
 +incdir+rtl/include
+rtl/common/async_bram_fifo.v
 rtl/common/async_fifo.v
 rtl/common/dual_port_ram.v
 rtl/common/reset_sync.v
@@ -24,6 +25,7 @@ rtl/compute/float/stream/fp64_sub.v
 rtl/compute/float/stream/s32_to_f32.v
 rtl/compute/geometry/brown_distort.v
 rtl/compute/geometry/geometry_engine.v
+rtl/compute/geometry/packed_map_builder.v
 rtl/compute/geometry/project_point.v
 rtl/compute/geometry/residual_engine.v
 rtl/compute/geometry/rotation.v
@@ -52,7 +54,12 @@ rtl/control/frame/frame_manager.v
 rtl/control/frame/undistort_top.v
 rtl/control/system/board_buttons.v
 rtl/control/system/board_flow.v
+rtl/control/system/video_board_flow.v
 rtl/control/system/vision_sequence.v
+rtl/debug/algorithm_debug.v
+rtl/debug/board_debug.v
+rtl/debug/core_debug.v
+rtl/debug/debug_snapshot.v
 rtl/image/features/candidate_filter_ctrl.sv
 rtl/image/features/candidate_merge.sv
 rtl/image/features/candidate_store.sv
@@ -79,6 +86,7 @@ rtl/image/kernels/sobel_core.v
 rtl/image/kernels/tensor_core.v
 rtl/image/kernels/tensor_solve.v
 rtl/image/kernels/tensor_window_sum.v
+rtl/image/kernels/video_bilinear_pipe.v
 rtl/image/kernels/window3x3.v
 rtl/image/remap/map_build_ctrl.v
 rtl/image/remap/map_coord_core.v
@@ -86,9 +94,14 @@ rtl/image/remap/map_reader.v
 rtl/image/remap/map_table_writer.v
 rtl/image/remap/neighbor_fetch.v
 rtl/image/remap/output_writer.v
+rtl/image/remap/realtime_remap.v
 rtl/image/remap/sample_coord.v
+rtl/image/remap/video_map_prefetch.v
+rtl/image/remap/video_neighbor_cache.v
+rtl/io/uart/debug_uart.v
 rtl/memory/ddr/ddr_service.v
 rtl/memory/ddr/hmic_ddr_adapter.v
+rtl/memory/ddr/video_hmic_arbiter.v
 rtl/memory/ddr/vision_clock_bridge.v
 rtl/memory/image/byte_packer.v
 rtl/memory/image/ddr_port_adapter.v
@@ -107,10 +120,7 @@ rtl/video/dma/board_capture_hmic.v
 rtl/video/dma/board_display_hmic.v
 rtl/video/dma/capture_dma.v
 rtl/video/dma/display_dma.v
+rtl/video/dma/video_capture_hmic.v
+rtl/video/dma/video_frame_writer.v
 rtl/video/stream/hdmi_pixel_bridge.v
 rtl/video/stream/rgb565_format.v
-rtl/io/uart/debug_uart.v
-rtl/debug/debug_snapshot.v
-rtl/debug/algorithm_debug.v
-rtl/debug/core_debug.v
-rtl/debug/board_debug.v

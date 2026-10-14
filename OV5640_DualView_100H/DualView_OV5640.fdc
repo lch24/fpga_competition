@@ -748,6 +748,24 @@ create_generated_clock -name {cam2_i2c_clk} -source [get_pins {u_pll/u_gpll:CLKO
 # Verify against the camera module oscillator/register settings and measurement.
 create_clock -name {cmos1_pclk} [get_ports {cmos1_pclk}] -period 10.000 -waveform {0.000 5.000}
 create_clock -name {cmos2_pclk} [get_ports {cmos2_pclk}] -period 10.000 -waveform {0.000 5.000}
+# DVP source-synchronous inputs. These were previously UNCONSTRAINED (reported
+# as "not constrained, treated as combinational input"), so the tool never
+# checked the board pin-to-first-FF path of the byte unpacker. Budget: <=3 ns
+# board+pin skew, and a hold budget that leaves the tool no free margin (see -min
+# below). NOTE: cmos*_pclk period above is still the PROVISIONAL 100 MHz
+# assumption.
+set_input_delay -clock {cmos1_pclk} -max 3.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
+set_input_delay -clock {cmos1_pclk} -min 0.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
+set_input_delay -clock {cmos2_pclk} -max 3.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
+# -min is deliberately the pessimistic source-synchronous extreme: the sensor may
+# change data on the same instant as the launched pclk edge. With -min 0.5 the
+# tool assumed the data arrived late enough that hold was free and left only
+# 0.041 ns of margin (route delay == clock path); that near-zero margin lets the
+# sampled HREF width tip by one pclk on a boot-dependent fraction of lines, which
+# orphans one DVP byte and loses one pixel per affected line. At -min 0.0 the
+# placer/router is forced to actually hold-fix: place the input FF nearer the IOB
+# or lengthen the data path.
+set_input_delay -clock {cmos2_pclk} -min 0.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
 # Realtime camera/HDMI FIFOs: do NOT globally false-path camera <-> DDR or
 # pixel <-> DDR. That would hide the Gray-pointer bit-skew requirement.
 # A <=8ns datapath bound is shorter than either endpoint period (camera PCLK
@@ -767,6 +785,14 @@ set_max_delay -datapath_only 8.0 -from [get_clocks {cmos1_pclk cmos2_pclk}] -to 
 set_max_delay -datapath_only 8.0 -from [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c_clk cam2_i2c_clk}] -to [get_clocks {cmos1_pclk cmos2_pclk}]
 set_false_path -hold -from [get_clocks {cmos1_pclk cmos2_pclk}] -to [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c_clk cam2_i2c_clk}]
 set_false_path -hold -from [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c_clk cam2_i2c_clk}] -to [get_clocks {cmos1_pclk cmos2_pclk}]
+# The 10 kHz I2C register-config clocks are a /2400 division of clk_25M, so the
+# tool would otherwise time them as synchronous against the fast board clocks and
+# report a meaningless multi-nanosecond path between two unrelated logical
+# periods. The only signals leaving that domain are the two reg_conf_done flags,
+# which are consumed by a proper PAP_ASYNC_REG synchronizer (ready_sync) and by
+# the debug health word, so this crossing is a CDC rather than a timed path.
+set_false_path -from [get_clocks {cam1_i2c_clk cam2_i2c_clk}] -to [get_clocks {sys_clk pix_clk cfg_clk clk_25M}]
+set_false_path -from [get_clocks {sys_clk pix_clk cfg_clk clk_25M}] -to [get_clocks {cam1_i2c_clk cam2_i2c_clk}]
 ###==== END "Generated Clocks"
 
 ###==== BEGIN "Inputs/Outpusts"

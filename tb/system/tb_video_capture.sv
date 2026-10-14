@@ -9,7 +9,7 @@ module tb_video_capture;
  wire aq=!busy&&!complete&&!block_ddr&&cycle%5!=0,wr=busy&&!block_ddr&&cycle%3!=0;
  reg [15:0] memory[0:2047];integer i,responses=0;reg [7:0] results[0:7];reg [31:0] bases[0:7];
  video_capture_hmic #(.WIDTH(W),.HEIGHT(H),.FIFO_BITS(4)) dut(
-  .clk(clk),.rst_n(rst),.pclk(pclk),.prst_n(rst),.vsync(vs),.pixel_valid(pv),.pixel(pixel),
+  .clk(clk),.rst_n(rst),.pclk(pclk),.prst_n(rst),.vsync(vs),.pixel_valid(pv),.pixel(pixel),.line_short(6'd0),
   .cmd_valid(cmd),.cmd_ready(ready),.cmd_base(base),.rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.rsp_base(rsp_base),.skipped_frames(skipped),
   .axi_awaddr(addr),.axi_awlen(len),.axi_awuser_id(id),.axi_awvalid(av),.axi_awready(aq),
   .axi_wdata(data),.axi_wstrb(strb),.axi_wready(wr),.axi_wusero_last(complete),.axi_wusero_id(4'b0));
@@ -40,9 +40,9 @@ module tb_video_capture;
   for(i=0;i<N;i=i+1)if(memory[i]!==16'(i)||memory[N+i]!==16'(1000+i)||memory[2*N+i]!==16'(2000+i))$fatal(1,"capture packing %0d",i);
   // Full data FIFO still reserves START/END markers; overflow cannot hang stop.
   descriptor(1536);repeat(10)@(negedge pclk);block_ddr=1;
-  boundary;pixels(N,3000);boundary;block_ddr=0;wait(responses==4);#1;if(results[3]!=3)$fatal(1,"overflow accepted");
+  boundary;pixels(N,3000);boundary;block_ddr=0;wait(responses==4);#1;if(results[3]!=8'h85)$fatal(1,"overflow accepted");
   descriptor(0);repeat(10)@(negedge pclk);boundary;pixels(N-16,4000);boundary;
-  wait(responses==5);#1;if(results[4]!=3)$fatal(1,"short frame accepted");
+  wait(responses==5);#1;if(results[4]!=8'h81)$fatal(1,"short frame accepted");
   descriptor(0);repeat(10)@(negedge pclk);boundary;pixels(N,5000);boundary;
   wait(responses==6);#1;if(results[5]!=0)$fatal(1,"recovery failed");
   for(i=0;i<N;i=i+1)if(memory[i]!==16'(5000+i))$fatal(1,"recovery pixels");

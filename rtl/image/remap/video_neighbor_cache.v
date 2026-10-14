@@ -70,11 +70,18 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin state<=IDLE;second<=0;fill_odd<=0;base<=0;a0<=0;a1<=0;desc<=0;p0<=0;p1<=0;p2<=0;p3<=0;ve<=0;vo<=0;fill_address<=0;fill_beat<=0;error<=0;end
   else if(start)begin state<=IDLE;second<=0;base<=src_base;ve<=0;vo<=0;error<=0;end
-  else case(state)
+  else begin
+   // Sample both neighbor pixels on every cycle instead of gating them with a
+   // clock enable. The held sample is only read back while second==1, and
+   // second is only set together with the crossing transition, so the enable
+   // was redundant. Removing it takes the hit/address compare cone off the
+   // p0..p3 enable path (the worst 125 MHz setup path).
+   p0<=v00;p1<=v10;p2<=v01;p3<=v11;
+   case(state)
    IDLE:if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;state<=CHECK;end
    CHECK,CROSS_CHECK:begin
     if(!hit_e||!hit_o)begin fill_odd<=hit_e;fill_address<=hit_e?odd_address:even_address;state<=REQUEST;end
-    else if(crossing&&!second)begin p0<=v00;p1<=v10;p2<=v01;p3<=v11;second<=1;state<=CROSS_READ;end
+    else if(crossing&&!second)begin second<=1;state<=CROSS_READ;end
     else if(out_ready)state<=IDLE;
    end
    CROSS_READ:state<=CROSS_CHECK;
@@ -87,5 +94,6 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
    RETRY:state<=second?CROSS_CHECK:CHECK;
    default:state<=IDLE;
   endcase
+  end
  end
 endmodule

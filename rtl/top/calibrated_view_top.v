@@ -258,13 +258,13 @@ board_flow flow(
  .status(status),.waiting(waiting),.phase(phase),.captured(captured),.calibrated(calibrated),
  .corrected(corrected),.selected(selected),.busy(ui_busy));
 end endgenerate
-wire cam_pixel_valid;wire [15:0] cam_pixel;
-camera_byte_unpack unpack(.pclk(cam_clk),.rst_n(camera_rst_n),.vsync(cam_vs),.href(cam_href),.data(cam_data),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel));
+wire cam_pixel_valid;wire [15:0] cam_pixel;wire [5:0] cam_line_bad;
+camera_byte_unpack #(.WIDTH(WIDTH)) unpack(.pclk(cam_clk),.rst_n(camera_rst_n),.vsync(cam_vs),.href(cam_href),.data(cam_data),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel),.line_bad(cam_line_bad));
 wire [27:0] cap_awaddr;wire [3:0] cap_awlen,cap_awid;wire cap_awvalid;
 wire [255:0] cap_wdata;wire [31:0] cap_wstrb;
 generate if(REALTIME_VIDEO)begin : g_video_capture
 video_capture_hmic #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) capture(
- .clk(core_clk),.rst_n(core_rst_n),.pclk(cam_clk),.prst_n(camera_rst_n),.vsync(cam_vs),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel),
+ .clk(core_clk),.rst_n(core_rst_n),.pclk(cam_clk),.prst_n(camera_rst_n),.vsync(cam_vs),.pixel_valid(cam_pixel_valid),.pixel(cam_pixel),.line_short(cam_line_bad),
  .cmd_valid(cap_cmd_valid),.cmd_ready(cap_cmd_ready),.cmd_base(cap_base),.rsp_valid(cap_rsp_valid),.rsp_ready(cap_rsp_ready),.rsp_status(cap_status),.rsp_base(cap_rsp_base),.skipped_frames(skipped_frames),
  .axi_awaddr(cap_awaddr),.axi_awlen(cap_awlen),.axi_awuser_id(cap_awid),.axi_awvalid(cap_awvalid),.axi_awready(native_awready[0]),
  .axi_wdata(cap_wdata),.axi_wstrb(cap_wstrb),.axi_wready(native_wready[0]),.axi_wusero_last(native_wdone[0]),.axi_wusero_id(axi_wusero_id));

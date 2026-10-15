@@ -36,6 +36,14 @@
 
 本地证据：`prj_tasks/syn_1/synthesize/calibrated_view_top.snr`、`prj_tasks/pnr_1/place_route/calibrated_view_top.ror`、`prj_tasks/pnr_1/report_timing/calibrated_view_top.rtr`（均在 `OV5640_DualView_100H` 内）。生成报告/工作数据库不提交 Git；本节记录可供队员交接的摘要。
 
+### 2026-10-15 复核（提交版 RTL，仅综合）
+
+在本机对**已提交**的 RTL 重跑 `compile + synthesize`：综合 LUT 60,008 / 66,600（90.10%），LUT-as-dram 2,543，DRM 102，APM 70，寄存器 52,422。比 2026-10-12 那次**少 302 LUT**，说明最后一批 RTL 改动是净减少。**限制资源仍是布局后的物理 LUT 与 CLMA/CLMS（接近 100%），不是综合余量**；任何新增逻辑都必须重新做完布局再判断。
+
+顺带否掉了原计划的"大 mux / LUTRAM 转 BRAM"：
+- `display(board_display_hmic)` 实测只有 **337 LUT、58 FF、128 个 LUT-as-dram**。它那个 16×256 位行缓冲已经被综合器推断成分布式 RAM，并没有落成 4096 个寄存器加大 mux；改成 BRAM 只会多一个读时拍和 DRM，没有收益。
+- `bridge(hdmi_pixel_bridge)` 是 784 LUT（其中 576 为 LUT-as-dram），而且**它就是全部 2,543 个 LUT-as-dram 中占比最大又最容易动的一块**。但它的 FIFO 是**异步读（II=1，每个 pclk 出一个像素）**；换成 `async_bram_fifo` 的同步读（II=2）会把显示取像素速率直接减半，720p 每行 1280 个 DE 周期只能取 640 个像素。要省这 784 LUT 就得改成"两像素打包成一字 + 配对对齐"，会有像素配对错位的静默风险，收益约 1.2%，**不值得做**。结论：视频通路上目前没有安全可省的大块资源，后续要加逻辑只能从算法域（`vision_ddr_top` 占 48,800 LUT）里腾，或者先做完布局再决定。
+
 ## 与旧架构的差别
 
 | 项目 | 旧照片版 | 默认实时版 |
@@ -117,9 +125,18 @@ HMIC **没有 RREADY 和 WVALID**。客户必须存下已经接受的整个读�
 4. 若仍超额，进一步共享离线建表的浮点后端或优化原标定/检测大头；不是再并联新采样器。缓存只在 BRAM 紧张时考虑减少 `CACHE_INDEX_BITS`，较小缓存可能显著降低帧率，需重新测量。
 5. 查 125 MHz 新数据通路与旧 DDR 路径时序，40 MHz 标定路径、FIFO CDC、恢复时间和 PHY 约束。FDC 移除了 camera/HDMI↔DDR 的全局 false-path，改为 8 ns datapath bound，保留异步 hold cut；Gray 指针和跳帧 Gray 计数必须逐位满足该界。新约束可能暴露原被隐藏的路径，这是待签核项，不能用全局 false-path 掩盖。
 
-125 MHz 下 30 fps 要每帧校正耗时不超过约 **4,166,667 个周期 / 33.33 ms**，平均 ≤4.52 周期/像素，还需摄像头源帧率与显示接收速率足够。cache 普通 hit II=2，跨 16 像素 beat 边界要额外查一次，miss 会阻塞，**不是任意畸变参数都保证 30 fps**。
+30 fps 要每帧不超过约 **4,166,667 个周期 / 33.33 ms**，平均 ≤4.52 周期/像素，还需摄像头源帧率与显示接收速率足够。cache 普通 hit II=2，跨 16 像素 beat 边界要额外查一次，miss 会阻塞。
 
-定向 128×40 RTL 测试（缩小 cache、读写/地址停顿、并发假显示与假采集）中：顺序小数采样约 13.3k 周期/5120 像素，随机散点约 114k 周期。只说明局部性影响及仿真吞吐，不能外推随机坐标到 720p30，也不能替代真实参数和真实 HMIC 的测量。每帧基础流量：地图 7.37 MB + 源缓存填充 + 捕获写 1.84 MB + 校正写 1.84 MB + 显示读 1.84 MB；源读按 miss 率变化，不能只按“四个像素”算 DDR 带宽。
+`tb_realtime_fullframe` 用**真实 cache（64 线/组，`CACHE_INDEX_BITS=6`）**、按 1280×720 整帧比例取 1280×192 条带、warp 由等距鱼眼模型生成，逐像素比对邻居和插值结果：
+
+| 场景 | 周期/像素 | 结论 |
+|---|---|---|
+| `f_raw=f_out=560`，端侧压缩 warp（输出行 0～191） | **3.146** | 通过，全部像素正确 |
+| `f_raw=560,f_out=300`，中心 1.9× 拉伸 warp（输出行 264～455） | **3.014** | 通过，全部像素正确 |
+
+折算整帧约 2.8M 周期（22 ms），**余量约 1.5×**。也就是说**鱼眼量级的畸变参数不构成 30 fps 瓶颈**：真实反畸变地图是单调平滑 warp，早先"随机散点 114k 周期/5120 像素"是刻意构造的最坏情形，不代表可达的畸变。注意该测试的 DDR 仍是 tb 内的仲裁模型（读写各一 outstanding、显示优先、循环公平），不是真实 HMIC。
+
+每帧基础流量：地图 7.37 MB + 源缓存填充 + 捕获写 1.84 MB + 校正写 1.84 MB + 显示读 1.84 MB；源读按 miss 率变化，不能只按“四个像素”算 DDR 带宽。
 
 ## 编译、针对性检查与下一位验证
 
@@ -132,12 +149,12 @@ powershell -ExecutionPolicy Bypass -File scripts/build/configure_pds.ps1 -PdsBin
 # 建议从 build/system 工作目录执行，PDS 的自动 shell 工程落在忽略目录
 & <pds_shell.exe> -file <仓库绝对路径>/scripts/build/compile_realtime.tcl
 
-# 定向检查；IVERILOG_BIN 为含 iverilog.exe 和 vvp.exe 的目录
-powershell -ExecutionPolicy Bypass -File scripts/system/run_realtime_checks.ps1 -IcarusBin <工具目录>
+# 定向检查；自动选用 PATH 上的 iverilog，否则用 vsim；也可显式指定工具目录
+powershell -ExecutionPolicy Bypass -File scripts/system/run_realtime_checks.ps1 [-IcarusBin <目录> | -ModelSimBin <目录>]
 python scripts/debug/uart_monitor.py --self-test
 ```
 
-定向检查包含 packed-map 单发/格式/错误写回、连续三帧采集、短帧/溢出排空与恢复、frame lease/停止重启、随机整数/小数/负边界/beat 与 cacheline 跨界、跨帧缓存 invalidation、原生仲裁停顿及错误帧排空，同时回归旧显示切换、旧手动算法命令和 UART 页选择。没有重跑全部标定数值回归，也不模拟厂商 DDR PHY、电气、物理 CDC 或真实 720p30。
+定向检查包含 packed-map 单发/格式/错误写回、连续三帧采集、短帧/溢出排空与恢复、frame lease/停止重启、随机整数/小数/负边界/beat 与 cacheline 跨界、跨帧缓存 invalidation、原生仲裁停顿及错误帧排空、1280×192 条带的鱼眼 warp 整帧比例吞吐，同时回归旧显示切换、旧手动算法命令和 UART 页选择。没有重跑全部标定数值回归，也不模拟厂商 DDR PHY、电气或物理 CDC；吞吐用的是 tb 内的 DDR 仲裁模型，不是真实 HMIC。
 
 资源能过后交给下一位：
 

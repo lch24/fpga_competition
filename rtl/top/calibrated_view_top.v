@@ -207,6 +207,17 @@ wire [255:0] axi_wdata,alg_wdata;
 wire [31:0] axi_wstrb,alg_wstrb;
 wire axi_awready,axi_wready,axi_wusero_last,axi_arready,axi_rvalid,axi_rlast;
 wire [3:0] axi_wusero_id,axi_rid;wire [255:0] axi_rdata;
+// Every client takes the 256-bit read data bus and the last/id qualifiers
+// straight from the PHY; only the select valid travels through the arbiter.
+// That makes the PHY's read-valid register fan out combinationally to every
+// client RAM write/clock enable, which is the remaining 125 MHz setup violation
+// group. Hold one response beat here, once, and feed the arbiter and all
+// clients from the same flop group, so valid/data/last/id stay aligned while
+// every consumer path starts at a local register.
+reg [255:0] rdata_q;reg rvalid_q,rlast_q;reg [3:0] rid_q;
+always @(posedge core_clk or negedge core_rst_n)
+ if(!core_rst_n)begin rdata_q<=0;rvalid_q<=0;rlast_q<=0;rid_q<=0;end
+ else begin rdata_q<=axi_rdata;rvalid_q<=axi_rvalid;rlast_q<=axi_rlast;rid_q<=axi_rid;end
 wire start_valid,start_ready,frame_ready,frame_valid,release_valid,release_ready;
 wire cap_cmd_valid,cap_cmd_ready,cap_rsp_valid,cap_rsp_ready,capture_owner,display_enable;
 wire rsp_valid,rsp_ready,waiting;wire [7:0] cap_status,frame_status,rsp_status,status;
@@ -467,19 +478,19 @@ hmic_ddr_adapter adapter(.clk(core_clk),.rst_n(core_rst_n),.ddr_ready(ddr_init_d
  .axi_wstrb(alg_wstrb),
  .axi_awready(native_awready[1]),.axi_arready(native_arready[0]),
  .axi_wready(native_wready[1]),.axi_wusero_last(native_wdone[1]),.axi_wusero_id(axi_wusero_id),
- .axi_rdata(axi_rdata),.axi_rvalid(native_rvalid[0]),.axi_rlast(axi_rlast),.axi_rid(axi_rid));
+ .axi_rdata(rdata_q),.axi_rvalid(native_rvalid[0]),.axi_rlast(rlast_q),.axi_rid(rid_q));
 wire [27:0] disp_araddr;wire [3:0] disp_arlen,disp_arid;wire disp_arvalid;
 wire pv,pre,bridge_ready,first,last,display_error;wire [15:0] pixel;
 board_display_hmic #(.DYNAMIC_BASE(1),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.RAW_BASE(RAW_BASE),.DST_BASE(DST_BASE)) display(
  .clk(core_clk),.rst_n(core_rst_n),.enable(display_enable),.frame_base(display_base),.idle(display_idle),.frame_start(display_frame_start),.pixel_valid(pv),.pixel_ready(pre),.pixel(pixel),.pixel_first(first),.pixel_last(last),.error(display_error),
  .axi_araddr(disp_araddr),.axi_arlen(disp_arlen),.axi_aruser_id(disp_arid),.axi_arvalid(disp_arvalid),.axi_arready(native_arready[1]),
- .axi_rdata(axi_rdata),.axi_rvalid(native_rvalid[1]),.axi_rlast(axi_rlast),.axi_rid(axi_rid));
+ .axi_rdata(rdata_q),.axi_rvalid(native_rvalid[1]),.axi_rlast(rlast_q),.axi_rid(rid_q));
 generate if(REALTIME_VIDEO)begin : g_realtime
 realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) remap(
  .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(rt_cmd_valid),.cmd_ready(rt_cmd_ready),.src_base(rt_src),.dst_base(rt_dst),.map_base(32'h02000000),
  .rsp_valid(rt_rsp_valid),.rsp_ready(rt_rsp_ready),.rsp_status(rt_status),.last_cycles(last_remap_cycles),
  .arvalid(rt_arvalid),.arready(native_arready[3:2]),.araddr(rt_araddr),.arlen(rt_arlen),
- .rvalid(native_rvalid[3:2]),.rdata(axi_rdata),.rlast(axi_rlast),.rid(axi_rid),
+ .rvalid(native_rvalid[3:2]),.rdata(rdata_q),.rlast(rlast_q),.rid(rid_q),
  .awvalid(rt_awvalid),.awready(native_awready[2]),.awaddr(rt_awaddr),.awlen(rt_awlen),.wdata(rt_wdata),
  .wready(native_wready[2]),.wdone(native_wdone[2]),.wid(axi_wusero_id));
 end else begin : g_no_realtime
@@ -493,7 +504,7 @@ video_hmic_arbiter native_memory(.clk(core_clk),.rst_n(core_rst_n),
  .c_awvalid({rt_awvalid,alg_awvalid,cap_awvalid}),.c_awready(native_awready),.c_awaddr({rt_awaddr,alg_awaddr,cap_awaddr}),.c_awlen({rt_awlen,alg_awlen,cap_awlen}),
  .c_wdata({rt_wdata,alg_wdata,cap_wdata}),.c_wstrb({32'hffffffff,alg_wstrb,cap_wstrb}),.c_wready(native_wready),.c_wdone(native_wdone),.c_wid(),
  .araddr(axi_araddr),.arlen(axi_arlen),.arvalid(axi_arvalid),.arready(axi_arready),
- .rdata(axi_rdata),.rvalid(axi_rvalid),.rlast(axi_rlast),.rid(axi_rid),
+ .rdata(rdata_q),.rvalid(rvalid_q),.rlast(rlast_q),.rid(rid_q),
  .awaddr(axi_awaddr),.awlen(axi_awlen),.awvalid(axi_awvalid),.awready(axi_awready),
  .wdata(axi_wdata),.wstrb(axi_wstrb),.wready(axi_wready),.wdone(axi_wusero_last),.wid(axi_wusero_id),.idle());
 wire vs_o,hs_o,de_o;wire [7:0] video_r,video_g,video_b;wire underflow;
@@ -526,7 +537,7 @@ core_debug #(.VIDEO_ENABLE(REALTIME_VIDEO),.EVENT_MASK(32'hfbfffffe)) core_recor
  .state_word({3'b0,map_ready,video_active,(display_base==DST_BASE||(REALTIME_VIDEO&&display_base==DST_BASE+32'h00200000)),start_remap,ready_sync[1],status,phase,selected,captured,calibrated,corrected,ui_busy,
               display_enable,display_owner,capture_owner,display_idle}),
  .pressed(pressed),.busy(ui_busy),.display_error(display_error),.underflow(underflow_sync[1]&&display_enable),
- .read_accept(axi_arvalid&&axi_arready),.read_return(axi_rvalid),
+ .read_accept(axi_arvalid&&axi_arready),.read_return(rvalid_q),
  .write_accept(axi_awvalid&&axi_awready),.write_return(axi_wusero_last),
  .read_addr({4'b0,axi_araddr}),.write_addr({4'b0,axi_awaddr}),.snapshot(debug_core_data),.argument(debug_core_argument),
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames),.skipped_frames(skipped_frames),.last_remap_cycles(last_remap_cycles));

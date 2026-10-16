@@ -793,6 +793,14 @@ set_false_path -hold -from [get_clocks {sys_clk pix_clk cfg_clk clk_25M cam1_i2c
 # the debug health word, so this crossing is a CDC rather than a timed path.
 set_false_path -from [get_clocks {cam1_i2c_clk cam2_i2c_clk}] -to [get_clocks {sys_clk pix_clk cfg_clk clk_25M}]
 set_false_path -from [get_clocks {sys_clk pix_clk cfg_clk clk_25M}] -to [get_clocks {cam1_i2c_clk cam2_i2c_clk}]
+# cfg_clk is the PLL's x77/208 (10 MHz) generation of sys_clk. The only signals
+# leaving that domain are the ms72xx HDMI-config status bits, which reach the
+# sys_clk debug health word through its PAP_ASYNC_REG synchronizer. The tool
+# otherwise checks that level crossing against a single PLL-derivative edge and
+# reports a meaningless violation (worst reported setup slack, on
+# diagnostics/hs1[5]); bound the datapath instead of the edge relationship.
+set_max_delay -datapath_only 8.0 -from [get_clocks {cfg_clk}] -to [get_clocks {sys_clk}]
+set_false_path -hold -from [get_clocks {cfg_clk}] -to [get_clocks {sys_clk}]
 ###==== END "Generated Clocks"
 
 ###==== BEGIN "Inputs/Outpusts"

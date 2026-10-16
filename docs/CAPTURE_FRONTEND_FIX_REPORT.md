@@ -1,7 +1,7 @@
 # 采集前端间歇性失败 —— 排查、修复与交接报告
 
 日期：2026-10-15 ｜ 分支：`main` ｜ 基线：提交前 HEAD `cfc2525`
-选定产物：`build/system/calibrated_view_top_P8d.sbit`（本机构建；`build/` 已被 `.gitignore`，**比特流不进仓库**）
+选定产物：P8d 构建（当时落在 `build/system/calibrated_view_top_P8d.sbit`；该目录已随临时产物清理删除，`build/` 亦被 `.gitignore`，**比特流不进仓库**。要上板就按本文第 5 节从当前 HEAD 重新综合布局，不要拿旧比特流验证新功能）
 
 ---
 

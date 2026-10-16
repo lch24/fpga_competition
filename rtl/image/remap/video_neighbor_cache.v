@@ -20,6 +20,11 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  (* syn_ramstyle="block_ram" *) reg [22:0] te[0:LINES-1],to_[0:LINES-1];
  (* syn_ramstyle="block_ram" *) reg [255:0] de[0:LINES*4-1],do_[0:LINES*4-1];
  reg [22:0] tqe,tqo;reg [255:0] qe,qo;
+ // Line-validity bits are a 64:1 LUT mux off the held address; sample them at the
+ // same lookup as the tags so the hit compare runs entirely from registers. With
+ // the PHY fan-out stage gone this is the remaining 125 MHz violation: the cache
+ // hit cone still feeds the interpolator clock enables (fy0/CE, gopapm/CE_*).
+ reg vqe,vqo;
  reg [31:0] fill_address;reg [1:0] fill_beat;
  wire [3:0] mask=map_error||error?4'b0:desc[63:60];
  wire [13:0] x=desc[45:32],y=desc[59:46];
@@ -33,9 +38,8 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  wire [31:0] even_address=y[0]?r1:r0,odd_address=y[0]?r0:r1;
  wire need_even=y[0]?(second?cross1:row1):(second?cross0:row0);
  wire need_odd=y[0]?(second?cross0:row0):(second?cross1:row1);
- wire [INDEX_BITS-1:0] ei=even_address[INDEX_BITS+6:7],oi=odd_address[INDEX_BITS+6:7];
- wire hit_e=!need_even||(ve[ei]&&tqe==even_address[29:7]);
- wire hit_o=!need_odd||(vo[oi]&&tqo==odd_address[29:7]);
+ wire hit_e=!need_even||(vqe&&tqe==even_address[29:7]);
+ wire hit_o=!need_odd||(vqo&&tqo==odd_address[29:7]);
  wire [255:0] q0=y[0]?qo:qe,q1=y[0]?qe:qo;
  assign in_ready=state==IDLE;
  wire accept=in_valid&&in_ready;
@@ -49,9 +53,10 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  wire [INDEX_BITS+1:0] wa={fill_address[INDEX_BITS+6:7],fill_beat};
  always @(posedge clk)begin
   if(lookup)begin
+   vqe<=ve[le[INDEX_BITS+6:7]];vqo<=vo[lo[INDEX_BITS+6:7]];
    tqe<=te[le[INDEX_BITS+6:7]];tqo<=to_[lo[INDEX_BITS+6:7]];
    qe<=de[le[INDEX_BITS+6:5]];qo<=do_[lo[INDEX_BITS+6:5]];
-  end
+ end
   if(state==FILL&&rvalid)begin
    if(fill_odd)do_[wa]<=rdata;else de[wa]<=rdata;
    if(rlast)begin if(fill_odd)to_[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];else te[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end

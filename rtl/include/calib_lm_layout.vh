@@ -1,5 +1,5 @@
 // 在LM各模块内部包含，活动列顺序必须完全相同。
-// 先优化4个内参和各视图6个外参；再依次加入k1、k2/p1/p2；k3仍固定0。
+// 先优化4个内参和各视图6个外参；再依次加入k1、k2/p1/p2/k3。stage2含k3。
 function integer active_index;
     input integer k;
     begin

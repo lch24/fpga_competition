@@ -98,7 +98,10 @@ module tb_configurable;
  mode=3;lcmd=1;@(negedge clk);lcmd=0;wait(lrsp);@(negedge clk);
  check(lstatus==0&&laccepted>0&&louter>0&&louter<=`PAR_LM_MAX_ITERS,"LM updates within configured limit");
  check($bitstoreal(lcost)<oldcost,"LM reduced independently computed initial cost");
- check(lstate[8*64+:64]==0,"k3 stays fixed");
+ // k3 is now part of the update, so there is nothing to hold fixed. This smoke
+ // run stops after one iteration; converged magnitude is covered by the LM
+ // fixtures that run to convergence.
+ check(!$isunknown(lstate[8*64+:64]) && $bitstoreal(lstate[8*64+:64])<1e2 && $bitstoreal(lstate[8*64+:64])>-1e2,"k3 finite and bounded");
  for(i=0;i<`PAR_STATE_N;i=i+1)check(lstate[64*i+52+:11]!=2047&&!$isunknown(lstate[64*i+:64]),"finite LM state");
  $display("CONFIG_LM_PASS n=%0d accepted=%0d outer=%0d oldcost=%g newcost=%g errors=%0d cycles=%0d",`PAR_ACTIVE_N,laccepted,louter,oldcost,$bitstoreal(lcost),errors,cycles);
  $fdisplay(report,"lm n=%0d accepted=%0d outer=%0d oldcost=%g newcost=%g errors=%0d cycles=%0d",`PAR_ACTIVE_N,laccepted,louter,oldcost,$bitstoreal(lcost),errors,cycles);

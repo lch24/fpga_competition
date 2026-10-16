@@ -10,7 +10,8 @@ from tools import modelsim_bin
 
 def run(phase):
     names={'init':('init_controller',9,3),'validate':('validate_result',66,5),
-           'lm':('lm_controller',9,None),'lm_service':('lm_service',3,None)}
+           'lm':('lm_controller',9,None),'lm_service':('lm_service',3,None),
+           'lm_fisheye':('lm_fisheye',1,None)}
     name,cases,protocols=names[phase]
     quick='--quick' in sys.argv
     if quick and phase not in ('init','validate'):

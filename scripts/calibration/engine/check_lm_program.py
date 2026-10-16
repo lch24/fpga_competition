@@ -8,16 +8,17 @@ from build_lm import build, M, C, CONSTANTS
 from reference import Machine,bits,value
 
 def layout(views,points):
-    n=8+6*views;ns=9+6*views;nr=2*views*points
+    n=9+6*views;ns=n;nr=2*views*points;banks=10+(n-(4+6*views))
     sizes=[('desc',4*n),('current',ns),('trial',ns),('baseline',nr),
-           ('plus',nr),('minus',nr),('column',nr),('jac',14*nr),
+           ('plus',nr),('minus',nr),('column',nr),('jac',banks*nr),
            ('normal',n*n),('augmented',n*(n+1)),('scales',n),('delta',n),('gradient',n)]
     at=288;result={}
     for name,size in sizes:result[name]=at;at+=size
     return result,1<<(at-1).bit_length()
 
 def run_case(rom,views=3,points=40,mode='normal'):
-    n=8+6*views;ns=n+1;nr=2*views*points;l,words=layout(views,points)
+    n=9+6*views;ns=n;nr=2*views*points;l,words=layout(views,points)
+    dist=n-(4+6*views);pose_base=4+dist;banks=pose_base+6
     calls=0;accepted_costs=[];snapshots=[]
     def service(m,opcode):
         nonlocal calls
@@ -29,8 +30,8 @@ def run_case(rom,views=3,points=40,mode='normal'):
         if mode=='invalid_difference' and calls==2:status=4
         total=0
         for row in range(nr):
-            v=row//(2*points);axis=row%(2*points)%14
-            index=axis if axis<8 else 9+6*v+axis-8
+            v=row//(2*points);axis=row%(2*points)%banks
+            index=axis if axis<pose_base else 9+6*v+axis-pose_base
             r=state[index];total+=r*r;m.write(dst+row,bits(r))
         # Fail only trial evaluations, after initial and 2*n perturbations.
         if mode=='reject' and calls>1+2*n:total=1e200
@@ -47,7 +48,7 @@ def run_case(rom,views=3,points=40,mode='normal'):
         state_index=k if k<4 else k+5 if k<4+6*views else k-6*views
         first=0;last=nr;packed=k if k<4 else k-6*views
         if 4<=k<4+6*views:
-            view,axis=divmod(k-4,6);first=view*2*points;last=first+2*points;packed=8+axis
+            view,axis=divmod(k-4,6);first=view*2*points;last=first+2*points;packed=pose_base+axis
         for j,x in enumerate((state_index,first,last,l['jac']+packed*nr)):m.mem[l['desc']+4*k+j]=x
     status=m.run(0,len(rom));assert status==0,(mode,status)
     get=lambda k:m.mem[M[k]]

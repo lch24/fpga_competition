@@ -43,7 +43,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     input wire [15:0] cmd_width, // 图像宽度，>=2
     input wire [15:0] cmd_height, // 图像高度，>=2
     input wire [`PAR_STATE_W-1:0] cmd_state, // PAR_STATE_N 项 FP64 状态快照，命令握手时锁存
-    input wire [1:0] cmd_stage, // 0/1/2 -> 22/23/26个活动参数
+    input wire [1:0] cmd_stage, // 0/1/2 -> 22/23/27个活动参数
     output wire point_rd_en, // 固定1拍角点读使能，无ready，发起前预留接收空间
     output wire [`PAR_VIEW_BITS-1:0] point_rd_view_id, // 0..PAR_VIEWS-1
     output wire [`PAR_POINT_BITS-1:0] point_rd_index, // 图内角点0..PAR_POINTS-1
@@ -104,7 +104,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
       for(vi=0;vi<`PAR_VIEWS;vi=vi+1)
         for(axis=0;axis<6;axis=axis+1)
           if(descriptor_col==4+6*vi+axis)begin
-            first_row=vi*(2*`PAR_POINTS);last_row=(vi+1)*(2*`PAR_POINTS);packed_col=8+axis;
+            first_row=vi*(2*`PAR_POINTS);last_row=(vi+1)*(2*`PAR_POINTS);packed_col=4+`PAR_DIST_N+axis;
           end
       initial_data=0;
       if(index>=DESC)case(descriptor_field)

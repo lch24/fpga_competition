@@ -1,5 +1,5 @@
-# Brown projection after world-to-camera transformation, k3 fixed to zero.
-# A0 -> [fx, fy, cx, cy, k1, k2, p1, p2], each one FP64 word.
+# Brown projection after world-to-camera transformation, three radial terms.
+# A0 -> [fx, fy, cx, cy, k1, k2, k3, p1, p2], each one FP64 word.
 # Input F0=Xc, F1=Yc, F2=Zc (caller checks finite and positive depth).
 # Output F0=u, F1=v. Clobbers F2..F7, flags; preserves A registers.
 # Same shared scalar ALU for every operation; no dedicated Brown datapath.
@@ -10,7 +10,10 @@ project:
     FMUL F3,F1,F1
     FADD F4,F2,F3
     FMUL F5,F0,F1
-    LD F6,A0,5
+    LD F6,A0,6
+    FMUL F6,F6,F4
+    LD F7,A0,5
+    FADD F6,F6,F7
     FMUL F6,F6,F4
     LD F7,A0,4
     FADD F6,F6,F7
@@ -22,14 +25,14 @@ project:
     FADD F1,F1,F7
     # 2*x*y used by both tangential terms.
     FADD F5,F5,F5
-    LD F6,A0,6
+    LD F6,A0,7
     FMUL F7,F6,F5
     FADD F0,F0,F7
     FADD F3,F3,F3
     FADD F3,F3,F4
     FMUL F3,F3,F6
     FADD F1,F1,F3
-    LD F6,A0,7
+    LD F6,A0,8
     FMUL F7,F6,F5
     FADD F1,F1,F7
     FADD F2,F2,F2

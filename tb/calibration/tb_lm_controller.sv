@@ -62,7 +62,9 @@ module tb_lm_controller;
     launch();await_response();check(status==0 && converged==expected_converged && accepted==expected_accepted,"convergence/accepted count");
     check(outer>=accepted && outer<=`PAR_LM_MAX_ITERS,"iteration accounting");
     for(i=0;i<`PAR_STATE_N;i=i+1)near(result[64*i+:64],expected[64*i+:64],2e-7);
-    near(cost,expected_cost,2e-12);check(result[512+:64]===initial_state[512+:64],"fixed k3");consume();
+    near(cost,expected_cost,2e-12);
+    // A narrow-field fixture cannot identify k3, so only its smallness is asserted.
+    check($bitstoreal(result[512+:64])<1e-2 && $bitstoreal(result[512+:64])>-1e-2,"k3 estimated and small");consume();
    end else if(rc!=-1)$fatal(1,"fixture format");
   end
   $fclose(fd);

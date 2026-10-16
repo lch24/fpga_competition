@@ -152,7 +152,7 @@ def generate():
     # from native math. Tolerance is set in the TB before evaluating results.
     import random
     rng=random.Random(271828)
-    camera=[980.,975.,640.,360.,-.14,.027,.001,-.002]
+    camera=[980.,975.,640.,360.,-.14,.027,-.011,.001,-.002]
     for i,v in enumerate(camera):put(200+i,bits(v))
     points=[(0.,0.,1.)]+[(rng.uniform(-2,2),rng.uniform(-1,1),rng.uniform(.5,8)) for _ in range(39)]
     for i,xyz in enumerate(points):
@@ -177,9 +177,9 @@ def generate():
     '''+projection)
     for i,(X,Y,Z) in enumerate(points):
         x,y=X/Z,Y/Z;r2=x*x+y*y
-        radial=1+camera[4]*r2+camera[5]*r2*r2
-        xd=x*radial+2*camera[6]*x*y+camera[7]*(r2+2*x*x)
-        yd=y*radial+camera[6]*(r2+2*y*y)+2*camera[7]*x*y
+        radial=1+camera[4]*r2+camera[5]*r2*r2+camera[6]*r2*r2*r2
+        xd=x*radial+2*camera[7]*x*y+camera[8]*(r2+2*x*x)
+        yd=y*radial+camera[7]*(r2+2*y*y)+2*camera[8]*x*y
         near(450+2*i,camera[0]*xd+camera[2]);near(451+2*i,camera[1]*yd+camera[3])
     constants={0:0.,1:1.,2:2.,3:.5,4:math.log(2),5:1/math.log(2),6:700.,7:-700.}
     constants.update({16+i:1/math.factorial(i) for i in range(17)})

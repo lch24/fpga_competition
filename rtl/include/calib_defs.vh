@@ -8,7 +8,9 @@
 `define PAR_STATE_N (9+6*`PAR_VIEWS)
 `define PAR_STAGE0_N (4+6*`PAR_VIEWS)
 `define PAR_STAGE1_N (`PAR_STAGE0_N+1)
-`define PAR_ACTIVE_N (`PAR_STAGE0_N+4)
+`define PAR_ACTIVE_N (`PAR_STAGE0_N+5)
+`define PAR_DIST_N (`PAR_ACTIVE_N-`PAR_STAGE0_N)
+`define PAR_JAC_BANKS (10+`PAR_DIST_N)
 `define PAR_STATE_W (64*`PAR_STATE_N)
 `define PAR_VIEW_BITS $clog2(`PAR_VIEWS+1)
 `define PAR_POINT_BITS $clog2(`PAR_POINTS+1)
@@ -27,13 +29,14 @@
 `define PAR_POSES_W (768*`PAR_VIEWS)
 // 状态：PAR_STATE_N=(9+6*PAR_VIEWS) 个 FP64；第 i 项占 [64*i +: 64]。
 // 0/1=log(fx/fy), 2/3=cx/W,cy/H, 4/5/6/7/8=k1,k2,p1,p2,k3。
-// 9+6*v 起：rx,ry,rz,tx,ty,log(tz)。k3=0；对象点采用中心化单位格。
+// 9+6*v 起：rx,ry,rz,tx,ty,log(tz)。k3初值0；对象点采用中心化单位格。
 // camera：9 个 FP32，低位起 fx,fy,cx,cy,k1,k2,k3,p1,p2。
 // H/R：行优先 FP64；H_ALL：按view递增拼接，view0在低位。
 // K：低位起 fx,fy,cx,cy，均为解码后的 FP64，不是 log 或归一化值。
 // POSES：每视图R的9项(行优先)加t的3项，共12*PAR_VIEWS个FP64。
-// stage0 活动索引：0,1,2,3,9..PAR_STATE_N-1；stage1追加4；stage2追加5,6,7。
-// J列、scale/delta按上述顺序，容量PAR_ACTIVE_N，未用高槽置零。
+// stage0 活动索引：0,1,2,3,9..PAR_STATE_N-1；stage1追加4；stage2追加5,6,7,8。
+// J bank：0..3内参、4..8畸变(k1,k2,p1,p2,k3)、9..14各视图姿态轴(跨视图共用，行区间不相交)；
+// scale/delta 按活动列顺序，容量PAR_ACTIVE_N，未用高槽置零。
 `define PAR_OK 8'd0
 `define PAR_BAD_CONFIG 8'd1
 `define PAR_NO_BOARD 8'd2

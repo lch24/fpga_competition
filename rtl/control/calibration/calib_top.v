@@ -1,7 +1,7 @@
 `include "calib_defs.vh"
 
 // Collect committed corner views -> one width-based seed -> full-parameter
-// LM (stage 2, k3 fixed) -> validation -> camera/diagnostic publication.
+// LM (stage 2, k3 active) -> validation -> camera/diagnostic publication.
 // The initializer fills current state one word per cycle under backpressure.
 // Jobs still identify external transactions; reset cancels work and output
 // backpressure preserves the result until both consumers acknowledge it.

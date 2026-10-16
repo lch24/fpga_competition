@@ -1,3 +1,3 @@
-stage0 physical Brown model, accepted=6 converged=1 cost=1.3047766498510473e-08
-stage1 physical Brown model, accepted=6 converged=1 cost=1.2301736269950515e-08
-stage2 physical Brown model, accepted=6 converged=1 cost=1.212557424325072e-08
+stage0 physical Brown model, active=22 accepted=6 converged=1 cost=1.2200732640466619e-08 max_relative_error_vs_truth=8.72e-08
+stage1 physical Brown model, active=23 accepted=6 converged=1 cost=1.2184244904313142e-08 max_relative_error_vs_truth=1.54e-07
+stage2 physical Brown model, active=27 accepted=6 converged=1 cost=1.2115424360065182e-08 max_relative_error_vs_truth=0.000211

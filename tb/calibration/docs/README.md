@@ -8,8 +8,10 @@
 | 初值 | [INIT](INIT.md) | `python scripts/calibration/engine/check_init.py` |
 | LM | [LM](LM.md) | `python scripts/calibration/engine/check_lm.py` |
 | LM/残差联调 | [LM](LM.md) | `python scripts/calibration/engine/check_lm_service.py` |
+| 鱼眼 LM（合成数据） | [LM](LM.md) | `scripts/calibration/run_lm_fisheye.ps1` |
 | 最终检查 | [VALIDATE_RESULT](VALIDATE_RESULT.md) | `python scripts/calibration/engine/check_validate.py` |
 | 标定任务控制 | [CALIB_TOP](CALIB_TOP.md) | `scripts/calibration/run_calib_top.ps1` |
+| 可配置几何（视图/棋盘/迭代上限） | [CALIB_TOP](CALIB_TOP.md) | `scripts/calibration/run_configurable.ps1`（`-TopOnly` 只跑顶层接线） |
 | 浮点后端 | [FP_OPERATOR](FP_OPERATOR.md) | `scripts/compute/run_fp_operator.ps1` |
 | 投影和残差 | [MODEL](MODEL.md) | `scripts/compute/run_project_point.ps1`、`run_residual_engine.ps1` |
 

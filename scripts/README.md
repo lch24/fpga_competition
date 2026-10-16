@@ -35,6 +35,8 @@ python scripts/compute/microcode/build_math.py
 | LM 程序/阶段接口 | `python scripts/calibration/engine/check_lm.py` |
 | LM 与真实残差服务 | `python scripts/calibration/engine/check_lm_service.py` |
 | 结果检查 | `python scripts/calibration/engine/check_validate.py` |
+| 标定任务控制（默认几何） | `scripts/calibration/run_calib_top.ps1` |
+| 可配置几何（视图/棋盘/迭代上限） | `scripts/calibration/run_configurable.ps1`（`-TopOnly` 只跑顶层接线） |
 | 精修数值程序 | `python scripts/compute/check_feature_program.py` |
 | 浮点后端 | `scripts/compute/run_fp_operator.ps1` |
 | 投影模型 | `scripts/compute/run_project_point.ps1` |

@@ -1,0 +1,97 @@
+# 125 MHz 时序收敛 —— 排查、修复与交接报告
+
+日期：2026-10-16 ｜ 分支：`main` ｜ 基线：提交前 HEAD `b6fb41f` ｜ 提交：`cbf9b00`
+证据：本机四次完整布局（compile→synthesize→dev_map→pnr→report_timing，**不生成比特流**），
+原始报告按版本存于 `build/baseline_before/`、`after_fdconly/`、`after_phyreg/`、`after_cachereg/`，各带 `run.log`。
+`build/` 已被 `.gitignore`，所以**具体数字只在本文件里留档**。
+
+---
+
+## 1. 概述
+
+**问题**：布局后的时序不收敛——设计侧 66 个 setup 失败端点，整体最差 setup **−1.633 ns**（`cfg_clk → sys_clk`），另有 65 个在 `ddrphy_sysclk → ddrphy_sysclk`。器件同时已经满载（CLMA 11,639/11,675）。
+
+**结论**：失败分成三类，**根因各不相同**，不是"时钟太快"这么笼统：
+
+| 类别 | 根因 | 处理 |
+|---|---|---|
+| `cfg_clk → sys_clk`（1 个，−1.633） | PLL 派生的 10 MHz 配置时钟被按"单周期边沿"检查；接收端本就有两级同步器 | 加窄约束限定物理路径（**不改网表，零面积代价**） |
+| 厂商 PHY 响应 → 我们的 RAM 使能（39 个） | 仲裁器把存储侧响应**组合地**转发给客户，且 256 位数据总线由所有客户**直连 PHY** ⇒ 高扇出长线 | 在**顶层**成组寄存一级 PHY 读响应 |
+| 缓存命中判断 → 插值级时钟使能（7 个） | 行有效位以 64:1 LUT mux 形式参与命中比较 | 有效位与 tag 在**同一次 lookup** 一起采样 |
+
+**结果**：设计侧失败端点 **66 → 9**，整体最差 setup **−1.633 → −0.339 ns**，布局簇数基本不变（CLMA 11,636/11,675，仍比基线略低）。定向回归 11/11 通过。
+
+## 2. 改动内容（提交 `cbf9b00`）
+
+| 文件 | 改了什么 | 为什么 |
+|---|---|---|
+| `OV5640_DualView_100H/DualView_OV5640.fdc` | 对 `cfg_clk → sys_clk` 加 `set_max_delay -datapath_only 8.0` + `set_false_path -hold` | 该对只承载一个电平健康位，接收端已有 `PAP_ASYNC_REG`。**同文件早前对 10 kHz `cam*_i2c_clk` 已是同样处理**，本条属沿用既有先例的窄约束，不是全局 false path |
+| `rtl/top/calibrated_view_top.v` | 新增一级 260 位寄存器（`rdata/rvalid/rlast/rid` 成组保持），并把**算法口、显示、实时重映射、仲裁器存储侧、调试读计数**五处消费者全部改用寄存后的版本 | 见 §3 的教训 |
+| `rtl/image/remap/video_neighbor_cache.v` | `ve/vo` 与 tag 在下拉 `lookup` 里同拍采样；命中比较改用寄存后的 `vqe/vqo`；删除因此失效的 `ei/oi` | 把 64:1 的 `ve[ei]` mux 从"命中 → 插值使能"锥里移走。**不动协议、不动 II、不动数值** |
+| `scripts/system/run_realtime_checks.ps1` | 回归清单纳入 `tb_vision_clock_bridge` | 该 CDC 压力 TB 此前不在清单里，改动无覆盖 |
+| `docs/CAPTURE_FRONTEND_FIX_REPORT.md` | 修掉指向已清理比特流的失效路径 | 避免误导下一位 |
+
+## 3. 一次被测试抓住的错误（务必记住）
+
+最初的修法是在**仲裁器内部**寄存 PHY 响应。两个逐像素比对的 TB 立刻失败（`neighbors index=0 got=0`）。
+
+原因不是 TB 过时，而是**真实架构**：
+
+```
+.c_rvalid(native_rvalid),.c_rdata(),.c_rlast(),.c_rid(),      // 仲裁器数据口悬空
+.rvalid(native_rvalid[3:2]),.rdata(axi_rdata),...           // 客户的数据直连 PHY
+```
+
+**只有"选中哪一路"的 valid 过仲裁器；256 位数据总线/last/id 由所有客户共享、直连 PHY。** 所以单独寄存 valid 会让 valid 与 data 错开一拍——在真实顶层里同样会错。**正确位置是顶层边界：valid 与 data 必须成组一起寄存，且仲裁器的 select valid 也要派生自寄存后的 valid。**
+
+## 4. 四版实测对照（同机、同流程、每次构建之间 P&R 独立）
+
+| 版本 | 标签 | CLMA | CLMS | 设计侧失败端点 | 整体最差 setup | `cfg_clk→sys_clk` |
+|---|---|---|---|---|---|---|
+| `b6fb41f` 零改动 | `baseline_before` | 11,639 | 4,951 | **66** | **−1.633** | 1 失败 |
+| +FDC | `after_fdconly` | 11,631 | 4,948 | 46 | −0.630 | **0 失败** |
+| +FDC+PHYREG | `after_phyreg` | 11,632 | 4,958 | 14 | −0.324 | 0 失败 |
+| **+FDC+PHYREG+CACHEREG（提交版）** | `after_cachereg` | 11,636 | 4,953 | **9** | **−0.339** | 0 失败 |
+| （反例）+FDC+两处"预防性"重定时 | `after_timingfixes` | 11,658 | 4,964 | 66 | −1.056 | 0 失败 |
+
+反例那一版有意保留：它证明**在没有对应失败端点时加逻辑是有代价的**（多吃约 32 簇，并把 PHY 组从 −0.630 拖到 −1.056）。
+
+## 5. 已知边际路径（**当前不修**，留档备查）
+
+设计侧剩余 9 个端点、最差 −0.339 ns，分三簇：
+
+| 域 | 起点 → 终点 | 条数 | 最差 | 机制与判断 |
+|---|---|---|---|---|
+| `algorithm_clk`（40 MHz） | `algorithm/detector/u_det/g_program_flow.control/dl[2]` → `algorithm/calibration/arithmetic_pool/core/g_program.core/saved_a/b[*]` | 12 | −0.339 | 25 ns 周期上的长组合锥（检测器程序流控制 → 运算池操作数寄存）。**三版之前同路径为 +0.308**，摆动 0.65 ns，量级等于本设计布局抖动 |
+| `ddrphy_sysclk`（125 MHz） | `g_realtime.remap/cache/a0[6]` → `cache/state[0]`、`fill_address[*]`、`fill_odd` 的 CE | 4 | −0.248 | 填充侧"地址 → CE"。**机制最清楚**，若日后要做形式签核，先做这一处 |
+| `ddrphy_sysclk`（125 MHz） | `adapter/addr[2]` → `adapter/write_block[63/16]` 数据 | 2 | −0.316 | 写块数据 mux 由地址选择 |
+
+**为什么停手**：每条都要改已验证数据通路 + 跑回归 + 一次全流程（约 35 分钟），预期收益 ≤0.34 ns，**低于设计自身的构建间抖动**（该组 ±0.5 ns 已验证）。按"没有可归因收益的改动不加"这条纪律，到此结束。
+
+另：报告里 **749 个厂商 PHY 内部条目**（`ddrphy_*`）不可由我们改，**不计入设计侧统计**，也不要拿它们解释我们的违例。
+
+## 6. 已被排除的方向（**不要重复验证**）
+
+| 曾经的做法/判断 | 排除依据 |
+|---|---|
+| 用单次构建的 WNS/TNS 小数位给逻辑改动归因 | `ddrphy_sysclk → ddrphy_sysclk` 组的 WNS 在构建间抖动 ±0.5 ns；**可归因的只有端点计数与"类别性消失"** |
+| 用"综合 LUT 余量"判断能否放下 | 综合 60,008/66,600（90%）但布局后物理 LUT 66,024/66,600（99.14%）；**必须看布局后的 CLMA/CLMS** |
+| 无对应失败端点时加"预防性"重定时 | 见 §4 反例：多吃约 32 簇且恶化 PHY 组 |
+| 在 `pixel_valid` 通路上串宽比较器 | 旧教训：会立刻在 `cmos2_pclk` 域产生约 18 个端点违例 |
+| 在仲裁器内部只寄存 valid | 见 §3：会让 valid 与共享数据总线错位，逐像素 TB 立即失败 |
+| 把视频通路 LUTRAM 换 BRAM 省面积 | `hdmi_pixel_bridge` 那 576 个 LUTRAM 是异步读；换 `async_bram_fifo`（II=2）会让每行 1280 个 DE 周期只取 640 像素，直接拉垮 720p |
+
+## 7. 对下一位的影响与注意
+
+- **本批改动只动了时序与一处内部采样点，不改任何协议、数值或帧所有权**；`tb_realtime_remap`、`tb_realtime_fullframe` 的逐像素比对仍全绿。
+- **顶层那一级响应寄存器是 125 MHz 通路上新增的一拍延迟**：它只延迟客户看到响应的时间，不影响 `arready` 握手与突发完整性；厂商 PHY 侧的时序关系由 `ddrphy_sysclk` 域内部保持不变。
+- 后续若在 125 MHz 通路上新增逻辑，**先跑一次全流程再看报告**，不要沿用本文数字推断——本设计每次布局都会重掷，`cmos2_pclk` 输入建立裕量也在此列（历史上曾在 +0.86～+3.41 ns 之间变化）。
+- 复现方式（不产生比特流）：
+
+```powershell
+# 从 build/system 工作目录执行；PDS 会重写 .pds 的运行状态，跑完需 git checkout 还原
+& <pds_shell.exe> -file <仓库>/build/system/full_flow.tcl
+powershell -ExecutionPolicy Bypass -File scripts/system/run_realtime_checks.ps1 -ModelSimBin 'D:\MentorGraphics\64_10.6e\win64'
+```
+
+- 上板前仍以"重新综合布局 + 持续新帧计数 + 校正质量"为签核条件；**不要用旧比特流验证新功能**（旧产物已按纪律清理）。

@@ -17,7 +17,9 @@
 
 标定和建表在 40 MHz 域；视频校正、DDR 仲裁和帧调度在 125 MHz 域。HDMI 时序仍为现有 37.125 MHz、720p30。摄像头真实 PCLK/帧率仍需测量，FDC 的相机 100 MHz 是预算而非实测值。
 
-## 本次 PDS 结果（2026-10-12）
+## 2026-10-12 首次布局结果（**历史记录**）
+
+> 本节的资源与时序数字属于**首次布局**的现场记录，仅作对照；当前提交版（`cbf9b00`）的实测与边缘路径清单见 [TIMING_CLOSURE_REPORT.md](TIMING_CLOSURE_REPORT.md)。
 
 用户使用当前 PDS 工程完成综合（21:45）、布局布线/优化（22:00）、时序报告（22:02）。层级报告已确认包含 `algorithm/g_packed.correction`、`g_realtime.remap`、`g_video_capture.capture` 和 `native_memory`，不是旧照片版结果。
 
@@ -32,7 +34,7 @@
 
 实时校正主体综合为 **1,300 LUT、17 DRM、10 APM**：源缓存 843 LUT/9 DRM/1 APM，插值 150 LUT/9 APM，地图预取 166 LUT/4 DRM，结果写入 104 LUT/4 DRM。捕获 BRAM FIFO 已推断为 4 DRM，原生仲裁为 334 LUT。大缓存没有落成数千 LUT 的寄存器阵列。
 
-时序：125 MHz DDR/视频域 WNS **−0.949 ns**，113 个 setup 失败端点；40 MHz 算法域 +0.308 ns。最差 setup 路径为 `algorithm_cdc/cdc_read_cmd/rb[0]` → `adapter/state[0]`，另有源缓存地址/命中判断 → 插值 APM 使能的长组合路径。DDR PHY 恢复时间最差约 −4.231 ns，另有调试健康位首级同步等违例。**布线成功不等于时序通过**，不得把旧 bitstream 上的照片验证当作本版视频验证。
+时序（**已被 `cbf9b00` 取代**）：当时 125 MHz DDR/视频域 WNS −0.949 ns、113 个 setup 失败端点，40 MHz 算法域 +0.308 ns。当前提交版设计侧只剩 **9 个 setup 失败端点、整体最差 −0.339 ns**，三条边缘路径的域/起点/终点/机制见 [TIMING_CLOSURE_REPORT.md](TIMING_CLOSURE_REPORT.md) 第 5 节。**布线成功不等于时序通过**，不得把旧 bitstream 上的照片验证当作本版视频验证。
 
 本地证据：`prj_tasks/syn_1/synthesize/calibrated_view_top.snr`、`prj_tasks/pnr_1/place_route/calibrated_view_top.ror`、`prj_tasks/pnr_1/report_timing/calibrated_view_top.rtr`（均在 `OV5640_DualView_100H` 内）。生成报告/工作数据库不提交 Git；本节记录可供队员交接的摘要。
 
@@ -43,6 +45,8 @@
 顺带否掉了原计划的"大 mux / LUTRAM 转 BRAM"：
 - `display(board_display_hmic)` 实测只有 **337 LUT、58 FF、128 个 LUT-as-dram**。它那个 16×256 位行缓冲已经被综合器推断成分布式 RAM，并没有落成 4096 个寄存器加大 mux；改成 BRAM 只会多一个读时拍和 DRM，没有收益。
 - `bridge(hdmi_pixel_bridge)` 是 784 LUT（其中 576 为 LUT-as-dram），而且**它就是全部 2,543 个 LUT-as-dram 中占比最大又最容易动的一块**。但它的 FIFO 是**异步读（II=1，每个 pclk 出一个像素）**；换成 `async_bram_fifo` 的同步读（II=2）会把显示取像素速率直接减半，720p 每行 1280 个 DE 周期只能取 640 个像素。要省这 784 LUT 就得改成"两像素打包成一字 + 配对对齐"，会有像素配对错位的静默风险，收益约 1.2%，**不值得做**。结论：视频通路上目前没有安全可省的大块资源，后续要加逻辑只能从算法域（`vision_ddr_top` 占 48,800 LUT）里腾，或者先做完布局再决定。
+
+**2026-10-16 更新**：这版 RTL 已完成完整布局，设计侧 setup 失败端点 **66 → 9**、整体最差 setup **−1.633 → −0.339 ns**（改动、四版对照与三条边缘路径见 [TIMING_CLOSURE_REPORT.md](TIMING_CLOSURE_REPORT.md)）。
 
 ## 与旧架构的差别
 

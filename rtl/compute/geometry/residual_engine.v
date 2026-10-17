@@ -79,7 +79,13 @@ module residual_engine #(parameter FP_SHARED=0) (
                ATAN2=7, EXP=8, CONVERT=11;
     localparam [63:0] ZERO=64'b0, ONE=64'h3ff0000000000000, TWO=64'h4000000000000000;
     reg [63:0] v [0:`PAR_STATE_N+24];
-    integer pc, continuation, destination,j;
+    reg [13:0] pc, continuation;
+    reg [$clog2(`PAR_STATE_N+25)-1:0] destination;
+    integer j;
+    // Views are consumed in order. A shift register exposes one pose without
+    // six independent wide, variable-index multiplexers over the state bank.
+    reg [384*`PAR_VIEWS-1:0] poses;
+    wire [383:0] pose=poses[383:0];
     reg [4:0] fp_op;
     reg [63:0] fp_a,fp_b;
     wire fp_ready,fp_valid;
@@ -163,13 +169,13 @@ assign shared_rsp_ready[0 +: 1] = 0;
     endfunction
     rotation #(.FP_SHARED(FP_SHARED)) rotate(.shared_req_valid(shared_req_valid[1 +: 1]),.shared_req_ready(shared_req_ready[1 +: 1]),.shared_req_op(shared_req_op[5 +: 5]),.shared_req_a(shared_req_a[64 +: 64]),.shared_req_b(shared_req_b[64 +: 64]),.shared_active(shared_active[1 +: 1]),.shared_rsp_valid(shared_rsp_valid[1 +: 1]),.shared_rsp_ready(shared_rsp_ready[1 +: 1]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),
         .clk(clk),.rst_n(rst_n),.cmd_valid(rst_n && pc==6),.cmd_ready(rot_ready),.cmd_mode(1'b0),
-        .cmd_rotvec_fp64({v[11+6*view_id],v[10+6*view_id],v[9+6*view_id]}),.cmd_r_fp64(576'b0),
+        .cmd_rotvec_fp64(pose[191:0]),.cmd_r_fp64(576'b0),
         .rsp_valid(rot_valid),.rsp_ready(rst_n && pc==7),.rsp_status(rot_status),
         .rsp_rotvec_fp64(),.rsp_r_fp64(rot_r));
     project_point #(.FP_SHARED(FP_SHARED)) projection(.shared_req_valid(shared_req_valid[2 +: 2]),.shared_req_ready(shared_req_ready[2 +: 2]),.shared_req_op(shared_req_op[10 +: 10]),.shared_req_a(shared_req_a[128 +: 128]),.shared_req_b(shared_req_b[128 +: 128]),.shared_active(shared_active[2 +: 2]),.shared_rsp_valid(shared_rsp_valid[2 +: 2]),.shared_rsp_ready(shared_rsp_ready[2 +: 2]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),
         .clk(clk),.rst_n(rst_n),.cmd_valid(rst_n && pc==12),.cmd_ready(proj_ready),
         .cmd_x_fp64(object_x),.cmd_y_fp64(object_y),.cmd_r_fp64(saved_r),
-        .cmd_t_fp64({v[`PAR_STATE_N+4],v[13+6*view_id],v[12+6*view_id]}),
+        .cmd_t_fp64({v[`PAR_STATE_N+4],pose[319:192]}),
         .cmd_k_fp64({v[`PAR_STATE_N+3],v[`PAR_STATE_N+2],v[`PAR_STATE_N+1],v[`PAR_STATE_N+0]}),
         .cmd_dist_fp64({v[7],v[6],v[8],v[5],v[4]}),
         .rsp_valid(proj_valid),.rsp_ready(rst_n && pc==13),.rsp_status(proj_status),
@@ -183,7 +189,8 @@ assign shared_rsp_ready[0 +: 1] = 0;
             case(pc)
                 IDLE: if(cmd_valid) begin
                     rsp_status<=`PAR_OK;
-                    for(j=0;j<`PAR_STATE_N;j=j+1)v[j]<=cmd_state[64*j+:64];
+                    for(j=0;j<9;j=j+1)v[j]<=cmd_state[64*j+:64];
+                    poses<=cmd_state[`PAR_STATE_W-1:576];
                     v[`PAR_STATE_N+23]<=uint16_fp(cmd_width);
                     v[`PAR_STATE_N+24]<=uint16_fp(cmd_height);
                     v[`PAR_STATE_N+22]<=ZERO;view_id<=0;point_id<=0;component<=0;pc<=0;if(cmd_width<2 || cmd_height<2) fail(`PAR_BAD_CONFIG);
@@ -193,7 +200,22 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 FP_WAIT: if(fp_valid) begin
                     // 下溢和非精确允许继续；非法、除零、溢出、非有限值终止。
                     if((|fp_flags[2:0]) || !finite(fp_result)) fail(`PAR_CALIB_INVALID);
-                    else begin v[destination]<=fp_result;pc<=continuation;end
+                    else begin case(destination)
+                        `PAR_STATE_N+0: v[`PAR_STATE_N+0]<=fp_result;
+                        `PAR_STATE_N+1: v[`PAR_STATE_N+1]<=fp_result;
+                        `PAR_STATE_N+2: v[`PAR_STATE_N+2]<=fp_result;
+                        `PAR_STATE_N+3: v[`PAR_STATE_N+3]<=fp_result;
+                        `PAR_STATE_N+4: v[`PAR_STATE_N+4]<=fp_result;
+                        `PAR_STATE_N+5: v[`PAR_STATE_N+5]<=fp_result;
+                        `PAR_STATE_N+6: v[`PAR_STATE_N+6]<=fp_result;
+                        `PAR_STATE_N+15: v[`PAR_STATE_N+15]<=fp_result;
+                        `PAR_STATE_N+16: v[`PAR_STATE_N+16]<=fp_result;
+                        `PAR_STATE_N+17: v[`PAR_STATE_N+17]<=fp_result;
+                        `PAR_STATE_N+18: v[`PAR_STATE_N+18]<=fp_result;
+                        `PAR_STATE_N+22: v[`PAR_STATE_N+22]<=fp_result;
+                        default: begin end
+                    endcase
+                    pc<=continuation;end
                 end
                 RESPONSE: if(rsp_ready) pc<=IDLE;
                 0: begin calculate(EXP, v[0], ZERO, `PAR_STATE_N+0, 1); end
@@ -204,7 +226,7 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 // 4: 主点从相对坐标还原
                 4: begin calculate(MUL, v[3], v[`PAR_STATE_N+24], `PAR_STATE_N+3, 5); end
                 // 5: 每视图解码一次 tz
-                5: begin calculate(EXP, v[14+6*view_id], ZERO, `PAR_STATE_N+4, 6); end
+                5: begin calculate(EXP, pose[383:320], ZERO, `PAR_STATE_N+4, 6); end
                 // 6: 每视图计算一次 R
                 6: begin if(rot_ready) pc<=7; end
                 7: begin if(rot_valid) begin if(rot_status!=0) fail(rot_status);else begin saved_r<=rot_r;pc<=8;end end end
@@ -227,7 +249,7 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 // 19: cost += du²+dv²；保持 C++ 分组
                 19: begin calculate(ADD, v[`PAR_STATE_N+22], v[`PAR_STATE_N+17], `PAR_STATE_N+22, 20); end
                 // 20: 先输出 du 再输出 dv，只有握手后推进索引
-                20: begin if(data_ready) begin if(!component) component<=1;else begin component<=0;if(point_id==(`PAR_POINTS-1)) begin point_id<=0;if(view_id==(`PAR_VIEWS-1)) pc<=RESPONSE;else begin view_id<=view_id+1'b1;pc<=5;end end else begin point_id<=point_id+1'b1;pc<=8;end end end end
+                20: begin if(data_ready) begin if(!component) component<=1;else begin component<=0;if(point_id==(`PAR_POINTS-1)) begin point_id<=0;if(view_id==(`PAR_VIEWS-1)) pc<=RESPONSE;else begin view_id<=view_id+1'b1;poses<=poses>>384;pc<=5;end end else begin point_id<=point_id+1'b1;pc<=8;end end end end
                 default: fail(`PAR_CALIB_INVALID);
             endcase
         end

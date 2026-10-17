@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 module tb_realtime_remap;
+ reg finished=0;reg bypass=0;
  localparam W=128,H=40,N=W*H,MAP=32'h20000,DST=32'h40000;
  reg clk=0;always #4 clk=~clk;
  reg rst_n=0,cmd=0;wire ready,rsp;wire [7:0] status;wire [31:0] cycles;
@@ -8,7 +9,7 @@ module tb_realtime_remap;
  wire wv,wq,wr,wd;wire [27:0] wa;wire [3:0] wl;wire [255:0] data;
  wire rl;wire [255:0] rd;reg inject_error=0;wire [3:0] rid=inject_error?4'd1:4'd0;
  realtime_remap #(.WIDTH(W),.HEIGHT(H),.CACHE_INDEX_BITS(3)) dut(
-  .clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(source),.dst_base(DST),.map_base(MAP),
+  .cmd_bypass(bypass),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(source),.dst_base(DST),.map_base(MAP),
   .rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.last_cycles(cycles),
   .arvalid(av),.arready(aq),.araddr(aa),.arlen(al),.rvalid(rv),.rdata(rd),.rlast(rl),.rid(rid),
   .awvalid(wv),.awready(wq),.awaddr(wa),.awlen(wl),.wdata(data),.wready(wr),.wdone(wd),.wid(4'b0));
@@ -46,6 +47,7 @@ module tb_realtime_remap;
  reg ar_stalled=0,aw_stalled=0;reg [31:0] held_ar,held_aw;
  always @(posedge clk)begin
   if(rst_n)begin
+   if(dut.bypass&&av[0])$fatal(1,"identity path read map DDR");
    clock_count<=clock_count+1;
    if(ar_stalled&&(!arvalid||{arlen,araddr}!=held_ar))$fatal(1,"AR changed under stall");
    if(aw_stalled&&(!awvalid||{awlen,awaddr}!=held_aw))$fatal(1,"AW changed under stall");
@@ -98,6 +100,11 @@ module tb_realtime_remap;
     for(k=0;k<4;k=k+1)memory[MAP/2+i*4+k]=desc[k*16+:16];
     expected[i]=reference(sample(x,y),sample(x+1,y),sample(x,y+1),sample(x+1,y+1),fx,fy);
     expected_neighbors[i]={sample(x+1,y+1),sample(x,y+1),sample(x+1,y),sample(x,y)};
+    if(bypass)begin
+     expected[i]=sample(i%W,i/W);
+     expected_neighbors[i]={48'b0,expected[i]};
+     for(k=0;k<4;k=k+1)memory[MAP/2+i*4+k]=16'hffff; // Poison: preview cannot depend on the map.
+    end
     memory[DST/2+i]=16'hdead;
    end
    @(negedge clk);cmd=1;do @(posedge clk);while(!ready);@(negedge clk);cmd=0;
@@ -111,7 +118,11 @@ module tb_realtime_remap;
  endtask
  initial begin
   repeat(5)@(posedge clk);@(negedge clk);rst_n=1;
-  frame(0);frame(1);frame(2);inject_error=1;frame(3);
+  frame(0);frame(1);frame(2);
+  bypass=1;frame(4);frame(5); // All pixels including right/bottom edge must copy exactly.
+  inject_error=1;frame(6);inject_error=0;bypass=0;frame(0);
+  inject_error=1;frame(3);
+  finished=1;
   $display("PASS realtime_remap numerical borders, cache conflicts/frame invalidation, native arbitration/stalls/error drain");$finish;
  end
  initial begin #30000000;$fatal(1,"timeout state=%d cache=%d writer=%d",dut.state,dut.cache.state,dut.writer.state);end

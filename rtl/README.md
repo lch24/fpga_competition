@@ -1,5 +1,7 @@
 # RTL 代码导航
 
+`control/demo/distort_demo_flow.v` 是可选人工畸变调度扩展，复用原板级流程和重映射电路。顶层 `ENABLE_DISTORT_DEMO=0` 时不实例化，操作与参数隔离见[人工畸变演示](../docs/DISTORT_DEMO.md)。
+
 先从 [calibrated_view_top.v](top/calibrated_view_top.v) 看板级连接，再从 [vision_ddr_top.v](top/vision_ddr_top.v) 看 DDR 到 DDR 的算法。完整数据流见[系统架构](../docs/SYSTEM_ARCHITECTURE.md)。
 
 ## 按硬件职责组织

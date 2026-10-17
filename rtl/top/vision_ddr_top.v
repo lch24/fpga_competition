@@ -5,7 +5,7 @@
 // One job and one frame lease at a time. Last input frame is the correction input.
 // Result memory remains owned by caller until rsp_ready; next start may overwrite.
 module vision_ddr_top #(
- parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,PACKED_MAP=0,
+ parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,PACKED_MAP=0,ENABLE_DISTORT_DEMO=0,
  parameter GRAY_BASE=32'h03000000,DST_BASE=32'h01000000,
  parameter FIXED_BILINEAR=1, parameter FIXED_ACCUM=1,
  parameter CANDIDATE_BASE=32'h03200000,
@@ -64,7 +64,13 @@ module vision_ddr_top #(
   input [63:0] a,an,b,bn;begin disjoint=(a+an<=b)||(b+bn<=a);end
  endfunction
  localparam [63:0] CANDIDATE_BYTES=64'd262144; // 2 banks * 16384 * 8 bytes
- wire layout_ok=(CANDIDATE_BASE & 63)==0 &&
+ wire demo_layout_ok=!ENABLE_DISTORT_DEMO || (PACKED_MAP&&MANUAL_CONTROL&&
+  IMAGE_BYTES<=64'h00200000&&MX_BYTES<=64'h00800000&&
+  GRAY_BASE>=32'h01800000&&GRAY_BASE+GRAY_BYTES<=32'h03800000&&
+  CANDIDATE_BASE>=32'h01800000&&CANDIDATE_BASE+CANDIDATE_BYTES<=32'h03800000&&
+  MAP_X_BASE>=32'h01800000&&MAP_X_BASE+MX_BYTES<=32'h03800000&&
+  DST_BASE==32'h01000000);
+ wire layout_ok=demo_layout_ok&&(CANDIDATE_BASE & 63)==0 &&
   CANDIDATE_BASE+CANDIDATE_BYTES<=64'h40000000 &&
   disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,GRAY_BASE,GRAY_BYTES)&&
   disjoint(CANDIDATE_BASE,CANDIDATE_BYTES,DST_BASE,IMAGE_BYTES)&&
@@ -117,7 +123,7 @@ module vision_ddr_top #(
  wire [2:0] c_b_ready;
  wire [15:0] c_b_tag;
  wire c_b_error;
- vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL),.BUILD_ONLY(PACKED_MAP)) sequence_ctrl(
+ vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL),.BUILD_ONLY(PACKED_MAP),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) sequence_ctrl(
   .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_remap(start_remap),.remap_base(remap_base),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
   .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(frame_stride),.frame_capacity(frame_capacity),
   .frame_status(frame_status),.frame_config_ok(frame_ok),.frame_release_valid(frame_release_valid),.frame_release_ready(frame_release_ready),
@@ -213,7 +219,7 @@ module vision_ddr_top #(
   .rsp_valid(rv),.rsp_ready(rr),.rsp_status(rs),.rsp_job_id(rid));
  generate if(DEBUG_ENABLE)begin : g_debug
  algorithm_debug recorder(.clk(clk),.rst_n(debug_rst_n),.functional_reset_n(rst_n),
-  .start_cal(start_valid&&start_ready&&!(MANUAL_CONTROL&&start_remap)),
+  .start_cal(start_valid&&start_ready&&(!(MANUAL_CONTROL&&start_remap)||(ENABLE_DISTORT_DEMO&&start_remap&&remap_base==32'hffffff04))),
   .job(debug_job),.phase(debug_phase),.view(debug_view),
   .detect_done(ddone&&debug_phase==7),.detect_count(total),.detect_flags({5'b0,grid_ok,dstatus}),
   .corner_valid(cv&&cr),.corner_x(dx),.corner_y(dy),
@@ -235,11 +241,25 @@ module vision_ddr_top #(
   else if(start_valid&&start_ready)result_rms<=0;
   else if(diag_v&&diag_metrics)result_rms<=diag_rms;
  end
+ // Integer image dimensions converted at elaboration, no runtime arithmetic.
+ function [31:0] demo_float;
+  input integer value; integer shift; reg [31:0] bits;
+  begin bits=value;shift=0; if(value==0)demo_float=0; else begin
+   while(bits>1)begin bits=bits>>1;shift=shift+1;end
+   bits=value<<(23-shift);demo_float=((127+shift)<<23)|(bits&32'h007fffff);
+  end end
+ endfunction
  generate if(PACKED_MAP)begin : g_packed
  assign c_rd_valid[2]=0;assign c_rd_addr[64+:32]=0;assign c_rd_len[64+:32]=0;assign c_rd_tag[32+:16]=0;assign c_r_ready[2]=1;
- packed_map_builder correction(
-  .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_params(result_params),
-  .cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_map_base(MAP_X_BASE),
+ localparam [31:0] DEMO_F=demo_float(WIDTH*4/5);
+ localparam [31:0] DEMO_CX=demo_float(WIDTH-1)-32'h00800000;
+ localparam [31:0] DEMO_CY=demo_float(HEIGHT-1)-32'h00800000;
+ wire demo_command=ENABLE_DISTORT_DEMO && opcode==3;
+ wire [287:0] builder_params=demo_command ?
+  {32'b0,32'b0,32'b0,32'b0,32'hbe3851ec,DEMO_CY,DEMO_CX,DEMO_F,DEMO_F}:result_params;
+ packed_map_builder #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) correction(
+  .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_params(builder_params),
+  .cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_map_base(demo_command?32'h03800000:MAP_X_BASE),
   .rsp_valid(udone),.rsp_ready(uack),.rsp_status(us),
   .wr_valid(c_wr_valid[2]),
   .wr_ready(c_wr_ready[2]),

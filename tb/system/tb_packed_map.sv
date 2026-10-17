@@ -1,12 +1,14 @@
 `timescale 1ns/1ps
-module tb_packed_map;
+module tb_packed_map #(parameter ENABLE_DISTORT_DEMO=0);
+ reg finished=0;
  reg clk=0;always #5 clk=~clk;reg rst=0,cmd=0,rsp_ready=0;
+ reg [1:0] opcode=1;integer expected_writes=24;
  wire ready,rsp;wire [7:0] status;reg [287:0] params=0;
  wire wv,wready,dv,dready,br;wire [31:0] addr,len,data;wire [15:0] tag;wire [3:0] keep;wire last;
  reg completion=0,fault=0;reg [31:0] address;reg pending=0;integer ticks=0,writes=0,i;
  reg [31:0] memory[0:23];
  assign wready=!pending&&!completion&&ticks%3!=0;assign dready=pending&&ticks%5!=0;
- packed_map_builder dut(.clk(clk),.rst_n(rst),.cmd_valid(cmd),.cmd_ready(ready),.cmd_opcode(2'd1),.cmd_params(params),
+ packed_map_builder #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) dut(.clk(clk),.rst_n(rst),.cmd_valid(cmd),.cmd_ready(ready),.cmd_opcode(opcode),.cmd_params(params),
   .cmd_width(16'd4),.cmd_height(16'd3),.cmd_map_base(32'h20000),.rsp_valid(rsp),.rsp_ready(rsp_ready),.rsp_status(status),
   .wr_valid(wv),.wr_ready(wready),.wr_addr(addr),.wr_len(len),.wr_tag(tag),
   .w_valid(dv),.w_ready(dready),.w_data(data),.w_keep(keep),.w_last(last),
@@ -35,9 +37,16 @@ module tb_packed_map;
    x=i%4;y=i/4;mask={y<2&&x<3,y<2,x<3,1'b1};expected={mask,14'(y),14'(x),32'b0};
    if({memory[2*i+1],memory[2*i]}!==expected)$fatal(1,"packed map pixel %d got=%h expected=%h",i,{memory[2*i+1],memory[2*i]},expected);
   end
-  params[31:0]=32'h7fc00000;start;response(1);if(writes!=24)$fatal(1,"invalid params wrote map");
+  if(ENABLE_DISTORT_DEMO)begin
+   opcode=3;params[31:0]=32'h40800000;params[63:32]=32'h40800000;
+   params[95:64]=32'h3fc00000;params[127:96]=32'h3f800000;params[159:128]=32'hbe3851ec;
+   start;response(0);expected_writes=48;
+   if(writes!=48||memory[1][31:28]!=8)$fatal(1,"inverse descriptor boundary/write count");
+   opcode=1;
+  end
+  params[31:0]=32'h7fc00000;start;response(1);if(writes!=expected_writes)$fatal(1,"invalid params wrote map");
   params[31:0]=32'h3f800000;fault=1;start;response(5);
-  $display("PASS packed_map identity/border descriptors, single issue, held responses, invalid parameters and write-error drain");$finish;
+  finished=1;$display("PASS packed_map identity/border descriptors, single issue, held responses, invalid parameters and write-error drain");$finish;
  end
  initial begin #10000000;$fatal(1,"map timeout state=%d core=%d",dut.state,dut.core.state);end
 endmodule

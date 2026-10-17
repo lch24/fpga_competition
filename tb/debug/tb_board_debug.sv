@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_board_debug;
+module tb_board_debug #(parameter ENABLE_DISTORT_DEMO=0);
  reg clk=0,core=0,alg=0,run_core=1,run_alg=1,rx=1;
  always #5 clk=~clk;
  always #4 if(run_core)core=~core;
@@ -17,7 +17,7 @@ module tb_board_debug;
  .cal_phase(4'd2),.diag_status(status),.rms(64'h3ff0000000000000),
  .rsp_valid(rv),.rsp_status(status),.argument(arg),.snapshot(ad),
  .live(72'h98765432123456789a),.rd_accept(1'b0),.rd_return(1'b0),.wr_accept(1'b0),.bus_state(12'h123),.address(32'b0));
- board_debug #(.CLOCK_HZ(1000000),.BAUD(100000)) dut(.clk(clk),.rx(rx),.tx(tx),.debug_rst_n(rst),
+ board_debug #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.CLOCK_HZ(1000000),.BAUD(100000)) dut(.clk(clk),.rx(rx),.tx(tx),.debug_rst_n(rst),
  .camera_clk(alg),.camera_vsync(camvs),.core_clk(core),.algorithm_clk(alg),.core_data(cd),.algorithm_data(ad),.algorithm_argument(arg),.core_argument(core_arg),.health(health));
  reg [7:0] bytes[0:129];reg [7:0] last_packet[0:129];
  integer trace;initial trace=$fopen("uart_packets.hex","w");
@@ -72,6 +72,7 @@ module tb_board_debug;
   query(8'h44,0);
   if(last_packet[80]!=8'h9a||last_packet[84]!=8'h12)$fatal(1,"progress");
   query(8'h56,0);if(core_arg!=16'hfffd||{last_packet[127],last_packet[126]}!=16'hfffd||!last_packet[13][3])$fatal(1,"video page/tag mismatch");
+  if(ENABLE_DISTORT_DEMO)begin query(8'h45,0);if(core_arg!=16'hfffc||{last_packet[127],last_packet[126]}!=16'hfffc||!last_packet[13][3])$fatal(1,"demo page/tag mismatch");end
   fn=0;query(8'h53,0);
   if(last_packet[70][0]||!last_packet[70][1])$fatal(1,"reset/result retention");
   run_alg=0;repeat(110000)@(posedge clk);query(8'h53,0);

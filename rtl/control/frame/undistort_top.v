@@ -57,7 +57,7 @@ module undistort_top (
  wire [31:0] co_x,co_y,co_id;wire [15:0] co_dx,co_dy;
  wire fpq_valid,fpq_ready,fpr_valid,fpr_ready,fpr_error;
  wire [2:0] fpq_op;wire [31:0] fpq_a,fpq_b,fpr_data;
- map_coord_core core(.clk(clk),.rst_n(rst_n),.cfg_valid(state==CFG_CORE),.cfg_ready(core_cfg_ready),
+ map_coord_core core(.cfg_inverse(1'b0),.clk(clk),.rst_n(rst_n),.cfg_valid(state==CFG_CORE),.cfg_ready(core_cfg_ready),
   .cfg_fx(params[31:0]),.cfg_fy(params[63:32]),.cfg_cx(params[95:64]),.cfg_cy(params[127:96]),
   .cfg_k1(params[159:128]),.cfg_k2(params[191:160]),.cfg_k3(params[223:192]),
   .cfg_p1(params[255:224]),.cfg_p2(params[287:256]),

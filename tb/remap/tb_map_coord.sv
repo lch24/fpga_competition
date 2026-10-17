@@ -9,7 +9,7 @@ module tb_map_coord;
  wire [15:0] out_dst_x,out_dst_y;wire out_last,out_error;
  wire fp_req_valid,fp_req_ready,fp_rsp_valid,fp_rsp_ready,fp_rsp_error;
  wire [2:0] fp_req_op;wire [31:0] fp_req_a,fp_req_b,fp_rsp_result;
- map_coord_core dut(.*);
+ map_coord_core dut(.cfg_inverse(1'b0),.*);
  fp32_service fp(.clk(clk),.rst_n(rst_n),.req_valid(fp_req_valid),.req_ready(fp_req_ready),.req_op(fp_req_op),.req_a(fp_req_a),.req_b(fp_req_b),.rsp_valid(fp_rsp_valid),.rsp_ready(fp_rsp_ready),.rsp_result(fp_rsp_result),.rsp_error(fp_rsp_error));
  reg [95:0] vectors[0:99];integer i;
  initial begin

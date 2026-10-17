@@ -45,6 +45,7 @@ rtl/control/calibration/engine/calib_sequencer.v
 rtl/control/calibration/init/init_controller.v
 rtl/control/calibration/init/pose_init.v
 rtl/control/calibration/lm/lm_controller.v
+rtl/control/demo/distort_demo_flow.v
 rtl/control/detection/detection_flow_control.v
 rtl/control/detection/detection_program.v
 rtl/control/frame/calibration_mailbox.v

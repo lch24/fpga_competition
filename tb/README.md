@@ -1,6 +1,10 @@
 # 仿真测试平台
 
+`demo/` 保存人工畸变扩展的长短按、流程调度、逆映射、建表、参数隔离与 UART 测试，由 `scripts/demo/run_checks.py` 执行。关闭扩展时继续使用原测试，详见[人工畸变演示](../docs/DISTORT_DEMO.md)。
+
 这里保存 HDL 激励、断言和行为模型，运行器在 [scripts](../scripts/README.md)，参考输入在 [data](../data/README.md)。
+
+`system/tb_photo_preview.sv` 覆盖正常/人工畸变预览、照片回看定时、DDR 在途任务排空、失败恢复和预览到标定/校正的交接。运行：`python scripts/demo/run_checks.py --modelsim <ModelSim目录> --only tb_photo_preview`。残差寄存器压缩的数值与复位验证使用 `scripts/compute/run_residual_engine.ps1`。
 
 | 目录 | 与当前架构的对应关系 |
 |---|---|

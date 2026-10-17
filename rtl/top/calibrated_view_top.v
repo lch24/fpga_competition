@@ -2,6 +2,7 @@
 module calibrated_view_top#(
 	parameter FIXED_BILINEAR = 1, parameter FIXED_ACCUM=1,
     parameter REALTIME_VIDEO = 1,
+    parameter ENABLE_DISTORT_DEMO = 1,
     parameter CAMERA_SELECT = 2,
     parameter KEY_DEBOUNCE_CYCLES = 2500000,
     parameter [63:0] SQUARE_SIZE_FP64 = 64'h3ff0000000000000,
@@ -231,16 +232,22 @@ wire display_idle,display_owner,ui_busy,calibrated,corrected;
 wire [2:0] captured;wire [1:0] selected;
 wire [31:0] cap_base,display_base,frame_base,start_base;
 wire start_remap;
-wire video_active,map_ready,display_frame_start;
+wire video_active,map_ready,display_frame_start,ui_display_corrected;
 wire [31:0] captured_frames,corrected_frames,displayed_frames,failed_frames,skipped_frames,last_remap_cycles,cap_rsp_base;
 wire rt_cmd_valid,rt_cmd_ready,rt_rsp_valid,rt_rsp_ready;wire [7:0] rt_status;wire [31:0] rt_src,rt_dst;
 wire [3:0] native_arready,native_rvalid;wire [2:0] native_awready,native_wready,native_wdone;
 wire [55:0] rt_araddr;wire [7:0] rt_arlen;wire [1:0] rt_arvalid;
 wire [27:0] rt_awaddr;wire [3:0] rt_awlen;wire rt_awvalid;wire [255:0] rt_wdata;
-board_buttons #(.DEBOUNCE_CYCLES(KEY_DEBOUNCE_CYCLES)) buttons(
- .clk(core_clk),.rst_n(core_rst_n),.key_n(key_n),.pressed(pressed));
+wire demo_toggle,distort_mode,demo_pending,demo_map_ready;
+wire rt_bypass;wire [31:0] rt_map;wire [255:0] demo_snapshot;
+board_buttons #(.DEBOUNCE_CYCLES(KEY_DEBOUNCE_CYCLES),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) buttons(
+ .clk(core_clk),.rst_n(core_rst_n),.key_n(key_n),.pressed(pressed),.toggle_mode(demo_toggle));
 generate if(REALTIME_VIDEO)begin : g_video_flow
-video_board_flow flow(
+if(ENABLE_DISTORT_DEMO)begin : g_demo
+distort_demo_flow flow(
+ .preview_enable(1'b1),
+ .toggle_mode(demo_toggle),.remap_cycles(last_remap_cycles),.distort_mode(distort_mode),
+ .mode_pending(demo_pending),.demo_map_ready(demo_map_ready),.remap_map(rt_map),.demo_snapshot(demo_snapshot),
  .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),.display_frame_start(display_frame_start),
  .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
  .frame_ready(frame_ready),.frame_valid(frame_valid),.frame_status(frame_status),.frame_base(frame_base),
@@ -250,13 +257,33 @@ video_board_flow flow(
  .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.capture_owner(capture_owner),
  .display_enable(display_enable),.display_owner(display_owner),.display_base(display_base),
  .status(status),.waiting(waiting),.phase(phase),.captured(captured),.calibrated(calibrated),
- .corrected(corrected),.selected(selected),.busy(ui_busy),.video_active(video_active),.map_ready(map_ready),
- .remap_valid(rt_cmd_valid),.remap_ready(rt_cmd_ready),.remap_src(rt_src),.remap_dst(rt_dst),
+ .corrected(corrected),.selected(selected),.busy(ui_busy),.video_active(video_active),.map_ready(map_ready),.display_corrected(ui_display_corrected),
+ .remap_bypass(rt_bypass),.remap_valid(rt_cmd_valid),.remap_ready(rt_cmd_ready),.remap_src(rt_src),.remap_dst(rt_dst),
  .remap_rsp_valid(rt_rsp_valid),.remap_rsp_ready(rt_rsp_ready),.remap_status(rt_status),
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames));
+end else begin : g_normal
+assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_map=32'h02000000;assign demo_snapshot=0;
+video_board_flow flow(
+ .preview_enable(1'b1),.preview_active(),
+ .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),.display_frame_start(display_frame_start),
+ .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
+ .frame_ready(frame_ready),.frame_valid(frame_valid),.frame_status(frame_status),.frame_base(frame_base),
+ .frame_release_valid(release_valid),.frame_release_ready(release_ready),
+ .cap_cmd_valid(cap_cmd_valid),.cap_cmd_ready(cap_cmd_ready),.cap_base(cap_base),
+ .cap_rsp_valid(cap_rsp_valid),.cap_rsp_ready(cap_rsp_ready),.cap_status(cap_status),.cap_rsp_base(cap_rsp_base),
+ .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.capture_owner(capture_owner),
+ .display_enable(display_enable),.display_owner(display_owner),.display_base(display_base),
+ .status(status),.waiting(waiting),.phase(phase),.captured(captured),.calibrated(calibrated),
+ .corrected(corrected),.selected(selected),.busy(ui_busy),.video_active(video_active),.map_ready(map_ready),.display_corrected(ui_display_corrected),
+ .remap_bypass(rt_bypass),.remap_valid(rt_cmd_valid),.remap_ready(rt_cmd_ready),.remap_src(rt_src),.remap_dst(rt_dst),
+ .remap_rsp_valid(rt_rsp_valid),.remap_rsp_ready(rt_rsp_ready),.remap_status(rt_status),
+ .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames));
+end
 end else begin : g_photo_flow
+assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_map=32'h02000000;assign demo_snapshot=0;
+assign ui_display_corrected=display_enable&&display_base==DST_BASE;
 assign video_active=0;assign map_ready=0;assign captured_frames=0;assign corrected_frames=0;assign displayed_frames=0;assign failed_frames=0;
-assign rt_cmd_valid=0;assign rt_rsp_ready=1;assign rt_src=0;assign rt_dst=0;
+assign rt_bypass=0;assign rt_cmd_valid=0;assign rt_rsp_ready=1;assign rt_src=0;assign rt_dst=0;
 board_flow flow(
  .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),
  .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
@@ -401,7 +428,7 @@ vision_clock_bridge algorithm_cdc(.core_clk(core_clk),.core_rst_n(core_rst_n),
  .b_tag(b_tag),
  .a_b_error(a_b_error),
  .b_error(b_error));
-vision_ddr_top #(.DEBUG_ENABLE(1),.MANUAL_CONTROL(1),.PACKED_MAP(REALTIME_VIDEO),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
+vision_ddr_top #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.DEBUG_ENABLE(1),.MANUAL_CONTROL(1),.PACKED_MAP(REALTIME_VIDEO),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
  .clk(algorithm_clk),.rst_n(algorithm_rst_n),.start_valid(a_start_valid),.start_ready(a_start_ready),.square_size_fp64(SQUARE_SIZE_FP64),.start_remap(a_start_remap),.remap_base(a_start_base),
  .frame_valid(a_frame_valid),.frame_ready(a_frame_ready),.frame_base(a_frame_base),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(a_frame_status),
  .frame_release_valid(a_release_valid),.frame_release_ready(a_release_ready),
@@ -487,7 +514,7 @@ board_display_hmic #(.DYNAMIC_BASE(1),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.RAW_BASE(RA
  .axi_rdata(rdata_q),.axi_rvalid(native_rvalid[1]),.axi_rlast(rlast_q),.axi_rid(rid_q));
 generate if(REALTIME_VIDEO)begin : g_realtime
 realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) remap(
- .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(rt_cmd_valid),.cmd_ready(rt_cmd_ready),.src_base(rt_src),.dst_base(rt_dst),.map_base(32'h02000000),
+ .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(rt_cmd_valid),.cmd_ready(rt_cmd_ready),.src_base(rt_src),.dst_base(rt_dst),.map_base(rt_map),.cmd_bypass(rt_bypass),
  .rsp_valid(rt_rsp_valid),.rsp_ready(rt_rsp_ready),.rsp_status(rt_status),.last_cycles(last_remap_cycles),
  .arvalid(rt_arvalid),.arready(native_arready[3:2]),.araddr(rt_araddr),.arlen(rt_arlen),
  .rvalid(native_rvalid[3:2]),.rdata(rdata_q),.rlast(rlast_q),.rid(rid_q),
@@ -526,22 +553,33 @@ end
 reg [1:0] underflow_sync /* synthesis PAP_ASYNC_REG=1 */;
 always @(posedge core_clk or negedge core_rst_n)
  if(!core_rst_n)underflow_sync<=0;else underflow_sync<={underflow_sync[0],underflow};
+wire demo_heartbeat;
+generate if(ENABLE_DISTORT_DEMO)begin : g_demo_led
+ reg [26:0] ticks;
+ always @(posedge core_clk or negedge core_rst_n)
+  if(!core_rst_n)ticks<=0;else if(ticks==124999999)ticks<=0;else ticks<=ticks+1'b1;
+ assign demo_heartbeat=distort_mode ? (ticks<12500000||(ticks>=25000000&&ticks<37500000)) : heart_beat_led;
+end else begin : g_normal_led
+ assign demo_heartbeat=heart_beat_led;
+end endgenerate
 assign led={status!=0||display_error||(display_enable&&underflow_sync[1]),
- corrected,calibrated,ui_busy,captured,heart_beat_led};
+ corrected,calibrated,ui_busy,captured,demo_heartbeat};
 
 
 // Debug continues before DDR initialization and across functional resets.
 reset_sync dcr(.clk(core_clk),.arst_n(debug_por_n),.rst_n(debug_core_rst_n));
 reset_sync dar(.clk(algorithm_clk),.arst_n(debug_por_n),.rst_n(debug_algorithm_rst_n));
+wire [255:0] normal_core_snapshot;
+assign debug_core_data=ENABLE_DISTORT_DEMO && debug_core_argument==16'hfffc ? {demo_snapshot[255:64],normal_core_snapshot[63:0]} : normal_core_snapshot;
 core_debug #(.VIDEO_ENABLE(REALTIME_VIDEO),.EVENT_MASK(32'hfbfffffe)) core_recorder(.clk(core_clk),.rst_n(debug_core_rst_n),.functional_reset_n(core_rst_n),
- .state_word({3'b0,map_ready,video_active,(display_base==DST_BASE||(REALTIME_VIDEO&&display_base==DST_BASE+32'h00200000)),start_remap,ready_sync[1],status,phase,selected,captured,calibrated,corrected,ui_busy,
+ .state_word({demo_map_ready,demo_pending,distort_mode,map_ready,video_active,ui_display_corrected,start_remap,ready_sync[1],status,phase,selected,captured,calibrated,corrected,ui_busy,
               display_enable,display_owner,capture_owner,display_idle}),
  .pressed(pressed),.busy(ui_busy),.display_error(display_error),.underflow(underflow_sync[1]&&display_enable),
  .read_accept(axi_arvalid&&axi_arready),.read_return(rvalid_q),
  .write_accept(axi_awvalid&&axi_awready),.write_return(axi_wusero_last),
- .read_addr({4'b0,axi_araddr}),.write_addr({4'b0,axi_awaddr}),.snapshot(debug_core_data),.argument(debug_core_argument),
- .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames),.skipped_frames(skipped_frames),.last_remap_cycles(last_remap_cycles));
-board_debug diagnostics(.clk(sys_clk),.rx(uart_rx),.tx(uart_tx),.debug_rst_n(debug_por_n),
+ .read_addr({4'b0,axi_araddr}),.write_addr({4'b0,axi_awaddr}),.snapshot(normal_core_snapshot),.argument(debug_core_argument),
+ .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames),.skipped_frames(skipped_frames),.last_remap_cycles(ENABLE_DISTORT_DEMO?demo_snapshot[191:160]:last_remap_cycles));
+board_debug #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) diagnostics(.clk(sys_clk),.rx(uart_rx),.tx(uart_tx),.debug_rst_n(debug_por_n),
  .camera_clk(cam_clk),.camera_vsync(cam_vs),.core_clk(core_clk),.algorithm_clk(algorithm_clk),.core_data(debug_core_data),
  .algorithm_data(debug_algorithm_data),.algorithm_argument(debug_argument),.core_argument(debug_core_argument),
  .health({algorithm_rst_n,core_rst_n,init_over_tx,cmos_init_done,ddr_init_done,algorithm_locked,locked}));

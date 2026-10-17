@@ -136,12 +136,12 @@ module tb_residual_engine;
         protocol_cases=protocol_cases+1;
         // 复位发生在 RAM 已返回、点投影计算进行中。
         phase=2;launch();cycles=0;
-        while(reads==0 && cycles<10000) begin @(negedge clk);cycles=cycles+1;end
+        while(reads==0 && cycles<200000) begin @(negedge clk);cycles=cycles+1;end
         check(reads==1,"reached point calculation");repeat(70) @(negedge clk);reset_dut();
         protocol_cases=protocol_cases+1;
         // 复位发生在残差输出背压中。
         phase=3;launch();cycles=0;
-        while(!data_valid && cycles<10000) begin @(negedge clk);cycles=cycles+1;end
+        while(!data_valid && cycles<200000) begin @(negedge clk);cycles=cycles+1;end
         check(data_valid,"reached stalled stream");repeat(6) @(negedge clk);reset_dut();
         protocol_cases=protocol_cases+1;
         phase=4;abort_test=0;launch();wait_result();protocol_cases=protocol_cases+1;

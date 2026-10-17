@@ -3,7 +3,7 @@
 // [15:0] fx, [31:16] fy (Q0.16), [45:32] signed x0, [59:46] signed y0,
 // [63:60] valid neighbor mask {p11,p01,p10,p00}. Black border, not clamp.
 // Shares the existing tested FP32 map computation; no per-video-frame FP.
-module packed_map_builder(
+module packed_map_builder #(parameter ENABLE_DISTORT_DEMO=0)(
  input wire clk,rst_n,cmd_valid,output wire cmd_ready,
  input wire [1:0] cmd_opcode,input wire [287:0] cmd_params,
  input wire [15:0] cmd_width,cmd_height,input wire [31:0] cmd_map_base,
@@ -14,6 +14,7 @@ module packed_map_builder(
  input wire b_valid,output wire b_ready,input wire [15:0] b_tag,input wire b_error
 );
  localparam IDLE=0,CONFIG=1,RUN=2,WRITE_LO=3,WAIT_LO=4,WRITE_HI=5,WAIT_HI=6,DONE=7;
+ reg inverse;
  reg [2:0] state;reg [287:0] params;reg [15:0] width,height,x,y;
  reg [31:0] base,pixel_id,address;reg [63:0] descriptor;reg last,issued;
  integer parameter_index;reg parameters_ok;
@@ -27,7 +28,7 @@ module packed_map_builder(
  wire [31:0] sx,sy,co_id;wire [15:0] ox,oy;
  wire qv,qr,rv,rr,re;wire [2:0] op;wire [31:0] a,b,result;
  assign cmd_ready=state==IDLE;assign rsp_valid=state==DONE;
- map_coord_core core(.clk(clk),.rst_n(rst_n),.cfg_valid(state==CONFIG),.cfg_ready(cfg_ready),
+ map_coord_core #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) core(.cfg_inverse(inverse),.clk(clk),.rst_n(rst_n),.cfg_valid(state==CONFIG),.cfg_ready(cfg_ready),
   .cfg_fx(params[31:0]),.cfg_fy(params[63:32]),.cfg_cx(params[95:64]),.cfg_cy(params[127:96]),
   .cfg_k1(params[159:128]),.cfg_k2(params[191:160]),.cfg_k3(params[223:192]),.cfg_p1(params[255:224]),.cfg_p2(params[287:256]),
   .in_valid(state==RUN&&!issued),.in_ready(ci_ready),.in_dst_x(x),.in_dst_y(y),.in_pixel_id(pixel_id),.in_last(x==width-1&&y==height-1),
@@ -49,11 +50,12 @@ module packed_map_builder(
   .b_valid(b_valid),.b_ready(b_ready),.b_tag(b_tag),.b_error(b_error));
  // Issue ONE coordinate, wait for its descriptor before accepting the next.
  always @(posedge clk or negedge rst_n)begin
-  if(!rst_n)begin state<=IDLE;rsp_status<=0;params<=0;width<=0;height<=0;x<=0;y<=0;base<=0;pixel_id<=0;descriptor<=0;address<=0;last<=0;issued<=0;end
+  if(!rst_n)begin state<=IDLE;inverse<=0;rsp_status<=0;params<=0;width<=0;height<=0;x<=0;y<=0;base<=0;pixel_id<=0;descriptor<=0;address<=0;last<=0;issued<=0;end
   else case(state)
    IDLE:if(cmd_valid)begin
+    inverse<=ENABLE_DISTORT_DEMO && cmd_opcode==3;
     params<=cmd_params;width<=cmd_width;height<=cmd_height;base<=cmd_map_base;x<=0;y<=0;pixel_id<=0;issued<=0;rsp_status<=0;
-    if(!parameters_ok||cmd_opcode!=1||cmd_width==0||cmd_height==0||cmd_width>1920||cmd_height>1080||cmd_map_base[4:0]!=0||
+    if(!parameters_ok||(cmd_opcode!=1&&!(ENABLE_DISTORT_DEMO&&cmd_opcode==3))||cmd_width==0||cmd_height==0||cmd_width>1920||cmd_height>1080||cmd_map_base[4:0]!=0||
        {32'b0,cmd_map_base}+64'd8*cmd_width*cmd_height>64'h40000000)begin rsp_status<=1;state<=DONE;end
     else state<=CONFIG;
    end

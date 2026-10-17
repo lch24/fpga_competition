@@ -1,10 +1,11 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
+`include "distort_demo.vh"
 // Serial orchestration only; no numerical algorithm is replaced here.
 // External callers supply ordered frame descriptors, never job/view/index IDs.
 // Manual board mode returns after calibration and retains parameters here.
 // A later start_remap corrects remap_base; default mode chains all stages.
-module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_ONLY=0)(
+module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0)(
  input wire clk,rst_n,layout_ok,
  input wire start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
  input wire start_remap,input wire [31:0] remap_base,
@@ -36,13 +37,22 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
  localparam IDLE=0,COLLECT=1,FRAME=2,GRAY_CMD=3,GRAY_WAIT=4,DET_START=5,
  DET_ARM=6,DET_WAIT=7,VIEW_RSP=8,RELEASE=9,CAL_CMD=10,CAL_WAIT=11,
  BUILD_CMD=12,BUILD_WAIT=13,REMAP_CMD=14,REMAP_WAIT=15,RESPONSE=16;
- reg params_valid;
+ reg params_valid; reg demo_build;
  reg [5:0] state;reg held,release_to_frame;reg [8:0] point_count;
  assign start_ready=state==IDLE;assign busy=state!=IDLE;
  assign frame_ready=state==FRAME;assign frame_release_valid=state==RELEASE;
  assign rsp_valid=state==RESPONSE;assign debug_phase=state;
  // Parameters live in this controller, outside the worker reset domain.
- assign algorithm_rst_n=rst_n&&state!=IDLE;
+ // A decoded multi-bit FSM must not drive asynchronous worker reset: state
+ // transitions can briefly decode IDLE after routing and erase collected data.
+ // Hold one dedicated flop throughout the whole accepted task, including stalls.
+ reg worker_active;
+ assign algorithm_rst_n=rst_n&&worker_active;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)worker_active<=0;
+  else if(start_valid&&start_ready)worker_active<=1;
+  else if(rsp_valid&&rsp_ready)worker_active<=0;
+ end
  assign gray_cmd_valid=state==GRAY_CMD;assign gray_rsp_ready=state==GRAY_WAIT;
  assign det_process=state==DET_START;
  // DET_ARM deliberately ignores the previous frame's sticky done at start.
@@ -55,18 +65,23 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
  assign cal_cmd_valid=state==CAL_CMD;
  assign mb_ready=state==CAL_WAIT;
  assign remap_cmd_valid=state==BUILD_CMD||state==REMAP_CMD;
- assign remap_opcode=state==BUILD_CMD?2'd1:2'd2;
+ assign remap_opcode=state==BUILD_CMD?(ENABLE_DISTORT_DEMO&&demo_build?2'd3:2'd1):2'd2;
  assign remap_rsp_ready=state==BUILD_WAIT||state==REMAP_WAIT;
  always @(posedge clk or negedge rst_n)begin
-  if(!rst_n)begin state<=IDLE;job<=0;view_id<=0;src_base<=0;src_stride<=0;src_capacity<=0;
+  if(!rst_n)begin state<=IDLE;demo_build<=0;job<=0;view_id<=0;src_base<=0;src_stride<=0;src_capacity<=0;
    square<=0;params<=0;params_valid<=0;rsp_status<=0;view_status<=0;point_count<=0;held<=0;release_to_frame<=0;end
   else begin
    if(det_valid&&det_ready&&point_count<511)point_count<=point_count+1'b1;
    case(state)
     IDLE:if(start_valid)begin
-     held<=0;rsp_status<=0;
+     held<=0;rsp_status<=0;demo_build<=0;
      if(MANUAL_CONTROL&&start_remap)begin
-      if(!params_valid)begin rsp_status<=8'h82;state<=RESPONSE;end
+      if(ENABLE_DISTORT_DEMO && remap_base==`DEMO_CLEAR_COMMAND)begin
+       job<=job+1'b1;params<=0;params_valid<=0;state<=RESPONSE;
+      end else if(ENABLE_DISTORT_DEMO && remap_base==`DEMO_BUILD_COMMAND)begin
+       if(!layout_ok)begin rsp_status<=1;state<=RESPONSE;end
+       else begin demo_build<=1;state<=BUILD_CMD;end
+      end else if(!params_valid)begin rsp_status<=8'h82;state<=RESPONSE;end
       else begin src_base<=remap_base;src_stride<=2*WIDTH;src_capacity<=2*WIDTH*HEIGHT;state<=BUILD_CMD;end
      end else begin
       job<=job+1'b1;view_id<=0;square<=square_size_fp64;params<=0;params_valid<=0;
@@ -120,7 +135,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
     BUILD_CMD:if(remap_cmd_ready)state<=BUILD_WAIT;
     BUILD_WAIT:if(remap_rsp_valid)begin
      if(remap_status!=0)begin rsp_status<=remap_status;release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
-     else if(BUILD_ONLY)begin release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
+     else if(BUILD_ONLY || (ENABLE_DISTORT_DEMO&&demo_build))begin release_to_frame<=0;state<=held?RELEASE:RESPONSE;end
      else state<=REMAP_CMD;
     end
     REMAP_CMD:if(remap_cmd_ready)state<=REMAP_WAIT;

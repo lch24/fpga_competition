@@ -13,7 +13,7 @@ import struct
 import time
 
 UI = ['idle', 'drain_display', 'capture_command', 'capture', 'start_algorithm',
-      'offer_frame', 'wait_frame_release', 'wait_result', 'live_video', 'drain_video']
+      'offer_frame', 'wait_frame_release', 'wait_result', 'live_video', 'drain_video', 'demo_mode_change', 'demo_photo_processing', 'camera_preview']
 ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'detect_start', 'detect_arm', 'detect_wait', 'view_response',
              'release_frame', 'calibration_command', 'calibration_wait',
@@ -73,6 +73,8 @@ def decode(frame):
         'camera_configured': bool(word & (1 << 24)),
         'display_corrected': bool(word & (1 << 26)),
         'video_active': bool(word & (1 << 27)), 'map_ready': bool(word & (1 << 28)),
+        'distort_mode': bool(word & (1 << 29)), 'mode_pending': bool(word & (1 << 30)),
+        'demo_map_ready': bool(word & (1 << 31)),
         'status': (word >> 16) & 255, 'selected': (word >> 10) & 3,
         'captured_mask': (word >> 7) & 7, 'calibrated': bool(word & 64),
         'corrected': bool(word & 32), 'busy': bool(word & 16),
@@ -93,7 +95,7 @@ def decode(frame):
         'last_status': alg[14], 'last_error': alg[15],
         'corner_count': int.from_bytes(alg[60:62], 'little'), 'page': tag,
     }
-    if frame[3] == 0x56 and result['page_matches']:
+    if frame[3] in (0x56, 0x45) and result['page_matches']:
         for key in ('ui_dwell_cycles', 'ddr_read_requests', 'ddr_return_activity',
                     'ddr_write_requests', 'last_hmic_word_address', 'core_reset_released',
                     'sticky_display_error', 'sticky_underflow', 'first_ui_error', 'ignored_busy_keys'):
@@ -103,6 +105,13 @@ def decode(frame):
             displayed_new_frames=u32(core, 16), failed_frames=u32(core, 20),
             skipped_camera_frames_since_reset=u32(core, 24), last_remap_cycles=cycles,
             last_remap_ms=cycles / 125000.0)
+    if frame[3] == 0x45 and result['page_matches']:
+        result.pop('video', None)
+        stage = u32(core, 8)
+        result['demo'] = dict(mode_state=(stage >> 4) & 7, capture_state=(stage >> 7) & 7,
+            remap_state=(stage >> 10) & 3, first_pass=bool(stage & 4), photo_job=bool(stage & 8),
+            error=(stage >> 12) & 255, first_pass_cycles=u32(core, 12), second_pass_cycles=u32(core, 16),
+            total_cycles=u32(core, 20), failed_passes=u32(core, 24), build_elapsed_ms=u32(core, 28))
     if tag == 0xffff:
         result['params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 2 else None
         result['rms'] = struct.unpack_from('<d', alg, 52)[0] if flag & 4 else None
@@ -120,7 +129,7 @@ def decode(frame):
             'last_accepted_steps': int.from_bytes(alg[46:48], 'little'),
             'last_error_job': u32(alg, 48),
         }
-    elif tag != 0xfffd:
+    elif tag not in (0xfffd, 0xfffc):
         result['corner_valid'] = bool(flag & 16)
         result['corner_xy'] = struct.unpack_from('<2f', alg, 16) if flag & 16 else None
     return result
@@ -139,7 +148,7 @@ class Monitor:
         return [decode(f) for f in self.framer.feed(self.port.read(1024))]
 
     def query(self, op, index=0):
-        tag = 0xffff if op == 0x53 else 0xfffe if op == 0x44 else 0xfffd if op == 0x56 else index
+        tag = 0xffff if op == 0x53 else 0xfffe if op == 0x44 else 0xfffd if op == 0x56 else 0xfffc if op == 0x45 else index
         # Bounded retries also handle a busy notification/query slot.
         for _ in range(3):
             self.port.write(command(op, index))
@@ -181,6 +190,16 @@ def self_test():
     payload[5] = 0
     data = video_header + payload
     assert 'video' not in decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
+    # Demo counters share the normal core state/event words, never the params page.
+    payload[5] |= 8
+    struct.pack_into('<H', payload, 118, 0xfffc)
+    struct.pack_into('<I', payload, 24, (1 << 29) | (1 << 31))
+    for offset, value in ((36, 100), (40, 110), (44, 210), (48, 3), (52, 900)):
+        struct.pack_into('<I', payload, offset, value)
+    data = header[:3] + b'\x45' + header[4:] + payload
+    result = decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
+    assert result['distort_mode'] and result['demo_map_ready']
+    assert result['demo']['total_cycles'] == 210 and result['demo']['failed_passes'] == 3
     print('PASS UART decoder: fragmentation, noise, CRC rejection, resynchronization, video counters/page validity')
 
 
@@ -188,7 +207,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('port', nargs='?')
     parser.add_argument('--baud', type=int, default=115200)
-    parser.add_argument('--once', choices=['status', 'progress', 'video'])
+    parser.add_argument('--once', choices=['status', 'progress', 'video', 'demo'])
     parser.add_argument('--video-seconds', type=float, help='Measure NEW-frame counter deltas over this interval')
     parser.add_argument('--corners', type=Path)
     parser.add_argument('--log', type=Path)
@@ -239,7 +258,7 @@ def main():
                 new_frame_fps={k: deltas[k]/seconds for k in ('captured_frames', 'corrected_frames', 'displayed_new_frames')},
                 last=b), indent=2))
         elif args.once:
-            print(json.dumps(monitor.query({'status': 0x53, 'progress': 0x44, 'video': 0x56}[args.once]), indent=2))
+            print(json.dumps(monitor.query({'status': 0x53, 'progress': 0x44, 'video': 0x56, 'demo': 0x45}[args.once]), indent=2))
         else:
             if args.log:
                 args.log.parent.mkdir(parents=True, exist_ok=True)

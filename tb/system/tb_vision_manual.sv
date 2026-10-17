@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
 // Real sequence controller, protocol models for numerical workers.
-module tb_vision_manual #(parameter BUILD_ONLY=0);
+module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0);
  reg clk=0,rst_n=0,finished=0,start_valid=0,start_remap=0;
  reg [31:0] remap_base=0,frame_base=0;
  reg frame_valid=0,frame_release_ready=0,rsp_ready=0,gray_rsp_valid=0;
@@ -12,7 +12,15 @@ module tb_vision_manual #(parameter BUILD_ONLY=0);
  wire [7:0] rsp_status,view_status,view_id;wire [1:0] remap_opcode;
  wire [31:0] job,src_base;wire [287:0] params;wire algorithm_rst_n;
  always #12.5 clk=~clk;
- vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1),.BUILD_ONLY(BUILD_ONLY)) dut(
+ reg task_active=0;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)task_active<=0;
+  else if(start_valid&&start_ready)task_active<=1;
+  else if(rsp_valid&&rsp_ready)task_active<=0;
+ end
+ always @(negedge clk)if(rst_n&&algorithm_rst_n!==task_active)
+  $fatal(1,"worker reset must span the complete task, including response stalls");
+ vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1),.BUILD_ONLY(BUILD_ONLY),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) dut(
  .clk(clk),.rst_n(rst_n),.layout_ok(1'b1),.start_valid(start_valid),.start_ready(start_ready),
  .start_remap(start_remap),.remap_base(remap_base),.square_size_fp64(64'h3ff0000000000000),
  .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(32'd128),.frame_capacity(32'd4096),
@@ -36,6 +44,14 @@ module tb_vision_manual #(parameter BUILD_ONLY=0);
  task calibration(input integer code);
   integer v,j;begin
    start(0);
+   // Model a brief erroneous IDLE decode between FSM transitions. It must not
+   // reset workers; the old combinational reset fails this targeted check.
+   wait(frame_ready);tick();
+   force dut.state=0;#1;
+   if(!algorithm_rst_n)$fatal(1,"FSM decode glitch reset the workers");
+   release dut.state;
+   // Restore the state without advancing protocol signals (between clock edges).
+   dut.state=2;
    for(v=0;v<`PAR_VIEWS;v=v+1)begin
     wait(frame_ready);tick();frame_base=v*32'h200000;frame_valid=1;tick();frame_valid=0;
     wait(gray_rsp_ready);tick();gray_rsp_valid=1;tick();gray_rsp_valid=0;
@@ -62,10 +78,21 @@ module tb_vision_manual #(parameter BUILD_ONLY=0);
  endtask
  initial begin
   repeat(3)tick();rst_n=1;start(1);response(8'h82);
+  if(ENABLE_DISTORT_DEMO)begin
+   remap_base=32'hffffff00;start(1);
+   wait(remap_cmd_valid);if(remap_opcode!=3||params!=0)$fatal(1,"demo must not seed calibration");
+   wait(remap_rsp_ready);tick();remap_rsp_valid=1;tick();remap_rsp_valid=0;response(0);
+   remap_base=0;start(1);response(8'h82);
+  end
   calibration(4);start(1);response(8'h82);
   calibration(0);repeat(10)tick();if(remap_cmd_valid||params!=288'h12345678)$fatal(1,"auto correction/params lost");
   correct(32'h400000,5);correct(32'h200000,0);correct(0,0);
   calibration(0);correct(0,0);
+  if(ENABLE_DISTORT_DEMO)begin
+   remap_base=32'hffffff04;start(1);response(0);
+   if(params!=0)$fatal(1,"clear did not invalidate parameters");
+   remap_base=0;start(1);response(8'h82);
+  end
   rst_n=0;tick();rst_n=1;start(1);response(8'h82);
   finished=1;$display("PASS tb_vision_manual staged calibration, retained params, selected remap, failures, reset");$finish;
  end

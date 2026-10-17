@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 module tb_board_buttons;
- reg clk=0,rst_n=0,finished=0;reg [4:0] key_n=31;wire [4:0] pressed;
+ reg clk=0,rst_n=0,finished=0;reg [4:0] key_n=31;wire [4:0] pressed;wire toggle_mode;
  integer counts[0:4];integer i;
  always #4 clk=~clk;
  board_buttons #(.DEBOUNCE_CYCLES(4)) dut(.*);

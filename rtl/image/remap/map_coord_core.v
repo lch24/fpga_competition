@@ -9,12 +9,12 @@
 //   - One abstract FP32 service operation may be outstanding at a time.
 //   - The operation order is explicit and must be mirrored by the numeric model.
 //
-// Throughput note:
-//   This version intentionally serializes 38 FP operations per pixel. It is a
-//   correctness-first implementation and will not meet real-time 720p/1080p.
-//   After bit-accurate validation, independent operations can be pipelined or
-//   replicated without changing this module's external stream contract.
-module map_coord_core (
+// Offline map generation: normal Brown projection serializes 38 FP operations.
+// Optional demo mode inverts the fixed k1-only radial model in 16 iterations,
+// reusing this same FP service. cfg_inverse is ignored when the demo is disabled.
+// Video frames subsequently read the cached DDR map; no per-frame FP is added.
+module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
+    input wire cfg_inverse,
     input  wire        clk,
     input  wire        rst_n,
 
@@ -99,6 +99,8 @@ module map_coord_core (
     localparam [5:0] S_SY_MUL      = 6'd37;
     localparam [5:0] S_SY          = 6'd38;
 
+    localparam S_INV_X=6'd39,S_INV_Y=6'd40;
+    reg inverse_mode; reg [3:0] inverse_iteration;
     reg [5:0] state;
     reg       cfg_loaded;
     reg       op_inflight;
@@ -154,6 +156,8 @@ module map_coord_core (
         req_a_comb  = `VISION_FP32_ZERO;
         req_b_comb  = `VISION_FP32_ZERO;
         case (state)
+            S_INV_X: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=xd; req_b_comb=radial_a; end
+            S_INV_Y: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=yd; req_b_comb=radial_a; end
             S_CVT_X:    begin req_op_comb = `VISION_FP_OP_U32_TO_FP32; req_a_comb = {16'd0, dst_x}; end
             S_CVT_Y:    begin req_op_comb = `VISION_FP_OP_U32_TO_FP32; req_a_comb = {16'd0, dst_y}; end
             S_DX:       begin req_op_comb = `VISION_FP_OP_SUB; req_a_comb = x_fp; req_b_comb = cx; end
@@ -198,6 +202,7 @@ module map_coord_core (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
+            inverse_mode <= 0; inverse_iteration <= 0;
             state         <= S_IDLE;
             cfg_loaded    <= 1'b0;
             op_inflight   <= 1'b0;
@@ -219,6 +224,7 @@ module map_coord_core (
             sx_mul <= 32'd0; sy_mul <= 32'd0; src_x_reg <= 32'd0; src_y_reg <= 32'd0;
         end else begin
             if (cfg_fire) begin
+                inverse_mode <= ENABLE_DISTORT_DEMO && cfg_inverse;
                 fx <= cfg_fx; fy <= cfg_fy; cx <= cfg_cx; cy <= cfg_cy;
                 k1 <= cfg_k1; k2 <= cfg_k2; k3 <= cfg_k3; p1 <= cfg_p1; p2 <= cfg_p2;
                 cfg_loaded <= 1'b1;
@@ -234,6 +240,7 @@ module map_coord_core (
                 pixel_last  <= in_last;
                 error_seen  <= 1'b0;
                 out_error_reg <= 1'b0;
+                inverse_iteration <= 0;
                 state       <= S_CVT_X;
             end
 
@@ -248,18 +255,18 @@ module map_coord_core (
                     S_CVT_X:    begin x_fp      <= fp_rsp_result; state <= S_CVT_Y; end
                     S_CVT_Y:    begin y_fp      <= fp_rsp_result; state <= S_DX; end
                     S_DX:       begin dx        <= fp_rsp_result; state <= S_NX; end
-                    S_NX:       begin nx        <= fp_rsp_result; state <= S_DY; end
+                    S_NX:       begin nx        <= fp_rsp_result; if(ENABLE_DISTORT_DEMO && inverse_mode) xd<=fp_rsp_result; state <= S_DY; end
                     S_DY:       begin dy        <= fp_rsp_result; state <= S_NY; end
-                    S_NY:       begin ny        <= fp_rsp_result; state <= S_X2; end
+                    S_NY:       begin ny        <= fp_rsp_result; if(ENABLE_DISTORT_DEMO && inverse_mode) yd<=fp_rsp_result; state <= S_X2; end
                     S_X2:       begin x2        <= fp_rsp_result; state <= S_Y2; end
                     S_Y2:       begin y2        <= fp_rsp_result; state <= S_R2; end
-                    S_R2:       begin r2        <= fp_rsp_result; state <= S_R4; end
+                    S_R2:       begin r2        <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_K1R2 : S_R4; end
                     S_R4:       begin r4        <= fp_rsp_result; state <= S_R6; end
                     S_R6:       begin r6        <= fp_rsp_result; state <= S_K1R2; end
-                    S_K1R2:     begin k1r2      <= fp_rsp_result; state <= S_K2R4; end
+                    S_K1R2:     begin k1r2      <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_RADIAL_A : S_K2R4; end
                     S_K2R4:     begin k2r4      <= fp_rsp_result; state <= S_K3R6; end
                     S_K3R6:     begin k3r6      <= fp_rsp_result; state <= S_RADIAL_A; end
-                    S_RADIAL_A: begin radial_a  <= fp_rsp_result; state <= S_RADIAL_B; end
+                    S_RADIAL_A: begin radial_a  <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_INV_X : S_RADIAL_B; end
                     S_RADIAL_B: begin radial_b  <= fp_rsp_result; state <= S_RADIAL; end
                     S_RADIAL:   begin radial    <= fp_rsp_result; state <= S_X_RADIAL; end
                     S_X_RADIAL: begin x_radial  <= fp_rsp_result; state <= S_Y_RADIAL; end
@@ -282,6 +289,12 @@ module map_coord_core (
                     S_SX_MUL:   begin sx_mul    <= fp_rsp_result; state <= S_SX; end
                     S_SX:       begin src_x_reg <= fp_rsp_result; state <= S_SY_MUL; end
                     S_SY_MUL:   begin sy_mul    <= fp_rsp_result; state <= S_SY; end
+                    S_INV_X: if(ENABLE_DISTORT_DEMO)begin nx<=fp_rsp_result; state<=S_INV_Y; end
+                    S_INV_Y: if(ENABLE_DISTORT_DEMO)begin
+                        ny<=fp_rsp_result;
+                        if(inverse_iteration==15) begin xd<=nx; yd<=fp_rsp_result; state<=S_SX_MUL; end
+                        else begin inverse_iteration<=inverse_iteration+1'b1; state<=S_X2; end
+                    end
                     S_SY: begin
                         src_y_reg    <= fp_rsp_result;
                         out_error_reg <= error_seen | fp_rsp_error;

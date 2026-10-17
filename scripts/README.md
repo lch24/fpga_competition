@@ -1,5 +1,7 @@
 # 程序生成、仿真与工程脚本
 
+`demo/run_checks.py --modelsim <目录> --board` 验证可移除的人工畸变扩展及两种整板配置；`demo/run_images.cmd` 用真实照片和渲染棋盘运行像素级软件闭环。入口与结果见[人工畸变演示](../docs/DISTORT_DEMO.md)。
+
 脚本根据自身位置定位仓库。以下示例从根目录运行，输出写入 `build`。ModelSim 通过 `MODELSIM_BIN` 或 PATH 定位，PDS 通过 `PDS_SHELL`、PATH 或脚本参数定位。
 
 ## 程序生成入口

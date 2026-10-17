@@ -3,7 +3,7 @@
 // op=53 status/results (FFFF), op=44 progress (FFFE), op=43 corner (lo/hi).
 // Response: A5 5A 01 op seqLE16 lengthLE16(120), payload, CRC16-CCITT LE.
 // CRC covers version through payload, initial FFFF. No functional backpressure.
-module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
+module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO=0)(
  input wire clk,rx,output wire tx,output wire debug_rst_n,
  input wire camera_clk,camera_vsync,
  input wire core_clk,algorithm_clk,input wire [255:0] core_data,
@@ -94,7 +94,7 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
     if(pending&&wait_ms<255)wait_ms<=wait_ms+1'b1;
    end
    // Coalesce change reports. Event counter exposes intermediate transitions.
-   if(ctag!=16'hfffd&&core_snapshot[63:32]!=previous_events)begin
+   if(ctag!=16'hfffd&&(!ENABLE_DISTORT_DEMO||ctag!=16'hfffc)&&core_snapshot[63:32]!=previous_events)begin
     previous_events<=core_snapshot[63:32];
     if(!pending)begin pending<=1;pending_op<=8'h53;argument<=16'hffff;wait_ms<=0;end
    end
@@ -109,9 +109,9 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200)(
      4:begin hi<=rdata;parser<=5;end
      5:begin
       parser<=0;
-      if(rdata!=(op^lo^hi)||(op!=8'h53&&op!=8'h43&&op!=8'h44&&op!=8'h56))rx_errors<=rx_errors+1'b1;
+      if(rdata!=(op^lo^hi)||(op!=8'h53&&op!=8'h43&&op!=8'h44&&op!=8'h56&&(!ENABLE_DISTORT_DEMO||op!=8'h45)))rx_errors<=rx_errors+1'b1;
       else if(pending)rejected<=rejected+1'b1;
-      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:op==8'h56 ?16'hfffd:{hi,lo};wait_ms<=0;end
+      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:op==8'h56 ?16'hfffd:ENABLE_DISTORT_DEMO&&op==8'h45 ?16'hfffc:{hi,lo};wait_ms<=0;end
      end
      default:parser<=0;
     endcase

@@ -27,7 +27,7 @@ module tb_realtime_fullframe;
  wire wv,wq,wr,wd;wire [27:0] wa;wire [3:0] wl;wire [255:0] data;
  wire rl;wire [255:0] rd;reg inject_error=0;wire [3:0] rid=inject_error?4'd1:4'd0;
  realtime_remap #(.WIDTH(W),.HEIGHT(HST),.CACHE_INDEX_BITS(6)) dut(
-  .clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(SRC),.dst_base(DST),.map_base(MAP),
+  .cmd_bypass(1'b0),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(SRC),.dst_base(DST),.map_base(MAP),
   .rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.last_cycles(cycles),
   .arvalid(av),.arready(aq),.araddr(aa),.arlen(al),.rvalid(rv),.rdata(rd),.rlast(rl),.rid(rid),
   .awvalid(wv),.awready(wq),.awaddr(wa),.awlen(wl),.wdata(data),.wready(wr),.wdone(wd),.wid(4'b0));

@@ -8,6 +8,13 @@ module tb_board_display_switch;
  reg [3:0] axi_rid=0;
  integer pending=0,base=0,beat=0,i,checked=0,expected_base=0,index=0;
  reg stall_addr=0,stall_data=0,score=0;
+ reg held=0;reg [17:0] held_pixel;
+ always @(posedge clk)begin
+  if(rst_n&&enable&&held)
+   if(!pixel_valid||{pixel_first,pixel_last,pixel}!==held_pixel)$fatal(1,"pixel payload changed under backpressure");
+  held<=rst_n&&enable&&pixel_valid&&!pixel_ready;
+  held_pixel<={pixel_first,pixel_last,pixel};
+ end
  always #4 clk=~clk;
  board_display_hmic #(.DYNAMIC_BASE(1),.WIDTH(64),.HEIGHT(2)) dut(.*);
  always @(negedge clk)begin
@@ -31,8 +38,14 @@ module tb_board_display_switch;
   begin enable=0;wait(idle);tick();if(pending||axi_arvalid||pixel_valid)$fatal(1,"idle before drain");end
  endtask
  task check_frame(input integer address);
+  integer flow_cycle;
   begin frame_base=address;expected_base=address;index=0;checked=0;score=1;enable=1;
-   wait(checked==128);tick();score=0;stop();end
+   flow_cycle=0;
+   while(checked<128)begin
+    tick();flow_cycle=flow_cycle+1;
+    pixel_ready=(flow_cycle%7>=3);
+   end
+   pixel_ready=1;score=0;stop();end
  endtask
  initial begin
   repeat(4)tick();rst_n=1;

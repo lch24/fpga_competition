@@ -24,7 +24,9 @@ module video_bilinear_pipe(
   wire [7:0] p0=channel(pixels[15:0],c),p1=channel(pixels[31:16],c);
   wire [7:0] p2=channel(pixels[47:32],c),p3=channel(pixels[63:48],c);
   always @(posedge clk)if(advance)begin
-   if(in_valid)begin
+   // Invalid input cycles may overwrite stage 0: valid[0] suppresses their use.
+   // Do not put the cache tag/address hit cone on the DSP input clock enable.
+   begin
     a0<=p0;a2<=p2;difference0<=$signed({1'b0,p1})-$signed({1'b0,p0});difference2<=$signed({1'b0,p3})-$signed({1'b0,p2});
    end
    if(valid[0])begin
@@ -39,7 +41,7 @@ module video_bilinear_pipe(
  end endgenerate
  assign pixel={result[2][7:3],result[1][7:2],result[0][7:3]};
  always @(posedge clk)if(advance)begin
-  if(in_valid)begin fx<={1'b0,dx};fy0<=dy;end
+  begin fx<={1'b0,dx};fy0<=dy;end
   if(valid[0])fy1<=fy0;if(valid[1])fy2<=fy1;
  end
  always @(posedge clk or negedge rst_n)

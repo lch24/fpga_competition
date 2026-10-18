@@ -55,6 +55,9 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
     output reg [7:0] rsp_status, // PAR_*；失败诊断是否有效由rsp_metrics_valid单独判断
+    output reg [3:0] rsp_check_reason, rsp_check_warnings,
+    output reg rsp_candidate_valid,
+    output wire [287:0] rsp_candidate_params,
     output wire rsp_camera_usable, // 所有检查通过
     output wire [`PAR_CAMERA_W-1:0] rsp_camera_params, // FP32参数；仅usable时发布给校正模块
     output wire rsp_metrics_valid, // 下面诊断数值可用
@@ -166,7 +169,8 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
           else if(index<OUT_SCALARS)host_addr=SCALES+index-OUT_VIEWS;
           else case(index-OUT_SCALARS)
             0:host_addr=`LM_Q23;1:host_addr=`LM_MAXERR;2:host_addr=`LM_USABLE;
-            3:host_addr=`LM_METRICS;4:host_addr=`LM_WEAK;default:host_addr=`LM_STATUS;
+            3:host_addr=`LM_METRICS;4:host_addr=`LM_WEAK;5:host_addr=`LM_STATUS;
+            6:host_addr=`LM_CHECK_REASON;7:host_addr=`LM_CHECK_WARNINGS;default:host_addr=`LM_CANDIDATE_VALID;
           endcase
         end
         default:begin end
@@ -211,6 +215,7 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
       .rsp_valid(re_valid),.rsp_ready(state==RES_WAIT),.rsp_status(re_status),.rsp_cost_fp64(re_cost));
     assign cmd_ready=rst_n && state==IDLE;
     assign rsp_valid=rst_n && state==RESPONSE;
+    assign rsp_candidate_params=camera_q;
     assign rsp_camera_usable=usable_q;assign rsp_camera_params=usable_q?camera_q:288'd0;
     assign rsp_metrics_valid=metrics_q;assign rsp_weak_geometry=metrics_q && weak_q;
     assign rsp_rms_fp64=metrics_q?rms_q:64'd0;assign rsp_max_error_fp64=metrics_q?maxerr_q:64'd0;
@@ -221,11 +226,12 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
         state<=IDLE;index<=0;destination<=0;received<=0;width<=0;height<=0;square_q<=0;best_q<=0;input_converged<=0;
         camera_q<=0;poses_q<=0;view_rms_q<=0;rms_q<=0;maxerr_q<=0;metrics_q<=0;usable_q<=0;weak_q<=0;
         payload<=0;service_cost<=0;service_status<=0;
-        rsp_status<=0;stream_error<=0;
+        rsp_status<=0;stream_error<=0;rsp_check_reason<=0;rsp_check_warnings<=0;rsp_candidate_valid<=0;
       end else case(state)
         IDLE:if(cmd_valid)begin
           payload<=cmd_state;width<=cmd_width;height<=cmd_height;square_q<=cmd_square_size_fp64;best_q<=cmd_best_cost_fp64;input_converged<=cmd_converged;
           metrics_q<=0;usable_q<=0;weak_q<=0;index<=0;
+          rsp_check_reason<=2;rsp_check_warnings<=0;rsp_candidate_valid<=0;
           rsp_status<=0;
           if(cmd_width<2 || cmd_height<2)begin rsp_status<=`PAR_BAD_CONFIG;state<=RESPONSE;end
           else state<=INITIALIZE;
@@ -281,8 +287,9 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
           else case(index-OUT_SCALARS)
             0:rms_q<=host_result;1:maxerr_q<=host_result;2:usable_q<=host_result[0];
             3:metrics_q<=host_result[0];4:weak_q<=host_result[0];5:rsp_status<=host_result[7:0];
+            6:rsp_check_reason<=host_result[3:0];7:rsp_check_warnings<=host_result[3:0];8:rsp_candidate_valid<=host_result[0];
           endcase
-          if(index==OUT_SCALARS+5)state<=RESPONSE;else begin index<=index+1;state<=OUT_REQ;end
+          if(index==OUT_SCALARS+8)state<=RESPONSE;else begin index<=index+1;state<=OUT_REQ;end
         end
         RESPONSE:if(rsp_ready)state<=IDLE;
         default:begin rsp_status<=`PAR_BAD_CONFIG;state<=RESPONSE;end

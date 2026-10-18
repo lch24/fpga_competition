@@ -95,6 +95,9 @@
 `define LM_INIT_BX 92
 `define LM_INIT_BY 93
 `define LM_INIT_SEED 94
+`define LM_CHECK_REASON 95
+`define LM_CHECK_WARNINGS 96
+`define LM_CANDIDATE_VALID 97
 `define LM_Q0 128
 `define LM_Q1 129
 `define LM_Q2 130

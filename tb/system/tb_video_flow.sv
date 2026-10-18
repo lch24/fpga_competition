@@ -27,7 +27,8 @@ module tb_video_flow;
  task remap_done(input [7:0] s);
   begin tick;remap_status=s;remap_rsp=1;do @(posedge clk);while(!remap_rr);tick;remap_rsp=0;end
  endtask
- task flip;begin tick;dfs=1;tick;dfs=0;end endtask
+ // Telemetry counters commit one clock after the display ownership event.
+ task flip;begin tick;dfs=1;tick;dfs=0;tick;end endtask
  task accept_remap;begin tick;remap_ready=1;do @(posedge clk);while(!remap_v);tick;remap_ready=0;end endtask
  reg [31:0] held_src,held_dst;integer k,builds=0;
  initial begin
@@ -58,7 +59,7 @@ module tb_video_flow;
   repeat(8)begin tick;if(src!=held_src||dst!=held_dst||!remap_v)$fatal(1,"stop aborted pending request");end
   accept_remap;remap_done(0);while(head<tail)capture_done(0);
   repeat(5)tick;if(phase!=9)$fatal(1,"stop ignored display drain");display_idle=1;wait(phase==0);if(!map_ready)$fatal(1,"stop lost map");
-  press(4);wait(video);if(sv||builds!=1)$fatal(1,"unnecessary rebuild");capture_done(3);if(failed_count!=1)$fatal(1,"capture error not recorded");
+  press(4);wait(video);if(sv||builds!=1)$fatal(1,"unnecessary rebuild");capture_done(3);tick;if(failed_count!=1)$fatal(1,"capture error not recorded");
   finished=1;$display("PASS video_flow photo leases, map-only start, buffer ownership, stalled commands, stop drain and restart");$finish;
  end
  initial begin #1000000;$fatal(1,"flow timeout phase=%d used=%b ready=%b pending=%b running=%b head=%d tail=%d",phase,dut.raw_used,dut.raw_ready,dut.remap_pending,dut.remap_running,head,tail);end

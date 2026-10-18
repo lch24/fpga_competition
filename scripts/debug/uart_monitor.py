@@ -19,6 +19,21 @@ ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'release_frame', 'calibration_command', 'calibration_wait',
              'map_command', 'map_wait', 'remap_command', 'remap_wait', 'response']
 PARAMS = ['fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'p1', 'p2']
+CHECK_REASONS = {0: 'none', 1: 'nonfinite_or_numeric_failure',
+                 2: 'invalid_configuration', 3: 'residual_evaluation_failed',
+                 4: 'not_converged', 5: 'nonpositive_focal_length',
+                 6: 'reprojection_rms_too_large', 7: 'mapping_fold_or_degenerate'}
+CHECK_WARNINGS = ['unusual_focal_length', 'principal_point_outside_image',
+                  'small_pose_variation', 'few_calibration_views']
+REASON_TEXT = ['无', '非有限数值或运算异常', '配置无效', '重投影计算失败/读角点超时',
+               '迭代未收敛', '焦距不是正数', '重投影 RMS 达到或超过 3 像素', '映射翻折或局部退化']
+WARNING_TEXT = ['焦距超出经验范围', '主点位于画面外', '棋盘姿态变化较小', '标定图片少于五张']
+STATUS_TEXT = {0: '正常', 1: '配置/接口格式错误', 2: '未找到有效棋盘', 3: '缓存或帧格式异常',
+               4: '标定结果未通过检查', 5: '访存错误', 6: '超时',
+               0x81: '采集像素不足', 0x82: '采集像素过多', 0x83: '采集像素打包未对齐',
+               0x84: '采集 FIFO 丢失一个字', 0x85: '采集 FIFO 丢失多个字',
+               0x86: '摄像头帧格式异常', 0x8b: '1–3 行像素不足',
+               0x8c: '4–15 行像素不足', 0x8d: '至少 16 行像素不足'}
 
 
 class Framer:
@@ -76,6 +91,7 @@ def decode(frame):
         'distort_mode': bool(word & (1 << 29)), 'mode_pending': bool(word & (1 << 30)),
         'demo_map_ready': bool(word & (1 << 31)),
         'status': (word >> 16) & 255, 'selected': (word >> 10) & 3,
+        'status_text': STATUS_TEXT.get((word >> 16) & 255, '未知状态'),
         'captured_mask': (word >> 7) & 7, 'calibrated': bool(word & 64),
         'corrected': bool(word & 32), 'busy': bool(word & 16),
         'display_enabled': bool(word & 8),
@@ -89,8 +105,13 @@ def decode(frame):
         'algorithm_phase': ALGORITHM[alg[4]] if alg[4] < len(ALGORITHM) else 'unknown',
         'view': alg[5], 'algorithm_reset_released': bool(flag & 1),
         'params_valid': bool(flag & 2), 'metrics_valid': bool(flag & 4),
-        'converged': bool(flag & 8), 'calibration_phase': alg[7],
-        'result_events': u32(alg, 8), 'last_result_phase': alg[13],
+        'converged': bool(flag & 8), 'calibration_phase': alg[7] & 15,
+        'candidate_valid': bool(flag & 32),
+        'reduced_model': bool(flag & 64),
+        'check_reason_code': alg[7] >> 4,
+        'check_reason': CHECK_REASONS.get(alg[7] >> 4, 'unknown'),
+        'check_warnings': [name for i, name in enumerate(CHECK_WARNINGS) if alg[13] & (16 << i)],
+        'result_events': u32(alg, 8), 'last_result_phase': alg[13] & 15,
         'last_detect_flags': alg[12],
         'last_status': alg[14], 'last_error': alg[15],
         'corner_count': int.from_bytes(alg[60:62], 'little'), 'page': tag,
@@ -114,6 +135,7 @@ def decode(frame):
             total_cycles=u32(core, 20), failed_passes=u32(core, 24), build_elapsed_ms=u32(core, 28))
     if tag == 0xffff:
         result['params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 2 else None
+        result['candidate_params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 32 else None
         result['rms'] = struct.unpack_from('<d', alg, 52)[0] if flag & 4 else None
     elif tag == 0xfffe:
         result['progress'] = {
@@ -133,6 +155,55 @@ def decode(frame):
         result['corner_valid'] = bool(flag & 16)
         result['corner_xy'] = struct.unpack_from('<2f', alg, 16) if flag & 16 else None
     return result
+
+
+def concise(result):
+    """Operational output; full transport/DDR counters remain in the JSON log."""
+    keys = ('uptime_ms', 'calibration_job', 'ui_phase', 'algorithm_phase', 'view',
+            'captured_mask', 'distort_mode', 'busy', 'status', 'last_result_phase',
+            'last_status', 'corner_count', 'params_valid', 'candidate_valid',
+            'converged', 'rms', 'check_reason', 'check_warnings', 'reduced_model')
+    out = {key: result[key] for key in keys if key in result}
+    out['link_fresh'] = bool(result.get('page_matches') and not result.get('core_stale')
+                            and not result.get('algorithm_stale'))
+    if result.get('params_valid'):
+        out['params'] = result.get('params')
+    elif result.get('candidate_valid'):
+        out['rejected_candidate_params'] = result.get('candidate_params')
+    if result.get('last_status') == 4 and result.get('check_reason_code') == 0:
+        out['diagnostic'] = 'No detailed reason reported (older bitstream or failure before validation).'
+    for key in ('progress', 'video', 'demo'):
+        if key in result:
+            out[key] = result[key]
+    return out
+
+
+def readable(result, show_result=True):
+    reason = result.get('check_reason_code', 0)
+    warning = result.get('check_warnings', [])
+    lines = [f"[{result.get('uptime_ms', 0)/1000:.1f}s] 任务 {result.get('calibration_job')} "
+             f"界面={result.get('ui_phase')} 算法={result.get('algorithm_phase')} "
+             f"图={result.get('view', 0)+1} 角点={result.get('corner_count')} "
+             f"人工畸变={'开' if result.get('distort_mode') else '关'} "
+             f"状态={result.get('status')}({result.get('status_text')}) 参数可用={result.get('params_valid')}"]
+    if result.get('core_stale') or result.get('algorithm_stale') or not result.get('page_matches'):
+        lines.append('状态快照过期或页面不匹配：以下结果不能视为当前状态。')
+    if show_result and result.get('metrics_valid'):
+        if result.get('reduced_model'):
+            lines.append('模型重试：完整模型映射翻折，已固定 k3=0 重新拟合其余参数；仍须通过全部检查。')
+        lines.append(f"标定：收敛={result.get('converged')} RMS={result.get('rms')} 像素")
+    if show_result and (reason or result.get('last_status')):
+        why = REASON_TEXT[reason] if reason < len(REASON_TEXT) else f'未知原因 {reason}'
+        if not reason:
+            why = '未提供详细原因（旧比特流或校验之前失败），请结合 last_result_phase/last_status 查询'
+        lines.append(f"诊断：{why}；阶段={result.get('last_result_phase')} 错误码={result.get('last_status')}")
+    if show_result and warning:
+        lines.append('质量提示（不阻止使用）：' + '、'.join(WARNING_TEXT[CHECK_WARNINGS.index(x)] for x in warning))
+    params = result.get('params') or result.get('candidate_params')
+    if show_result and params:
+        lines.append(('有效参数：' if result.get('params_valid') else '被拒绝的候选参数（仅供诊断）：') +
+                     ' '.join(f'{key}={value:.9g}' for key, value in params.items()))
+    return '\n'.join(lines)
 
 
 def command(op, index=0):
@@ -211,6 +282,7 @@ def main():
     parser.add_argument('--video-seconds', type=float, help='Measure NEW-frame counter deltas over this interval')
     parser.add_argument('--corners', type=Path)
     parser.add_argument('--log', type=Path)
+    parser.add_argument('--json', action='store_true', help='Print every full JSON packet; default shows state changes and a 10 s heartbeat')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     if args.self_test:
@@ -263,11 +335,17 @@ def main():
             if args.log:
                 args.log.parent.mkdir(parents=True, exist_ok=True)
             last = time.monotonic()
+            printed = 0
+            previous = None
             while True:
                 for result in monitor.read():
                     last = time.monotonic()
                     line = json.dumps(result)
-                    print(line, flush=True)
+                    short = concise(result)
+                    signature = {k: v for k, v in short.items() if k != 'uptime_ms'}
+                    if args.json or signature != previous or last - printed >= 10:
+                        print(line if args.json else readable(result, signature != previous), flush=True)
+                        printed, previous = last, signature
                     if args.log:
                         with args.log.open('a', encoding='utf-8') as out:
                             out.write(line + '\n')

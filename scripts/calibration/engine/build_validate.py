@@ -38,7 +38,7 @@ def rotation(p):
 def program():
     p=Program();e=p.emit;L=p.label
     e('MOVI A7,0','GUARD check_failed')
-    for name in ('usable','metrics','weak','status'):p.seti(name,0)
+    for name in ('usable','metrics','weak','status','check_reason','check_warnings','candidate_valid'):p.seti(name,0)
     # Configuration errors take precedence over invalid state.
     for name in ('square','bestcost'):
         p.ld(0,name);e('CLASS A0,F0','MOVI A1,8','ICMP A0,A1','BR.6 bad_configuration')
@@ -56,10 +56,11 @@ def program():
     e('MOVI A0,128');p.il(1,'camera');e('MOVI A2,9')
     L('quantize');e('LD F0,A0,0','FCVT.1 F1,F0','ST F1,A1,0','FCVT F0,F1',
       'ST F0,A0,0','ADDI A0,A0,1','ADDI A1,A1,1','DBNZ A2,quantize')
+    p.seti('candidate_valid',1)
     p.fbin('q23','FDIV','bestcost','fp_total');p.unary('q23','FSQRT','q23')
     p.fbin('q32','FMUL','focal_min','q30');p.fbin('q33','FMUL','focal_max','q30')
     p.copy('trial','current','ns');p.service('baseline')
-    p.ib('svc_status',1,0,'residual_ok');p.icopy('status','svc_status');e('BR done')
+    p.ib('svc_status',1,0,'residual_ok');p.icopy('status','svc_status');p.seti('check_reason',3);e('BR done')
     L('residual_ok');p.seti('view',0);p.icopy('ptr','baseline');p.fcopy('maxerr','zero')
     L('view_errors');p.seti('t',0);p.fcopy('q22','zero')
     L('point_error');p.read('q18','ptr');p.addi('ptr','ptr',1);p.read('q19','ptr');p.addi('ptr','ptr',1)
@@ -98,11 +99,18 @@ def program():
     L('angle_saved');p.addi('pair_b','pair_b',1);p.addi('pb','pb',12);p.ib('pair_b',3,'pair_a','angle_inner')
     p.addi('pair_a','pair_a',1);p.addi('pa','pa',12);p.ib('pair_a',3,'views','angle_outer')
     p.seti('metrics',1);p.seti('weak',1);p.ib('views',3,5,'weak_ready');p.fb('q26',3,'normal_weak','weak_ready');p.seti('weak',0)
-    L('weak_ready');p.ib('in_converged',1,0,'reject')
-    for q in ('q0','q1'):p.fb(q,4,'q32','reject');p.fb(q,6,'q33','reject')
-    for q,limit in (('q2','q30'),('q3','q31')):p.fb(q,3,'zero','reject');p.fb(q,6,limit,'reject')
-    p.fb('q23',6,'three','reject');p.fb('q26',4,'normal_min','reject')
-    e('GUARD reject');p.seti('ix',0);p.seti('iy',0);p.fcopy('fxi','zero');p.fcopy('fyi','zero')
+    L('weak_ready')
+    # Intrinsic priors and pose diversity are advisory, not proof of invalidity.
+    for q in ('q0','q1'):p.fb(q,4,'zero','bad_focal')
+    for q in ('q0','q1'):p.fb(q,4,'q32','warn_focal');p.fb(q,6,'q33','warn_focal')
+    e('BR focal_ready');L('warn_focal');p.addi('check_warnings','check_warnings',1)
+    L('focal_ready')
+    for q,limit in (('q2','q30'),('q3','q31')):p.fb(q,3,'zero','warn_center');p.fb(q,6,limit,'warn_center')
+    e('BR center_ready');L('warn_center');p.addi('check_warnings','check_warnings',2)
+    L('center_ready');p.fb('q26',6,'normal_weak','pose_ready');p.addi('check_warnings','check_warnings',4)
+    L('pose_ready');p.ib('views',6,5,'views_ready');p.addi('check_warnings','check_warnings',8)
+    L('views_ready');p.ib('in_converged',1,0,'not_converged');p.fb('q23',6,'three','bad_rms')
+    e('GUARD check_failed');p.seti('ix',0);p.seti('iy',0);p.fcopy('fxi','zero');p.fcopy('fyi','zero')
     L('map_loop')
     p.fbin('q18','FSUB','fwidth','one');p.fbin('q18','FMUL','q18','fxi')
     p.fbin('q18','FDIV','q18','thirty_two');p.fbin('q18','FSUB','q18','q2');p.fbin('q9','FDIV','q18','q0')
@@ -127,12 +135,14 @@ MUL 14 16 18; MUL 15 15 19; SUB 18 19 17'''
     for text in operations.split(';'):
         op,a,b,d=text.split();a='q'+a if a.isdigit() else a;b='q'+b if b.isdigit() else b
         p.fbin('q'+d,'F'+op,a,b)
-    p.fb('q14',4,'zero','reject');p.fb('q16',4,'zero','reject');p.fb('q17',4,'jacobian_min','reject')
+    p.fb('q14',4,'zero','bad_map');p.fb('q16',4,'zero','bad_map');p.fb('q17',4,'jacobian_min','bad_map')
     p.addi('ix','ix',1);p.fbin('fxi','FADD','fxi','one');p.ib('ix',4,32,'map_loop')
     p.seti('ix',0);p.fcopy('fxi','zero');p.addi('iy','iy',1);p.fbin('fyi','FADD','fyi','one');p.ib('iy',4,24,'map_loop')
     p.seti('usable',1);e('BR done')
-    L('bad_configuration');p.seti('status',1);e('BR done')
-    L('check_failed');e('MOVI A7,0');p.seti('metrics',0)
+    L('bad_configuration');p.seti('check_reason',2);p.seti('status',1);e('BR done')
+    for label,reason in (('bad_focal',5),('not_converged',4),('bad_rms',6),('bad_map',7)):
+        L(label);p.seti('check_reason',reason);e('BR reject')
+    L('check_failed');e('MOVI A7,0');p.seti('metrics',0);p.seti('check_reason',1)
     L('reject');p.seti('status',4);p.seti('usable',0)
     L('done');e('END 0')
     rotation(p)

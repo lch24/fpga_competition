@@ -15,7 +15,8 @@ NAMES = '''n nr ns maxiter maxtries desc current trial baseline plus minus colum
  svc_dst svc_status svc_cost rowbase colbase endptr length
  camera poses viewrms views points fwidth fheight halfcols halfrows square bestcost
  in_converged usable metrics weak maxerr view row pair_a pair_b ix iy fxi fyi
- fp_points fp_total init_raw init_px init_py init_bx init_by init_seed'''.split()
+ fp_points fp_total init_raw init_px init_py init_bx init_by init_seed
+ check_reason check_warnings candidate_valid'''.split()
 M = {name: i for i, name in enumerate(NAMES)}
 M.update({f'q{i}':128+i for i in range(34)})
 M.update({f'rot{i}':256+i for i in range(32)})

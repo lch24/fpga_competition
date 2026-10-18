@@ -1,5 +1,7 @@
 // 在LM各模块内部包含，活动列顺序必须完全相同。
 // 先优化4个内参和各视图6个外参；再依次加入k1、k2/p1/p2/k3。stage2含k3。
+// Stage 3 keeps the same descriptor order and omits its last column (k3).
+// The state still has all nine camera slots, so projection/export layouts do not change.
 function integer active_index;
     input integer k;
     begin
@@ -14,6 +16,7 @@ function integer columns;
         case(stage)
             0:columns=`PAR_STAGE0_N;
             1:columns=`PAR_STAGE1_N;
+            3:columns=`PAR_ACTIVE_N-1; // Retry without k3; state slot 8 remains fixed.
             default:columns=`PAR_ACTIVE_N;
         endcase
     end

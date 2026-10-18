@@ -10,6 +10,9 @@ module tb_validate_result #(parameter QUICK=0);
  wire read_en;wire [1:0] read_view;wire [5:0] read_index;
  reg read_valid=0;reg [31:0] read_x,read_y;
  wire [7:0] status;wire usable,metrics,geometry_weak;wire [287:0] camera;wire [63:0] rms,max_error;
+ wire [3:0] reason,warnings;wire candidate_valid;wire [287:0] candidate;
+ integer expected_reason,expected_warnings,expected_candidate_valid;
+ reg [287:0] expected_candidate;
  wire [191:0] view_rms;wire [2303:0] poses;wire [2623:0] actual={poses,max_error,view_rms,rms};
  reg [287:0] expected_camera;reg [2623:0] expected;
  integer expected_status,expected_usable,expected_metrics,fd,report,rc,cycles,j;
@@ -27,6 +30,7 @@ module tb_validate_result #(parameter QUICK=0);
  .shared_active(fa[5:0]),.shared_rsp_valid(sv[5:0]),.shared_rsp_ready(sr[5:0]),.shared_rsp_result(value),.shared_rsp_flags(flags),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),
  .cmd_width(cmd_width),.cmd_height(cmd_height),.cmd_state(cmd_state),.cmd_square_size_fp64(cmd_square),.cmd_best_cost_fp64(cmd_cost),.cmd_converged(cmd_converged),
  .point_rd_en(read_en),.point_rd_view_id(read_view),.point_rd_index(read_index),.point_rd_valid(read_valid),.point_rd_x_fp32(read_x),.point_rd_y_fp32(read_y),
+ .rsp_check_reason(reason),.rsp_check_warnings(warnings),.rsp_candidate_valid(candidate_valid),.rsp_candidate_params(candidate),
  .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(status),.rsp_camera_usable(usable),.rsp_camera_params(camera),
  .rsp_metrics_valid(metrics),.rsp_weak_geometry(geometry_weak),.rsp_rms_fp64(rms),.rsp_view_rms_fp64(view_rms),.rsp_max_error_fp64(max_error),.rsp_poses_fp64(poses));
  task check;input condition;input [511:0] label;begin if(condition!==1'b1)begin errors=errors+1;if(errors<50)$fdisplay(report,"FAIL case=%0d %0s pc=%0d",cases,label,dut.state);end end endtask
@@ -46,7 +50,7 @@ module tb_validate_result #(parameter QUICK=0);
   if(injected)begin release dut.re_index;injected=0;end
   if(mode==1 && dut.state==dut.RES_WAIT && dut.re_data_valid)begin force dut.re_index=8'd255;injected=1;end
  end
- task load_vector;begin rc=$fscanf(fd,"%d %d %d %d %d %d %d %h %h %h %h %h %h\n",expected_status,expected_usable,expected_metrics,width,height,converged,drop,square,cost,state_bits,points,expected_camera,expected);end endtask
+ task load_vector;begin rc=$fscanf(fd,"%d %d %d %d %d %d %d %h %h %h %h %h %h %d %d %d %h\n",expected_status,expected_usable,expected_metrics,width,height,converged,drop,square,cost,state_bits,points,expected_camera,expected,expected_reason,expected_warnings,expected_candidate_valid,expected_candidate);end endtask
  task reset_dut;begin @(negedge clk);rst_n=0;cmd_valid=0;rsp_ready=0;repeat(3)@(negedge clk);check(!rsp_valid && !read_en,"reset gates outputs");rst_n=1;@(negedge clk);check(cmd_ready,"reset ready");end endtask
  task launch;begin @(negedge clk);check(cmd_ready,"command ready");reads=0;map_checks=0;
  cmd_width=width;cmd_height=height;cmd_state=state_bits;cmd_square=square;cmd_cost=cost;cmd_converged=converged;cmd_valid=1;
@@ -55,6 +59,9 @@ module tb_validate_result #(parameter QUICK=0);
  check(rsp_valid,"timeout");if(!rsp_valid)$fatal(1,"validate timeout");if(cycles>max_cycles)max_cycles=cycles;end endtask
  task verify;begin
  check(status==expected_status && usable==expected_usable && metrics==expected_metrics,"result flags");
+ check(reason==expected_reason && warnings==expected_warnings,"specific rejection reason and advisory warnings");
+ check(candidate_valid==expected_candidate_valid,"candidate availability");
+ if(candidate_valid)check(candidate===expected_candidate,"candidate preserved even on rejection");
  check(camera===expected_camera,"FP32 camera bits/order");check(geometry_weak==expected_metrics,"three view geometry_weak geometry flag");
  if(metrics)begin for(j=0;j<41;j=j+1)near(actual[64*j+:64],expected[64*j+:64]);check(reads==120,"all observations read");end
  else check(actual==0 && camera==0 && !usable,"failed computation hides partial payload");
@@ -66,7 +73,7 @@ module tb_validate_result #(parameter QUICK=0);
  cmd_valid=0;rsp_ready=1;@(negedge clk);rsp_ready=0;check(cmd_ready && !rsp_valid,"response consumed");end endtask
  initial begin
  report=$fopen("validate_result_results.txt","w");fd=$fopen("validate_result_vectors.txt","r");if(!fd || !report)$fatal(1,"file open");reset_dut();
- while(!$feof(fd) && (!QUICK || cases<1))begin load_vector();if(rc==13)begin
+ while(!$feof(fd) && (!QUICK || cases<1))begin load_vector();if(rc==17)begin
  launch();await_response();verify();$fdisplay(report,"case=%0d status=%0d metrics=%0d usable=%0d cycles=%0d map_samples=%0d",cases,status,metrics,usable,cycles,map_checks);consume();cases=cases+1;$fflush(report);
  end else if(rc!=-1)$fatal(1,"vector format");end
  $fclose(fd);if(!QUICK)begin fd=$fopen("validate_result_vectors.txt","r");load_vector();$fclose(fd);

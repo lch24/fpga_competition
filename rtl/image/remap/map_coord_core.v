@@ -10,8 +10,10 @@
 //   - The operation order is explicit and must be mirrored by the numeric model.
 //
 // Offline map generation: normal Brown projection serializes 38 FP operations.
-// Optional demo mode inverts the fixed k1-only radial model in 16 iterations,
+// Optional demo mode inverts the full Brown model in 16 iterations,
 // reusing this same FP service. cfg_inverse is ignored when the demo is disabled.
+// During inversion xd/yd retain the target; xd_a/yd_a hold target minus
+// tangential terms. Both updates use the same previous nx/ny before division.
 // Video frames subsequently read the cached DDR map; no per-frame FP is added.
 module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
     input wire cfg_inverse,
@@ -156,8 +158,8 @@ module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
         req_a_comb  = `VISION_FP32_ZERO;
         req_b_comb  = `VISION_FP32_ZERO;
         case (state)
-            S_INV_X: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=xd; req_b_comb=radial_a; end
-            S_INV_Y: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=yd; req_b_comb=radial_a; end
+            S_INV_X: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=xd_a; req_b_comb=radial; end
+            S_INV_Y: if(ENABLE_DISTORT_DEMO) begin req_op_comb=`VISION_FP_OP_DIV; req_a_comb=yd_a; req_b_comb=radial; end
             S_CVT_X:    begin req_op_comb = `VISION_FP_OP_U32_TO_FP32; req_a_comb = {16'd0, dst_x}; end
             S_CVT_Y:    begin req_op_comb = `VISION_FP_OP_U32_TO_FP32; req_a_comb = {16'd0, dst_y}; end
             S_DX:       begin req_op_comb = `VISION_FP_OP_SUB; req_a_comb = x_fp; req_b_comb = cx; end
@@ -183,15 +185,15 @@ module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
             S_TWO_X2:   begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = x2; req_b_comb = x2; end
             S_R2_2X2:   begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = r2; req_b_comb = two_x2; end
             S_TX2:      begin req_op_comb = `VISION_FP_OP_MUL; req_a_comb = p2; req_b_comb = r2_2x2; end
-            S_XD_A:     begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = x_radial; req_b_comb = tx1; end
-            S_XD:       begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = xd_a; req_b_comb = tx2; end
+            S_XD_A:     begin req_op_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? `VISION_FP_OP_SUB : `VISION_FP_OP_ADD; req_a_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? xd : x_radial; req_b_comb = tx1; end
+            S_XD:       begin req_op_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? `VISION_FP_OP_SUB : `VISION_FP_OP_ADD; req_a_comb = xd_a; req_b_comb = tx2; end
             S_TWO_Y2:   begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = y2; req_b_comb = y2; end
             S_R2_2Y2:   begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = r2; req_b_comb = two_y2; end
             S_TY1:      begin req_op_comb = `VISION_FP_OP_MUL; req_a_comb = p1; req_b_comb = r2_2y2; end
             S_P2XY:     begin req_op_comb = `VISION_FP_OP_MUL; req_a_comb = p2; req_b_comb = xy; end
             S_TY2:      begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = p2xy; req_b_comb = p2xy; end
-            S_YD_A:     begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = y_radial; req_b_comb = ty1; end
-            S_YD:       begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = yd_a; req_b_comb = ty2; end
+            S_YD_A:     begin req_op_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? `VISION_FP_OP_SUB : `VISION_FP_OP_ADD; req_a_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? yd : y_radial; req_b_comb = ty1; end
+            S_YD:       begin req_op_comb = (ENABLE_DISTORT_DEMO && inverse_mode) ? `VISION_FP_OP_SUB : `VISION_FP_OP_ADD; req_a_comb = yd_a; req_b_comb = ty2; end
             S_SX_MUL:   begin req_op_comb = `VISION_FP_OP_MUL; req_a_comb = fx; req_b_comb = xd; end
             S_SX:       begin req_op_comb = `VISION_FP_OP_ADD; req_a_comb = sx_mul; req_b_comb = cx; end
             S_SY_MUL:   begin req_op_comb = `VISION_FP_OP_MUL; req_a_comb = fy; req_b_comb = yd; end
@@ -260,15 +262,15 @@ module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
                     S_NY:       begin ny        <= fp_rsp_result; if(ENABLE_DISTORT_DEMO && inverse_mode) yd<=fp_rsp_result; state <= S_X2; end
                     S_X2:       begin x2        <= fp_rsp_result; state <= S_Y2; end
                     S_Y2:       begin y2        <= fp_rsp_result; state <= S_R2; end
-                    S_R2:       begin r2        <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_K1R2 : S_R4; end
+                    S_R2:       begin r2        <= fp_rsp_result; state <= S_R4; end
                     S_R4:       begin r4        <= fp_rsp_result; state <= S_R6; end
                     S_R6:       begin r6        <= fp_rsp_result; state <= S_K1R2; end
-                    S_K1R2:     begin k1r2      <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_RADIAL_A : S_K2R4; end
+                    S_K1R2:     begin k1r2      <= fp_rsp_result; state <= S_K2R4; end
                     S_K2R4:     begin k2r4      <= fp_rsp_result; state <= S_K3R6; end
                     S_K3R6:     begin k3r6      <= fp_rsp_result; state <= S_RADIAL_A; end
-                    S_RADIAL_A: begin radial_a  <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_INV_X : S_RADIAL_B; end
+                    S_RADIAL_A: begin radial_a  <= fp_rsp_result; state <= S_RADIAL_B; end
                     S_RADIAL_B: begin radial_b  <= fp_rsp_result; state <= S_RADIAL; end
-                    S_RADIAL:   begin radial    <= fp_rsp_result; state <= S_X_RADIAL; end
+                    S_RADIAL:   begin radial    <= fp_rsp_result; state <= ENABLE_DISTORT_DEMO && inverse_mode ? S_XY : S_X_RADIAL; end
                     S_X_RADIAL: begin x_radial  <= fp_rsp_result; state <= S_Y_RADIAL; end
                     S_Y_RADIAL: begin y_radial  <= fp_rsp_result; state <= S_XY; end
                     S_XY:       begin xy        <= fp_rsp_result; state <= S_P1XY; end
@@ -278,14 +280,14 @@ module map_coord_core #(parameter ENABLE_DISTORT_DEMO=0)(
                     S_R2_2X2:   begin r2_2x2    <= fp_rsp_result; state <= S_TX2; end
                     S_TX2:      begin tx2       <= fp_rsp_result; state <= S_XD_A; end
                     S_XD_A:     begin xd_a      <= fp_rsp_result; state <= S_XD; end
-                    S_XD:       begin xd        <= fp_rsp_result; state <= S_TWO_Y2; end
+                    S_XD:       begin if(ENABLE_DISTORT_DEMO && inverse_mode) xd_a <= fp_rsp_result; else xd <= fp_rsp_result; state <= S_TWO_Y2; end
                     S_TWO_Y2:   begin two_y2    <= fp_rsp_result; state <= S_R2_2Y2; end
                     S_R2_2Y2:   begin r2_2y2    <= fp_rsp_result; state <= S_TY1; end
                     S_TY1:      begin ty1       <= fp_rsp_result; state <= S_P2XY; end
                     S_P2XY:     begin p2xy      <= fp_rsp_result; state <= S_TY2; end
                     S_TY2:      begin ty2       <= fp_rsp_result; state <= S_YD_A; end
                     S_YD_A:     begin yd_a      <= fp_rsp_result; state <= S_YD; end
-                    S_YD:       begin yd        <= fp_rsp_result; state <= S_SX_MUL; end
+                    S_YD:       begin if(ENABLE_DISTORT_DEMO && inverse_mode) begin yd_a <= fp_rsp_result; state <= S_INV_X; end else begin yd <= fp_rsp_result; state <= S_SX_MUL; end end
                     S_SX_MUL:   begin sx_mul    <= fp_rsp_result; state <= S_SX; end
                     S_SX:       begin src_x_reg <= fp_rsp_result; state <= S_SY_MUL; end
                     S_SY_MUL:   begin sy_mul    <= fp_rsp_result; state <= S_SY; end

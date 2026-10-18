@@ -38,8 +38,12 @@ module video_hmic_arbiter #(parameter NR=4,NW=3)(
   if(wlock)c_awready[wo]=awready;
   if(wbusy)begin c_wready[wo]=wready;c_wdone[wo]=wdone;end
  end
- assign arvalid=rlock&&c_arvalid[ro];assign araddr=c_araddr[ro*28+:28];assign arlen=c_arlen[ro*4+:4];
- assign awvalid=wlock&&c_awvalid[wo];assign awaddr=c_awaddr[wo*28+:28];assign awlen=c_awlen[wo*4+:4];
+ // Lock is set only for an asserted client request. Clients hold valid and
+ // payload until ready (including display shutdown: requests drain first).
+ // The registered lock is therefore already the physical valid. Re-muxing
+ // client valid here needlessly creates owner -> valid -> DDR ready -> client.
+ assign arvalid=rlock;assign araddr=c_araddr[ro*28+:28];assign arlen=c_arlen[ro*4+:4];
+ assign awvalid=wlock;assign awaddr=c_awaddr[wo*28+:28];assign awlen=c_awlen[wo*4+:4];
  assign wdata=c_wdata[wo*256+:256];assign wstrb=c_wstrb[wo*32+:32];
  assign c_rdata=rdata;assign c_rlast=rlast;assign c_rid=rid;assign c_wid=wid;
  assign idle=!(rlock||rbusy||wlock||wbusy);

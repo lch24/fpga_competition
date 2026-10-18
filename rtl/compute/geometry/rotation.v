@@ -9,7 +9,8 @@ mode=1：R->四元数分支->rotvec，保留接近pi时的稳定分支，禁止�
 
 实现：一个 arithmetic 实例串行复用，所有算术步骤独立舍入。
 v[0:2] = rotvec；v[3:11] = 行优先 R；v[12:18] = 标量中间量；
-v[40:48] = S；v[49:57] = S*S；v[60:63] = qw,qx,qy,qz。
+v[40:48] = S；v[49] = 当前 S*S 元素，九个元素顺序计算共用累加器；
+v[60:63] = qw,qx,qy,qz。
 pc 0..16 求 Rodrigues 系数，17..116 构造矩阵，117 发布正向响应；
 118 起计算 trace、选最大对角线分支、统一四元数符号并生成旋转向量。
 输入 R 应为旋转矩阵：与 C++ 一致，本模块不做正交性/行列式校验。
@@ -56,7 +57,8 @@ module rotation #(parameter FP_SHARED=0) (
                ATAN2=7, EXP=8, CONVERT=11;
     localparam [63:0] ZERO=64'b0, ONE=64'h3ff0000000000000, TWO=64'h4000000000000000;
     reg [63:0] v [0:63];
-    integer pc, continuation, destination;
+    reg [13:0] pc, continuation;
+    reg [5:0] destination;
     reg [4:0] fp_op;
     reg [63:0] fp_a,fp_b;
     wire fp_ready,fp_valid;
@@ -163,7 +165,34 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 FP_WAIT: if(fp_valid) begin
                     // 下溢和非精确允许继续；非法、除零、溢出、非有限值终止。
                     if((|fp_flags[2:0]) || !finite(fp_result)) fail(`PAR_CALIB_INVALID);
-                    else begin v[destination]<=fp_result;pc<=continuation;end
+                    else begin case(destination)
+                        6'd0:v[0]<=fp_result;
+                        6'd1:v[1]<=fp_result;
+                        6'd2:v[2]<=fp_result;
+                        6'd3:v[3]<=fp_result;
+                        6'd4:v[4]<=fp_result;
+                        6'd5:v[5]<=fp_result;
+                        6'd6:v[6]<=fp_result;
+                        6'd7:v[7]<=fp_result;
+                        6'd8:v[8]<=fp_result;
+                        6'd9:v[9]<=fp_result;
+                        6'd10:v[10]<=fp_result;
+                        6'd11:v[11]<=fp_result;
+                        6'd12:v[12]<=fp_result;
+                        6'd13:v[13]<=fp_result;
+                        6'd14:v[14]<=fp_result;
+                        6'd15:v[15]<=fp_result;
+                        6'd16:v[16]<=fp_result;
+                        6'd17:v[17]<=fp_result;
+                        6'd18:v[18]<=fp_result;
+                        6'd49:v[49]<=fp_result;
+                        6'd60:v[60]<=fp_result;
+                        6'd61:v[61]<=fp_result;
+                        6'd62:v[62]<=fp_result;
+                        6'd63:v[63]<=fp_result;
+                        default:begin end
+                    endcase
+                    pc<=continuation;end
                 end
                 RESPONSE: if(rsp_ready) pc<=IDLE;
                 0: begin calculate(MUL, v[0], v[0], 12, 1); end
@@ -203,107 +232,107 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 // 28: R=I+a*S+b*S²
                 28: begin calculate(ADD, v[17], v[18], 3, 29); end
                 // 29: S*S 行 0 列 1
-                29: begin v[50]<=ZERO;pc<=30; end
+                29: begin v[49]<=ZERO;pc<=30; end
                 30: begin calculate(MUL, v[40], v[41], 17, 31); end
-                31: begin calculate(ADD, v[50], v[17], 50, 32); end
+                31: begin calculate(ADD, v[49], v[17], 49, 32); end
                 32: begin calculate(MUL, v[41], v[44], 17, 33); end
-                33: begin calculate(ADD, v[50], v[17], 50, 34); end
+                33: begin calculate(ADD, v[49], v[17], 49, 34); end
                 34: begin calculate(MUL, v[42], v[47], 17, 35); end
-                35: begin calculate(ADD, v[50], v[17], 50, 36); end
+                35: begin calculate(ADD, v[49], v[17], 49, 36); end
                 36: begin calculate(MUL, v[14], v[41], 17, 37); end
                 37: begin calculate(ADD, ZERO, v[17], 17, 38); end
-                38: begin calculate(MUL, v[15], v[50], 18, 39); end
+                38: begin calculate(MUL, v[15], v[49], 18, 39); end
                 // 39: R=I+a*S+b*S²
                 39: begin calculate(ADD, v[17], v[18], 4, 40); end
                 // 40: S*S 行 0 列 2
-                40: begin v[51]<=ZERO;pc<=41; end
+                40: begin v[49]<=ZERO;pc<=41; end
                 41: begin calculate(MUL, v[40], v[42], 17, 42); end
-                42: begin calculate(ADD, v[51], v[17], 51, 43); end
+                42: begin calculate(ADD, v[49], v[17], 49, 43); end
                 43: begin calculate(MUL, v[41], v[45], 17, 44); end
-                44: begin calculate(ADD, v[51], v[17], 51, 45); end
+                44: begin calculate(ADD, v[49], v[17], 49, 45); end
                 45: begin calculate(MUL, v[42], v[48], 17, 46); end
-                46: begin calculate(ADD, v[51], v[17], 51, 47); end
+                46: begin calculate(ADD, v[49], v[17], 49, 47); end
                 47: begin calculate(MUL, v[14], v[42], 17, 48); end
                 48: begin calculate(ADD, ZERO, v[17], 17, 49); end
-                49: begin calculate(MUL, v[15], v[51], 18, 50); end
+                49: begin calculate(MUL, v[15], v[49], 18, 50); end
                 // 50: R=I+a*S+b*S²
                 50: begin calculate(ADD, v[17], v[18], 5, 51); end
                 // 51: S*S 行 1 列 0
-                51: begin v[52]<=ZERO;pc<=52; end
+                51: begin v[49]<=ZERO;pc<=52; end
                 52: begin calculate(MUL, v[43], v[40], 17, 53); end
-                53: begin calculate(ADD, v[52], v[17], 52, 54); end
+                53: begin calculate(ADD, v[49], v[17], 49, 54); end
                 54: begin calculate(MUL, v[44], v[43], 17, 55); end
-                55: begin calculate(ADD, v[52], v[17], 52, 56); end
+                55: begin calculate(ADD, v[49], v[17], 49, 56); end
                 56: begin calculate(MUL, v[45], v[46], 17, 57); end
-                57: begin calculate(ADD, v[52], v[17], 52, 58); end
+                57: begin calculate(ADD, v[49], v[17], 49, 58); end
                 58: begin calculate(MUL, v[14], v[43], 17, 59); end
                 59: begin calculate(ADD, ZERO, v[17], 17, 60); end
-                60: begin calculate(MUL, v[15], v[52], 18, 61); end
+                60: begin calculate(MUL, v[15], v[49], 18, 61); end
                 // 61: R=I+a*S+b*S²
                 61: begin calculate(ADD, v[17], v[18], 6, 62); end
                 // 62: S*S 行 1 列 1
-                62: begin v[53]<=ZERO;pc<=63; end
+                62: begin v[49]<=ZERO;pc<=63; end
                 63: begin calculate(MUL, v[43], v[41], 17, 64); end
-                64: begin calculate(ADD, v[53], v[17], 53, 65); end
+                64: begin calculate(ADD, v[49], v[17], 49, 65); end
                 65: begin calculate(MUL, v[44], v[44], 17, 66); end
-                66: begin calculate(ADD, v[53], v[17], 53, 67); end
+                66: begin calculate(ADD, v[49], v[17], 49, 67); end
                 67: begin calculate(MUL, v[45], v[47], 17, 68); end
-                68: begin calculate(ADD, v[53], v[17], 53, 69); end
+                68: begin calculate(ADD, v[49], v[17], 49, 69); end
                 69: begin calculate(MUL, v[14], v[44], 17, 70); end
                 70: begin calculate(ADD, ONE, v[17], 17, 71); end
-                71: begin calculate(MUL, v[15], v[53], 18, 72); end
+                71: begin calculate(MUL, v[15], v[49], 18, 72); end
                 // 72: R=I+a*S+b*S²
                 72: begin calculate(ADD, v[17], v[18], 7, 73); end
                 // 73: S*S 行 1 列 2
-                73: begin v[54]<=ZERO;pc<=74; end
+                73: begin v[49]<=ZERO;pc<=74; end
                 74: begin calculate(MUL, v[43], v[42], 17, 75); end
-                75: begin calculate(ADD, v[54], v[17], 54, 76); end
+                75: begin calculate(ADD, v[49], v[17], 49, 76); end
                 76: begin calculate(MUL, v[44], v[45], 17, 77); end
-                77: begin calculate(ADD, v[54], v[17], 54, 78); end
+                77: begin calculate(ADD, v[49], v[17], 49, 78); end
                 78: begin calculate(MUL, v[45], v[48], 17, 79); end
-                79: begin calculate(ADD, v[54], v[17], 54, 80); end
+                79: begin calculate(ADD, v[49], v[17], 49, 80); end
                 80: begin calculate(MUL, v[14], v[45], 17, 81); end
                 81: begin calculate(ADD, ZERO, v[17], 17, 82); end
-                82: begin calculate(MUL, v[15], v[54], 18, 83); end
+                82: begin calculate(MUL, v[15], v[49], 18, 83); end
                 // 83: R=I+a*S+b*S²
                 83: begin calculate(ADD, v[17], v[18], 8, 84); end
                 // 84: S*S 行 2 列 0
-                84: begin v[55]<=ZERO;pc<=85; end
+                84: begin v[49]<=ZERO;pc<=85; end
                 85: begin calculate(MUL, v[46], v[40], 17, 86); end
-                86: begin calculate(ADD, v[55], v[17], 55, 87); end
+                86: begin calculate(ADD, v[49], v[17], 49, 87); end
                 87: begin calculate(MUL, v[47], v[43], 17, 88); end
-                88: begin calculate(ADD, v[55], v[17], 55, 89); end
+                88: begin calculate(ADD, v[49], v[17], 49, 89); end
                 89: begin calculate(MUL, v[48], v[46], 17, 90); end
-                90: begin calculate(ADD, v[55], v[17], 55, 91); end
+                90: begin calculate(ADD, v[49], v[17], 49, 91); end
                 91: begin calculate(MUL, v[14], v[46], 17, 92); end
                 92: begin calculate(ADD, ZERO, v[17], 17, 93); end
-                93: begin calculate(MUL, v[15], v[55], 18, 94); end
+                93: begin calculate(MUL, v[15], v[49], 18, 94); end
                 // 94: R=I+a*S+b*S²
                 94: begin calculate(ADD, v[17], v[18], 9, 95); end
                 // 95: S*S 行 2 列 1
-                95: begin v[56]<=ZERO;pc<=96; end
+                95: begin v[49]<=ZERO;pc<=96; end
                 96: begin calculate(MUL, v[46], v[41], 17, 97); end
-                97: begin calculate(ADD, v[56], v[17], 56, 98); end
+                97: begin calculate(ADD, v[49], v[17], 49, 98); end
                 98: begin calculate(MUL, v[47], v[44], 17, 99); end
-                99: begin calculate(ADD, v[56], v[17], 56, 100); end
+                99: begin calculate(ADD, v[49], v[17], 49, 100); end
                 100: begin calculate(MUL, v[48], v[47], 17, 101); end
-                101: begin calculate(ADD, v[56], v[17], 56, 102); end
+                101: begin calculate(ADD, v[49], v[17], 49, 102); end
                 102: begin calculate(MUL, v[14], v[47], 17, 103); end
                 103: begin calculate(ADD, ZERO, v[17], 17, 104); end
-                104: begin calculate(MUL, v[15], v[56], 18, 105); end
+                104: begin calculate(MUL, v[15], v[49], 18, 105); end
                 // 105: R=I+a*S+b*S²
                 105: begin calculate(ADD, v[17], v[18], 10, 106); end
                 // 106: S*S 行 2 列 2
-                106: begin v[57]<=ZERO;pc<=107; end
+                106: begin v[49]<=ZERO;pc<=107; end
                 107: begin calculate(MUL, v[46], v[42], 17, 108); end
-                108: begin calculate(ADD, v[57], v[17], 57, 109); end
+                108: begin calculate(ADD, v[49], v[17], 49, 109); end
                 109: begin calculate(MUL, v[47], v[45], 17, 110); end
-                110: begin calculate(ADD, v[57], v[17], 57, 111); end
+                110: begin calculate(ADD, v[49], v[17], 49, 111); end
                 111: begin calculate(MUL, v[48], v[48], 17, 112); end
-                112: begin calculate(ADD, v[57], v[17], 57, 113); end
+                112: begin calculate(ADD, v[49], v[17], 49, 113); end
                 113: begin calculate(MUL, v[14], v[48], 17, 114); end
                 114: begin calculate(ADD, ONE, v[17], 17, 115); end
-                115: begin calculate(MUL, v[15], v[57], 18, 116); end
+                115: begin calculate(MUL, v[15], v[49], 18, 116); end
                 // 116: R=I+a*S+b*S²
                 116: begin calculate(ADD, v[17], v[18], 11, 117); end
                 // 117: 向量到矩阵结束

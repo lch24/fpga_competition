@@ -4,7 +4,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/debug'))
-from uart_monitor import Framer, Monitor, decode, self_test
+from uart_monitor import Framer, Monitor, decode, self_test, readable, concise
 import binascii
 import struct
 
@@ -30,6 +30,15 @@ assert progress['instructions'] == 0x98765432
 assert progress['shared_program_pc'] == 0x3456
 assert progress['last_detect_count'] == 40 and progress['last_detect_view'] == 2
 assert any(r['uptime_ms'] >= 1000 for r in rows)
+rejected = next(r for r in rows if r.get('candidate_params') and not r['params_valid'])
+assert rejected['params'] is None and rejected['candidate_valid']
+assert rejected['reduced_model']
+assert rejected['check_reason'] == 'mapping_fold_or_degenerate'
+assert rejected['check_warnings'] == ['small_pose_variation', 'few_calibration_views']
+assert rejected['calibration_phase'] == 2 and rejected['last_result_phase'] == 2
+assert '被拒绝的候选参数' in readable(rejected)
+assert 'ddr_read_requests' not in concise(rejected)
+assert any(not r['candidate_valid'] and r['check_reason_code'] == 0 and r['calibration_job'] == 3 for r in rows)
 
 # No algorithm clock: a status reply with an unmatched old page must remain
 # visible to the operator, rather than looking like the UART itself timed out.

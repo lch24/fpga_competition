@@ -21,16 +21,30 @@ module board_display_hmic #(
  reg [255:0] buffer[0:15];
  // Dynamic mode presents a whole selected frame; legacy mode compares halves.
  reg [31:0] base;
+ reg out_valid,out_first,out_last;reg [15:0] out_pixel;
+
  localparam LINE_PIXELS=DYNAMIC_BASE?WIDTH:WIDTH/2;
  wire [31:0] byte_addr=(DYNAMIC_BASE?base:(half?DST_BASE:RAW_BASE))+y*(2*WIDTH)+2*x;
- assign idle=state==0||state==4;
+ assign idle=(state==0||state==4)&&!out_valid;
  assign frame_start=state==0&&enable&&x==0&&y==0&&!half;
  assign axi_araddr=byte_addr>>2;
  assign axi_arlen=beats-1;assign axi_aruser_id=0;assign axi_arvalid=state==1;
- assign pixel_valid=state==3&&enable;
- assign pixel=(!DYNAMIC_BASE&&half&&x==0&&pos==0)?16'hffff:buffer[pos[7:4]][pos[3:0]*16+:16];
- assign pixel_first=!half&&y==0&&x==0&&pos==0;
- assign pixel_last=(DYNAMIC_BASE||half)&&y==HEIGHT-1&&x+pos==LINE_PIXELS-1;
+ // Elastic output register separates the 256:1 pixel selection from the
+ // HDMI FIFO input. One pixel/clock after filling; payload holds under stalls.
+ wire output_ready=!out_valid||pixel_ready;
+ assign pixel_valid=out_valid&&enable;
+ assign pixel=out_pixel;assign pixel_first=out_first;assign pixel_last=out_last;
+ wire [15:0] next_pixel=(!DYNAMIC_BASE&&half&&x==0&&pos==0)?16'hffff:buffer[pos[7:4]][pos[3:0]*16+:16];
+ wire next_first=!half&&y==0&&x==0&&pos==0;
+ wire next_last=(DYNAMIC_BASE||half)&&y==HEIGHT-1&&x+pos==LINE_PIXELS-1;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin out_valid<=0;out_first<=0;out_last<=0;out_pixel<=0;end
+  else if(!enable)out_valid<=0;
+  else if(output_ready)begin
+   out_valid<=state==3;
+   if(state==3)begin out_pixel<=next_pixel;out_first<=next_first;out_last<=next_last;end
+  end
+ end
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin state<=0;half<=0;x<=0;y<=0;size<=0;pos<=0;beats<=0;received<=0;error<=0;base<=0;end
   else case(state)
@@ -52,7 +66,7 @@ module board_display_hmic #(
     end
    end
    3:if(!enable)begin state<=0;x<=0;y<=0;half<=0;end
-    else if(pixel_ready)begin
+    else if(output_ready)begin
     if(pos==size-1)begin
      pos<=0;state<=0;
      if(x+size==LINE_PIXELS)begin x<=0;half<=DYNAMIC_BASE?0:~half;if(DYNAMIC_BASE||half)y<=y==HEIGHT-1?0:y+1;end

@@ -166,6 +166,7 @@ module vision_ddr_top #(
   .b_error(c_b_error));
  // Detection refinement and calibration issue to the same FP64 pool.
  // They have independent reset/CE lifetimes and explicit response ownership.
+ wire diag_candidate,diag_reduced;wire [3:0] diag_reason,diag_warnings;
  wire feature_req_valid,feature_req_ready,feature_active,feature_rsp_valid,feature_rsp_ready;
  wire [4:0] feature_req_op,feature_flags;
  wire [63:0] feature_req_a,feature_req_b,feature_result;
@@ -207,6 +208,7 @@ module vision_ddr_top #(
   .m_wr_cplt_tag(c_b_tag),
   .m_wr_cplt_error(c_b_error));
  calib_top #(.EXTERNAL_FP(1)) calibration(
+  .diag_reduced_model(diag_reduced),
   .math_req_valid(feature_req_valid),.math_req_ready(feature_req_ready),.math_req_op(feature_req_op),
   .math_req_a(feature_req_a),.math_req_b(feature_req_b),.math_active(feature_active),
   .math_rsp_valid(feature_rsp_valid),.math_rsp_ready(feature_rsp_ready),.math_result(feature_result),.math_flags(feature_flags),
@@ -215,7 +217,7 @@ module vision_ddr_top #(
   .view_rsp_valid(vr),.view_rsp_ready(va),.view_rsp_job_id(debug_job),.view_rsp_view_id(debug_view),.view_rsp_status(view_status),
   .cmd_valid(ccv),.cmd_ready(ccr),.cmd_job_id(debug_job),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_square_size_fp64(square),
   .camera_valid(pv),.camera_ready(pr),.camera_calib_id(pid),.camera_width(pw),.camera_height(ph),.camera_usable(usable),.camera_params(pp),
-  .debug_live(calibration_live),.diag_valid(diag_v),.diag_ready(1'b1),.diag_phase(diag_phase),.diag_status(diag_status),.diag_converged(diag_converged),.diag_accepted_steps(diag_accepted),.diag_metrics_valid(diag_metrics),.diag_rms_fp64(diag_rms),
+  .diag_candidate_valid(diag_candidate),.diag_check_reason(diag_reason),.diag_check_warnings(diag_warnings),.debug_live(calibration_live),.diag_valid(diag_v),.diag_ready(1'b1),.diag_phase(diag_phase),.diag_status(diag_status),.diag_converged(diag_converged),.diag_accepted_steps(diag_accepted),.diag_metrics_valid(diag_metrics),.diag_rms_fp64(diag_rms),
   .rsp_valid(rv),.rsp_ready(rr),.rsp_status(rs),.rsp_job_id(rid));
  generate if(DEBUG_ENABLE)begin : g_debug
  algorithm_debug recorder(.clk(clk),.rst_n(debug_rst_n),.functional_reset_n(rst_n),
@@ -223,6 +225,7 @@ module vision_ddr_top #(
   .job(debug_job),.phase(debug_phase),.view(debug_view),
   .detect_done(ddone&&debug_phase==7),.detect_count(total),.detect_flags({5'b0,grid_ok,dstatus}),
   .corner_valid(cv&&cr),.corner_x(dx),.corner_y(dy),
+  .candidate_valid(diag_candidate),.reduced_model(diag_reduced),.check_reason(diag_reason),.check_warnings(diag_warnings),
   .result_valid(pv&&pr&&usable),.params(pp),.diag_valid(diag_v),.metrics_valid(diag_metrics),
   .accepted_steps(diag_accepted),.converged(diag_converged),.cal_phase(diag_phase),.diag_status(diag_status),.rms(diag_rms),
   .rsp_valid(rsp_valid&&rsp_ready),.rsp_status(rsp_status),
@@ -254,9 +257,11 @@ module vision_ddr_top #(
  localparam [31:0] DEMO_F=demo_float(WIDTH*4/5);
  localparam [31:0] DEMO_CX=demo_float(WIDTH-1)-32'h00800000;
  localparam [31:0] DEMO_CY=demo_float(HEIGHT-1)-32'h00800000;
+ // Fixed test lens: k1=-0.18, k2=0.04, k3=-0.005, p1=0.002, p2=-0.0015.
+ // Packed order is p2,p1,k3,k2,k1,cy,cx,fy,fx; calibration still uses result_params.
  wire demo_command=ENABLE_DISTORT_DEMO && opcode==3;
  wire [287:0] builder_params=demo_command ?
-  {32'b0,32'b0,32'b0,32'b0,32'hbe3851ec,DEMO_CY,DEMO_CX,DEMO_F,DEMO_F}:result_params;
+  {32'hbac49ba6,32'h3b03126f,32'hbba3d70a,32'h3d23d70a,32'hbe3851ec,DEMO_CY,DEMO_CX,DEMO_F,DEMO_F}:result_params;
  packed_map_builder #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) correction(
   .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_params(builder_params),
   .cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_map_base(demo_command?32'h03800000:MAP_X_BASE),

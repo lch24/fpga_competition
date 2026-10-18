@@ -77,6 +77,26 @@ module video_board_flow #(
  assign rsp_ready=state==OFFER||state==RESULT;
  assign remap_valid=remap_pending;assign remap_src=LIVE_BASE+source_slot*SLOT_BYTES;
  assign remap_dst=DST_BASE+destination_slot*SLOT_BYTES;assign remap_rsp_ready=remap_running;
+ // Counters are telemetry, one cycle behind the ownership events. Register
+ // event predicates before the 32-bit counter enables; key/mode decode no
+ // longer fans out through every bit of a counter on the same cycle.
+ reg captured_event,corrected_event,displayed_event;
+ reg [1:0] failed_events;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin
+   captured_event<=0;corrected_event<=0;displayed_event<=0;failed_events<=0;
+   captured_frames<=0;corrected_frames<=0;displayed_frames<=0;failed_frames<=0;
+  end else begin
+   captured_event<=push_ready;
+   corrected_event<=state==VIDEO&&!stop_live&&remap_rsp_valid&&remap_rsp_ready&&remap_status==0&&!remap_bypass;
+   displayed_event<=state==VIDEO&&display_frame_start&&(|dst_ready);
+   failed_events<=live?failures:2'b0;
+   if(captured_event)captured_frames<=captured_frames+1'b1;
+   if(corrected_event)corrected_frames<=corrected_frames+1'b1;
+   if(displayed_event)displayed_frames<=displayed_frames+1'b1;
+   if(failed_events!=0)failed_frames<=failed_frames+failed_events;
+  end
+ end
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin
    preview<=0;review_left<=0;review_started<=0;show_before<=0;remap_bypass<=0;state<=IDLE;action<=SELECT;target<=0;view_index<=0;selected<=0;showing<=0;
@@ -84,7 +104,7 @@ module video_board_flow #(
    raw_used<=0;raw_ready<=0;capture_pending<=0;remap_pending<=0;remap_running<=0;
    queue_read<=0;queue_write<=0;queue_count<=0;
    capture_slot<=0;source_slot<=0;destination_slot<=0;display_slot<=0;has_display<=0;dst_ready<=0;dst_used<=0;dst_corrected<=0;displayed_corrected<=0;
-   captured_frames<=0;corrected_frames<=0;displayed_frames<=0;failed_frames<=0;
+
   end else begin
    if(push_ready)begin ready_queue[queue_write]<=completed_slot;queue_write<=queue_write==2?0:queue_write+1'b1;end
    if(pop_ready)queue_read<=queue_read==2?0:queue_read+1'b1;
@@ -151,7 +171,7 @@ module video_board_flow #(
      end
      if(display_frame_start&&(|dst_ready))begin
       if(has_display)dst_used[display_slot]<=0;
-      display_slot<=next_display;displayed_corrected<=dst_corrected[next_display];has_display<=1;dst_ready[next_display]<=0;displayed_frames<=displayed_frames+1;
+      display_slot<=next_display;displayed_corrected<=dst_corrected[next_display];has_display<=1;dst_ready[next_display]<=0;
      end
     end
     STOP:begin
@@ -166,10 +186,9 @@ module video_board_flow #(
     default:state<=IDLE;
    endcase
    if(live)begin
-    if(failures!=0)failed_frames<=failed_frames+failures;
     if(capture_pending&&cap_cmd_ready)capture_pending<=0;
     if(cap_rsp_valid)begin
-     if(cap_status==0&&state==VIDEO&&!stop_live)begin raw_ready[completed_slot]<=1;captured_frames<=captured_frames+1;end
+     if(cap_status==0&&state==VIDEO&&!stop_live)begin raw_ready[completed_slot]<=1;end
      else begin raw_used[completed_slot]<=0;if(cap_status!=0)status<=cap_status;end
     end
     if(remap_pending&&remap_ready)begin remap_pending<=0;remap_running<=1;end
@@ -177,7 +196,7 @@ module video_board_flow #(
      remap_running<=0;raw_used[source_slot]<=0;
      if(remap_status==0&&state==VIDEO&&!stop_live)begin
       dst_ready[destination_slot]<=1;dst_corrected[destination_slot]<=!remap_bypass;
-      if(!remap_bypass)begin corrected_frames<=corrected_frames+1;corrected<=1;end
+      if(!remap_bypass)begin corrected<=1;end
      end
      else begin dst_used[destination_slot]<=0;if(remap_status!=0)status<=remap_status;end
     end

@@ -33,7 +33,7 @@ module tb_rotation;
     task await_response;
         begin
             cycles=0;
-            while(!rsp_valid && cycles<10000) begin
+            while(!rsp_valid && cycles<200000) begin
                 @(negedge clk);cycles=cycles+1;check(!cmd_ready,"busy ready low");
             end
             check(rsp_valid,"response timeout");

@@ -11,6 +11,17 @@ module core_debug #(parameter VIDEO_ENABLE=0,parameter [31:0] EVENT_MASK=32'hfff
 );
  reg [31:0] previous,events,reads,returns,writes,last_addr,dwell;
  reg changed;
+ // Keep the DDR ready/valid cone off the 32-bit counter clock enables.
+ // Telemetry counts trail handshakes by one cycle; addresses sample at handshake.
+ reg read_event,write_event,return_event;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin read_event<=0;write_event<=0;return_event<=0;end
+  else begin
+   read_event<=functional_reset_n&&read_accept;
+   write_event<=functional_reset_n&&write_accept;
+   return_event<=functional_reset_n&&(read_return||write_return);
+  end
+ end
  reg [15:0] ignored;
  reg [7:0] first_error;reg sticky_display,sticky_underflow;
  always @(posedge clk or negedge rst_n)begin
@@ -23,13 +34,15 @@ module core_debug #(parameter VIDEO_ENABLE=0,parameter [31:0] EVENT_MASK=32'hfff
    changed<=(previous&EVENT_MASK)!=(state_word&EVENT_MASK);
    if(changed)dwell<=0;else if(dwell!=32'hffffffff)dwell<=dwell+1'b1;
    if(changed)events<=events+1'b1;
+   if(read_event)reads<=reads+1'b1;
+   if(write_event)writes<=writes+1'b1;
+   if(return_event)returns<=returns+1'b1;
    if(functional_reset_n)begin
     if(busy&&|pressed&&ignored!=16'hffff)ignored<=ignored+1'b1;
     if(first_error==0&&state_word[23:16]!=0)first_error<=state_word[23:16];
     if(display_error)sticky_display<=1;if(underflow)sticky_underflow<=1;
-    if(read_accept)begin reads<=reads+1'b1;last_addr<=read_addr;end
-    if(write_accept)begin writes<=writes+1'b1;last_addr<=write_addr;end
-    if(read_return||write_return)returns<=returns+1'b1;
+    if(read_accept)last_addr<=read_addr;
+    if(write_accept)last_addr<=write_addr;
    end
   end
  end

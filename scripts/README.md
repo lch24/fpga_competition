@@ -36,6 +36,7 @@ python scripts/compute/microcode/build_math.py
 | 初值程序/阶段接口 | `python scripts/calibration/engine/check_init.py` |
 | LM 程序/阶段接口 | `python scripts/calibration/engine/check_lm.py` |
 | LM 与真实残差服务 | `python scripts/calibration/engine/check_lm_service.py` |
+| 实测角点的固定 k3 重试 | `python scripts/calibration/engine/check_lm_replay.py`（先生成下述复算结果） |
 | 结果检查 | `python scripts/calibration/engine/check_validate.py` |
 | 标定任务控制（默认几何） | `scripts/calibration/run_calib_top.ps1` |
 | 可配置几何（视图/棋盘/迭代上限） | `scripts/calibration/run_configurable.ps1`（`-TopOnly` 只跑顶层接线） |
@@ -58,6 +59,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps
 ## 其余目录
 
 `debug/uart_monitor.py` 是电脑端串口入口：`python scripts/debug/uart_monitor.py COM5` 持续接收状态，`--once progress` 查询执行进度，`--corners data/debug/corners.json` 导出角点。依赖为 `pyserial`；`--self-test` 仅需 Python 标准库。协议和操作见[板上操作](../docs/BOARD_OPERATION.md#串口调试)。
+
+实测角点的诊断链按以下顺序运行，结果统一写入 `build/debug`：
+
+```powershell
+python scripts/debug/replay_calibration.py data/calibration/uart_fold_corners.json
+powershell -File scripts/debug/replay_cpp.ps1 -VsRoot <VisualStudio目录>
+python scripts/calibration/engine/check_lm_replay.py
+```
+
+第一步独立复算完整模型和固定 `k3=0` 模型，并检查全图映射；第二步调用生产 C++ 算法交叉比较；第三步用同一批角点验证 RTL LM 的固定 k3 路径。第二步不是第三步的依赖。RTL 的自动重试顺序由 `run_calib_top.ps1 -ControlOnly` 单独验证。新采集数据放 `data/debug`，有长期回归价值的数据再归档到 `data/calibration`。
 
 `memory`、`image`、`remap`、`video` 保存各功能的仿真驱动；`system/integration_tests.json` 定义联合测试清单；`common` 负责工具定位。输入数据生成器放在 `data/generators`，不与运行器混放。
 

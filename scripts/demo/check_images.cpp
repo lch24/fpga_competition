@@ -16,16 +16,29 @@ static cv::Point2d project(const CameraParams& p,double u,double v){
  return {p.fx*(x*s+2*p.p1*x*y+p.p2*(r+2*x*x))+p.cx,p.fy*(y*s+p.p1*(r+2*y*y)+2*p.p2*x*y)+p.cy};
 }
 static cv::Point2d inverse_artificial(double u,double v){
- double x=(u-639.5)/1024,y=(v-359.5)/1024,r=std::hypot(x,y),z=r;
- for(int i=0;i<30;i++)z-=(z*(1-.18*z*z)-r)/(1-.54*z*z);
- double q=r>0?z/r:1;return {639.5+1024*x*q,359.5+1024*y*q};
+ double xd=(u-639.5)/1024,yd=(v-359.5)/1024,x=xd,y=yd;
+ for(int i=0;i<30;i++){
+  double r=x*x+y*y,d=1-.18*r+.04*r*r-.005*r*r*r,g=-.18+.08*r-.015*r*r;
+  double ex=x*d+.004*x*y-.0015*(r+2*x*x)-xd;
+  double ey=y*d+.002*(r+2*y*y)-.003*x*y-yd;
+  double a=d+2*x*x*g+.004*y-.009*x,b=2*x*y*g+.004*x-.003*y;
+  double c=d+2*y*y*g+.012*y-.003*x,det=a*c-b*b;
+  double dx=(c*ex-b*ey)/det,dy=(a*ey-b*ex)/det;x-=dx;y-=dy;
+ }
+ return {639.5+1024*x,359.5+1024*y};
 }
 int main(int argc,char**argv){
  if(argc<3)return 2;bool synthetic=argc>3;fs::path input=argv[1],out=argv[2];fs::create_directories(out);
  cv::Mat mx(H,W,CV_32F),my(H,W,CV_32F);double max_error=0;
  for(int y=0;y<H;y++)for(int x=0;x<W;x++){
   float xd=(x-639.5f)/1024,yd=(y-359.5f)/1024,nx=xd,ny=yd;
-  for(int k=0;k<16;k++){float r=nx*nx+ny*ny;float d=1+(-.18f*r);nx=xd/d;ny=yd/d;}
+  for(int k=0;k<16;k++){
+   float x2=nx*nx,y2=ny*ny,r=x2+y2,r4=r*r,r6=r4*r;
+   float d=((1+(-.18f*r))+.04f*r4)-.005f*r6,xy=nx*ny;
+   float tx1=2*(.002f*xy),tx2=-.0015f*(r+2*x2);
+   float ty1=.002f*(r+2*y2),ty2=2*(-.0015f*xy);
+   nx=((xd-tx1)-tx2)/d;ny=((yd-ty1)-ty2)/d;
+  }
   float sx=1024*nx+639.5f,sy=1024*ny+359.5f;mx.at<float>(y,x)=sx;my.at<float>(y,x)=sy;
   auto ref=inverse_artificial(x,y);max_error=std::max(max_error,std::hypot(sx-ref.x,sy-ref.y));
  }

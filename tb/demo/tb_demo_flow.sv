@@ -28,7 +28,8 @@ module tb_demo_flow;
  task remap_done(input [7:0] s);
   begin tick;remap_status=s;remap_rsp=1;do @(posedge clk);while(!remap_rr);tick;remap_rsp=0;end
  endtask
- task flip;begin tick;dfs=1;tick;dfs=0;end endtask
+ // Telemetry counters commit one clock after the display ownership event.
+ task flip;begin tick;dfs=1;tick;dfs=0;tick;end endtask
  task accept_remap;begin tick;remap_ready=1;do @(posedge clk);while(!remap_v);tick;remap_ready=0;end endtask
  reg [31:0] held_src,held_dst;integer k,builds=0;
  task algorithm_done;

@@ -43,7 +43,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     input wire [15:0] cmd_width, // 图像宽度，>=2
     input wire [15:0] cmd_height, // 图像高度，>=2
     input wire [`PAR_STATE_W-1:0] cmd_state, // PAR_STATE_N 项 FP64 状态快照，命令握手时锁存
-    input wire [1:0] cmd_stage, // 0/1/2 -> 22/23/27个活动参数
+    input wire [1:0] cmd_stage, // 0/1/2: staged/full; 3: full except fixed k3 (26 columns for 3 views)
     output wire point_rd_en, // 固定1拍角点读使能，无ready，发起前预留接收空间
     output wire [`PAR_VIEW_BITS-1:0] point_rd_view_id, // 0..PAR_VIEWS-1
     output wire [`PAR_POINT_BITS-1:0] point_rd_index, // 图内角点0..PAR_POINTS-1
@@ -217,7 +217,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
         IDLE:if(cmd_valid)begin
           payload<=cmd_state;width<=cmd_width;height<=cmd_height;stage<=cmd_stage;index<=0;
           cost_q<=64'h7ff0000000000000;accepted_q<=0;outer_q<=0;converged_q<=0;rsp_status<=0;
-          if(cmd_width<2 || cmd_height<2 || cmd_stage==3)begin rsp_status<=`PAR_BAD_CONFIG;state<=RESPONSE;end
+          if(cmd_width<2 || cmd_height<2)begin rsp_status<=`PAR_BAD_CONFIG;state<=RESPONSE;end
           else state<=INITIALIZE;
         end
         INITIALIZE:if(host_ready)begin

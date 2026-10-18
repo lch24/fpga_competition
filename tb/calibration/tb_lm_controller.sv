@@ -2,10 +2,10 @@
 `include "calib_defs.vh"
 // Public-interface regression against the pre-existing independent numerical
 // fixtures. No forced internal arithmetic/control signals or cycle assumptions.
-module tb_lm_controller;
+module tb_lm_controller #(parameter REPLAY=0, WIDTH=640, HEIGHT=480);
  reg clk=0;always #5 clk=~clk;
  reg rst_n=0,cmd_valid=0,rsp_ready=0;wire cmd_ready,rsp_valid;
- reg [15:0] width=640,height=480;reg [1:0] stage;
+ reg [15:0] width=WIDTH,height=HEIGHT;reg [1:0] stage;
  reg [`PAR_STATE_W-1:0] input_state,initial_state,expected,snapshot;
  wire [`PAR_STATE_W-1:0] result;
  reg [63:0] expected_cost,saved_cost;wire [63:0] cost;
@@ -47,7 +47,7 @@ module tb_lm_controller;
  task launch;begin @(negedge clk);check(cmd_ready,"command ready");reads=0;input_state=initial_state;cmd_valid=1;
  @(negedge clk);cmd_valid=0;input_state=~initial_state;end endtask
  task await_response;begin cycles=0;
- while(!rsp_valid && cycles<250000000)begin @(negedge clk);cycles=cycles+1;end
+ while(!rsp_valid && cycles<(REPLAY?1000000000:250000000))begin @(negedge clk);cycles=cycles+1;end
  if(!rsp_valid)$fatal(1,"timeout adapter=%d instruction=%d",dut.state,dut.engine.private_engine.core.sequencer.pc);
  $display("LM_PROGRAM case=%0d cycles=%0d accepted=%0d outer=%0d cost=%.17g status=%0d",cases,cycles,accepted,outer,$bitstoreal(cost),status);
  end endtask
@@ -68,13 +68,15 @@ module tb_lm_controller;
    end else if(rc!=-1)$fatal(1,"fixture format");
   end
   $fclose(fd);
+  if(!REPLAY)begin
   width=1;launch();await_response();check(status==1 && result===initial_state,"bad dimensions preserve state");consume();width=640;
-  stage=3;launch();await_response();check(status==1,"bad stage");consume();stage=0;
+  stage=3;initial_state=expected;launch();await_response();check(status==0 && result[512+:64]===initial_state[512+:64],"reduced stage preserves fixed k3");consume();stage=0;
   initial_state[0+:64]=64'h7ff8000000000000;launch();await_response();
   check(status==0 && !converged && cost==64'h7ff0000000000000 && outer==0 && result===initial_state,"invalid baseline");consume();initial_state[0+:64]=expected[0+:64];
   drop=0;launch();await_response();check(status==5 && !converged && accepted==0 && result===initial_state,"missing baseline corner");consume();drop=-1;
   launch();repeat(900)@(negedge clk);reset_dut();check(cmd_ready && !rsp_valid,"in-flight cancellation");cases=cases+1;
   width=1;launch();await_response();check(status==1,"recovery after reset");consume();
+  end
   $display("LM_PROGRAM_DONE cases=%0d errors=%0d",cases,errors);done=1;
  end
 endmodule

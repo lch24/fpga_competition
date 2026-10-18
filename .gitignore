@@ -15,11 +15,12 @@ Release/
 !/tb/debug/
 /data/debug/
 /sim/
-/integration/build/
 /logbackup/
 /OV5640_DualView_100H/logbackup/
 /OV5640_DualView_100H/check_pds.pds
 /OV5640_DualView_100H/*.backup_*.pds
+/OV5640_DualView_100H/ip_backup/
+/check_pds.pds
 x64/
 x86/
 *[Bb]in/
@@ -42,8 +43,6 @@ x86/
 *.idb
 *.ipch
 __pycache__/
-undistort/sim/build/
-*.pdb
 
 # Reproducible test outputs and simulator work libraries
 /build/

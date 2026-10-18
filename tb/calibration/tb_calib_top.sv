@@ -119,9 +119,8 @@ module tb_calib_top;
    check(!(dut.init_owner && dut.lm_owner) && !(dut.lm_owner && dut.check_owner) && !(dut.init_owner && dut.check_owner),"exclusive RAM owner");
    if(dut.pc==dut.INIT_WAIT && dut.seed_valid && dut.seed_ready)begin expected_seeds[dut.seed_count]=dut.seed_state;seed_inputs=seed_inputs+1;end
    if(dut.pc==dut.LM_CMD && dut.lm_ready)begin
-    check(dut.stage==2 && lm_commands==0,"one full-parameter LM stage");
-    if(lm_commands==0)check(dut.current===expected_seeds[dut.seed_index],"load each original seed");
-    else check(dut.current===previous_state,"chain last accepted state even if unconverged");
+    check((dut.stage==2 && lm_commands==0)||(dut.stage==3 && lm_commands==1),"full fit then at most one reduced retry");
+    check(dut.current===expected_seeds[dut.seed_index],"each model starts from fresh initializer");
     lm_commands=lm_commands+1;
    end
    if(dut.pc==dut.LM_WAIT && dut.lm_valid)begin
@@ -191,6 +190,7 @@ module tb_calib_top;
  // Deliberate child-interface model for control branch tests only; no arithmetic claims from these cases.
  reg mock_init_ready=0,mock_init_valid=0,mock_seed_valid=0,mock_lm_ready=0,mock_lm_valid=0,mock_check_ready=0,mock_check_valid=0;
  reg [7:0] mock_init_status=0,mock_lm_status=0,mock_check_status=0,mock_accepted=0;
+ reg [3:0] mock_reason=4;
  reg [2:0] mock_seed_id=0,mock_count=0;
  reg [`PAR_STATE_W-1:0] mock_seed_state=0,mock_lm_state=0;
  reg [63:0] mock_cost=0;reg mock_converged=0,mock_usable=0,mock_metrics=0;
@@ -203,9 +203,12 @@ module tb_calib_top;
   force dut.check_ready=mock_check_ready;force dut.check_valid=mock_check_valid;force dut.check_status=mock_check_status;
   force dut.check_usable=mock_usable;force dut.check_metrics=mock_metrics;force dut.check_weak=1;
   force dut.check_camera=288'h12345678;force dut.check_rms=64'h3ff0000000000000;
+  force dut.check_candidate=288'h12345678;force dut.check_candidate_valid=1;
+  force dut.check_reason=mock_reason;force dut.check_warnings=12;
   force dut.check_view_rms=192'h123;force dut.check_max=64'h4000000000000000;force dut.check_poses=2304'h456;
  end endtask
  task clear_mock;begin
+  mock_reason=4;
   mock_init_ready=0;mock_init_valid=0;mock_seed_valid=0;mock_lm_ready=0;mock_lm_valid=0;mock_check_ready=0;mock_check_valid=0;
   mock_init_status=0;mock_lm_status=0;mock_check_status=0;mock_count=0;mock_converged=0;mock_usable=0;mock_metrics=0;
  end endtask
@@ -324,7 +327,21 @@ module tb_calib_top;
     check(diag_seed_id==2 && diag_accepted_steps==3 && diag_converged && dut.best_state==seed_pattern(2)+1728'h1000,"single seed result");
     finish_job(0,4,n);
    end
-   one_seed();mock_lm(1.0,0,0);mock_check(4,0,1);finish_job(4,3,0);
+   one_seed();mock_lm(1.0,0,0);mock_check(4,0,1);
+   check(dut.diag_candidate_valid && dut.diag_check_reason==4 && dut.diag_check_warnings==12 &&
+         camera_params==288'h12345678 && !camera_valid && !camera_usable,"failed candidate diagnostic retained without publication");
+   finish_job(4,3,0);
+   // Folding is retried once; other failures are never hidden by a retry.
+   for(n=0;n<2;n=n+1)begin
+    one_seed();mock_lm(1.0,1,0);mock_reason=7;mock_check(4,0,1);
+    check(!diag_valid && !camera_valid && dut.stage==3 && !dut.best_valid,"fold result not published; old lower cost discarded");
+    mock_init_start();mock_seed(2);mock_init_end(1,0);mock_lm(1.1,1,0);
+    if(n==0)begin mock_reason=0;mock_check(0,1,1);end
+    else mock_check(4,0,1);
+    check(dut.diag_reduced_model && lm_commands==2 && seed_inputs==2,"bounded retry and diagnostic flag");
+    check(diag_accepted_steps==4,"retry uses new convergence and accepted count");
+    finish_job(n==0?0:4,n==0?4:3,0);
+   end
    one_seed();mock_lm(1.0,1,0);mock_check(5,0,0);check(!diag_metrics_valid && actual_metrics==0,"invalid metrics zeroed");finish_job(5,3,1);
    one_seed();mock_lm(1.0,1,0);mock_check(0,0,1);finish_job(1,3,2);
    one_seed();mock_lm(1.0,1,0);

@@ -15,7 +15,11 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
 );
  localparam IDLE=0,START=1,RUN=2,RESPONSE=3;
  reg [1:0] state;reg [31:0] source,destination,mapping,cycles;
- wire start=state==START;wire mv,mr,cv,cr,pv,pr,me,ce,we,done;
+ // Dedicated start pulse prevents the state decoder driving all writer CEs.
+ reg start;
+ always @(posedge clk or negedge rst_n)
+  if(!rst_n)start<=0;else start<=state==START;
+ wire mv,mr,cv,cr,pv,pr,me,ce,we,done;
  reg bypass,identity_valid;
  reg [$clog2(WIDTH)-1:0] identity_x;
  reg [$clog2(HEIGHT)-1:0] identity_y;
@@ -24,6 +28,17 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
  wire [63:0] map_descriptor;
  wire [63:0] descriptor=bypass?{4'b0001,identity_y14,identity_x14,32'b0}:map_descriptor;
  wire [63:0] neighbors;
+ reg descriptor_valid,descriptor_error;reg [63:0] descriptor_q;
+ wire cache_ready;
+ assign mr=!descriptor_valid||cache_ready;
+ always @(posedge clk or negedge rst_n)begin
+  if(!rst_n)begin descriptor_valid<=0;descriptor_error<=0;descriptor_q<=0;end
+  else if(start)begin descriptor_valid<=0;descriptor_error<=0;end
+  else if(mr)begin
+   descriptor_valid<=mv;
+   if(mv)begin descriptor_q<=descriptor;descriptor_error<=me;end
+  end
+ end
  assign mv=bypass?identity_valid:map_valid;
  assign map_ready=!bypass&&mr;
  assign me=!bypass&&map_error;
@@ -45,7 +60,7 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
   .arvalid(arvalid[0]),.arready(arready[0]),.araddr(araddr[0+:28]),.arlen(arlen[0+:4]),
   .rvalid(rvalid[0]),.rdata(rdata),.rlast(rlast),.rid(rid));
  video_neighbor_cache #(.WIDTH(WIDTH),.INDEX_BITS(CACHE_INDEX_BITS)) cache(
-  .clk(clk),.rst_n(rst_n),.start(start),.src_base(source),.in_valid(mv),.in_ready(mr),.descriptor(descriptor),.map_error(me),
+  .clk(clk),.rst_n(rst_n),.start(start),.src_base(source),.in_valid(descriptor_valid),.in_ready(cache_ready),.descriptor(descriptor_q),.map_error(descriptor_error),
   .out_valid(cv),.out_ready(cr),.pixels(neighbors),.dx(dx),.dy(dy),.error(ce),
   .arvalid(arvalid[1]),.arready(arready[1]),.araddr(araddr[28+:28]),.arlen(arlen[4+:4]),
   .rvalid(rvalid[1]),.rdata(rdata),.rlast(rlast),.rid(rid));
@@ -64,7 +79,7 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
     else state<=START;
    end
    START:state<=RUN;
-   RUN:begin cycles<=cycles+1;if(done)begin last_cycles<=cycles;rsp_status<=me||ce||we?5:0;state<=RESPONSE;end end
+   RUN:begin cycles<=cycles+1;if(done&&!start)begin last_cycles<=cycles;rsp_status<=me||ce||we?5:0;state<=RESPONSE;end end
    RESPONSE:if(rsp_ready)state<=IDLE;
    default:state<=IDLE;
   endcase

@@ -69,11 +69,15 @@ void finish_result(const State& best, const Points& points, int width, int heigh
     result.weak_geometry = max_angle < .17 || points.size() < 5;
     bool intrinsics_ok = k.fx > .05 * width && k.fy > .05 * width && k.fx < 20 * width && k.fy < 20 * width &&
                          k.cx >= 0 && k.cx < width && k.cy >= 0 && k.cy < height;
-    k.valid = best_converged && intrinsics_ok && result.rms < 3 && mapping_is_regular(k, width, height) &&
-              max_angle > .01;
+    // Intrinsic ranges and pose diversity are priors: report them as warnings.
+    // Keep convergence, positive finite focal lengths and non-folding maps hard.
+    k.valid = best_converged && std::isfinite(k.fx) && std::isfinite(k.fy) && k.fx > 0 && k.fy > 0 &&
+              result.rms < 3 && mapping_is_regular(k, width, height);
     if (!k.valid)
         result.message = "Unreliable calibration: check convergence, intrinsics, reprojection error and map "
                          "folding. No correction should be applied.";
+    else if (!intrinsics_ok)
+        result.message = "Unusual intrinsics: provisional parameters; verify correction on independent images.";
     else if (result.weak_geometry)
         result.message = "Only a few views or small pose variation: provisional parameters; low training RMS "
                          "does not prove accuracy outside the board.";

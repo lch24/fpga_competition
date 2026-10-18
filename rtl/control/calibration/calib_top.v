@@ -49,6 +49,8 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     output wire camera_usable, // 根README中的camera_valid有效性字段；与流valid区分
     output wire [`PAR_CAMERA_W-1:0] camera_params, // 低位起fx,fy,cx,cy,k1,k2,k3,p1,p2，各FP32
     output wire [71:0] debug_live,
+    output reg [3:0] diag_check_reason,diag_check_warnings,
+    output reg diag_candidate_valid,
     output wire diag_valid, // 每任务一笔诊断；包括失败任务
     input wire diag_ready, // 必须接收；不用的诊断可始终ready=1
     output wire [31:0] diag_job_id, // 任务号
@@ -64,6 +66,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     output wire [`PAR_POSES_W-1:0] diag_poses_fp64, // 三视图R和t；平移恢复首角点原点并乘square_size
     output wire [2:0] diag_seed_id, // 2=width-based seed; 7=no valid result
     output wire [15:0] diag_accepted_steps, // 当前单阶段 LM 已接受更新总数
+    output wire diag_reduced_model, // Mapping-fold retry used fixed k3=0; other parameters refitted.
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
     output wire [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
@@ -127,7 +130,8 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     wire [63:0] lm_cost;
     wire check_ready,check_valid,check_usable,check_metrics,check_weak;
     wire [7:0] check_status;
-    wire [287:0] check_camera;
+    wire [287:0] check_camera,check_candidate;
+    wire check_candidate_valid;wire [3:0] check_reason,check_warnings;
     wire [63:0] check_rms,check_max;
     wire [`PAR_VIEW_RMS_W-1:0] check_view_rms;
     wire [`PAR_POSES_W-1:0] check_poses;
@@ -171,6 +175,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
     assign camera_height=height;
     assign camera_usable=(status==`PAR_OK && metrics);
     assign camera_params=camera_q;
+    assign diag_reduced_model=(stage==3);
     assign diag_job_id=job;
     assign diag_status=status;
     assign diag_phase=phase;
@@ -310,7 +315,8 @@ module calib_top #(parameter EXTERNAL_FP=0)(
         .point_rd_en(check_rd),.point_rd_view_id(check_view),.point_rd_index(check_index),
         .point_rd_valid(check_owner && rd_valid),.point_rd_x_fp32(rd_x),.point_rd_y_fp32(rd_y),
         .rsp_valid(check_valid),.rsp_ready(rst_n && pc==CHECK_WAIT),.rsp_status(check_status),
-        .rsp_camera_usable(check_usable),.rsp_camera_params(check_camera),.rsp_metrics_valid(check_metrics),
+        .rsp_candidate_params(check_candidate),.rsp_candidate_valid(check_candidate_valid),
+        .rsp_check_reason(check_reason),.rsp_check_warnings(check_warnings),.rsp_camera_usable(check_usable),.rsp_camera_params(check_camera),.rsp_metrics_valid(check_metrics),
         .rsp_weak_geometry(check_weak),.rsp_rms_fp64(check_rms),.rsp_view_rms_fp64(check_view_rms),
         .rsp_max_error_fp64(check_max),.rsp_poses_fp64(check_poses));
 
@@ -319,6 +325,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
         input [3:0] where;
         begin
             status<=code;phase<=where;metrics<=0;weak_geometry<=0;
+            diag_candidate_valid<=0;diag_check_reason<=0;diag_check_warnings<=0;
             camera_q<=0;rms_q<=0;view_rms_q<=0;max_error_q<=0;poses_q<=0;
             camera_pending<=0;diag_pending<=1;pc<=OUTPUT;
         end
@@ -328,6 +335,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
         if(!rst_n) begin
             pc<=IDLE;job<=0;width<=0;height<=0;square_size<=0;status<=0;phase<=0;
             camera_pending<=0;diag_pending<=0;metrics<=0;weak_geometry<=0;
+            diag_candidate_valid<=0;diag_check_reason<=0;diag_check_warnings<=0;
             camera_q<=0;rms_q<=0;view_rms_q<=0;max_error_q<=0;poses_q<=0;
             seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=2;current<=0;
             best_cost<=64'h7ff0000000000000;best_valid<=0;
@@ -337,6 +345,7 @@ module calib_top #(parameter EXTERNAL_FP=0)(
                 job<=collect_job_id;pc<=CLEAR;width<=0;height<=0;square_size<=0;
                 status<=0;phase<=0;metrics<=0;weak_geometry<=0;
                 camera_pending<=0;diag_pending<=0;camera_q<=0;
+                diag_candidate_valid<=0;diag_check_reason<=0;diag_check_warnings<=0;
                 rms_q<=0;view_rms_q<=0;max_error_q<=0;poses_q<=0;
                 seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;stage<=2;accepted<=0;
                 best_valid<=0;best_converged<=0;best_id<=7;best_accepted<=0;
@@ -404,14 +413,24 @@ module calib_top #(parameter EXTERNAL_FP=0)(
             CHECK_WAIT: if(check_valid) begin
                 // 成功状态必须同时有usable与metrics；不能发布不完整的参数包。
                 if(check_status==0 && (!check_usable || !check_metrics)) fail(`PAR_BAD_CONFIG,3);
-                else begin
+                else if(check_status==`PAR_CALIB_INVALID && check_reason==7 && stage==2) begin
+                    // An unconstrained k3 can fit the board but fold outside it.
+                    // Retry ONCE from the ordinary zero-distortion initializer,
+                    // fitting every other parameter. Never clip a fitted model
+                    // or bypass validation; no synthetic-camera preset is used.
+                    stage<=3;phase<=1;pc<=INIT_CMD;
+                    seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;
+                    accepted<=0;best_valid<=0;best_converged<=0;best_id<=7;
+                    best_accepted<=0;best_cost<=64'h7ff0000000000000;
+                end else begin
                     status<=check_status;phase<=(check_status==0)?4:3;
                     metrics<=check_metrics;weak_geometry<=check_metrics && check_weak;
                     rms_q<=check_metrics?check_rms:64'b0;
                     view_rms_q<=check_metrics?check_view_rms:{`PAR_VIEW_RMS_W{1'b0}};
                     max_error_q<=check_metrics?check_max:64'b0;
                     poses_q<=check_metrics?check_poses:{`PAR_POSES_W{1'b0}};
-                    camera_q<=(check_status==0)?check_camera:288'b0;
+                    camera_q<=check_candidate_valid?check_candidate:288'b0;
+                    diag_candidate_valid<=check_candidate_valid;diag_check_reason<=check_reason;diag_check_warnings<=check_warnings;
                     camera_pending<=(check_status==0);diag_pending<=1;pc<=OUTPUT;
                 end
             end

@@ -25,12 +25,36 @@ static void add(const std::string& name,State p=base(),double square=1,bool conv
  if(point_mode==2)points[2][39].x=std::numeric_limits<float>::infinity();
  std::vector<double> residual;double cost=residuals(p,points,w,h,5,8,residual);if(override_cost!=-1)cost=override_cost;
  CameraCalibrationResult result;int status=guard_status,metrics=0,usable=0;State values(41,0);std::string camera(72,'0');
- if(guard_status<0){finish_result(p,points,w,h,5,8,square,cost,converged,0,result);++cpp_count;metrics=1;usable=result.camera.valid;status=usable?0:4;
+ if(guard_status<0){finish_result(p,points,w,h,5,8,square,cost,converged,0,result,residual);++cpp_count;metrics=1;usable=result.camera.valid;status=usable?0:4;
   values[0]=result.rms;for(int v=0;v<3;v++)values[1+v]=result.per_view_rms[v];values[4]=result.max_error;
   for(int v=0;v<3;v++){for(int j=0;j<9;j++)values[5+12*v+j]=result.poses[v].rotation[j];for(int j=0;j<3;j++)values[5+12*v+9+j]=result.poses[v].translation[j];}
   if(usable){auto k=result.camera;camera=fword(k.p2)+fword(k.p1)+fword(k.k3)+fword(k.k2)+fword(k.k1)+fword(k.cy)+fword(k.cx)+fword(k.fy)+fword(k.fx);}
  }
- vectors<<status<<' '<<usable<<' '<<metrics<<' '<<w<<' '<<h<<' '<<converged<<' '<<drop<<' '<<word(square)<<' '<<word(cost)<<' '<<pack(p)<<' '<<pack_points(points)<<' '<<camera<<' '<<pack(values)<<'\n';
+ // Independent diagnostic oracle; warning policy must not hide candidate bits.
+ float candidate[9]={float(std::exp(p[0])),float(std::exp(p[1])),float(p[2]*w),float(p[3]*h),
+                     float(p[4]),float(p[5]),float(p[8]),float(p[6]),float(p[7])};
+ bool candidate_valid=w>=2&&h>=2&&std::isfinite(square)&&square>0&&std::isfinite(cost)&&cost>=0;
+ for(double x:p)candidate_valid=candidate_valid&&std::isfinite(x);
+ for(float x:candidate)candidate_valid=candidate_valid&&std::isfinite(x);
+ int reason=0,warnings=0;
+ if(metrics){
+  if(candidate[0]<=.05*w||candidate[1]<=.05*w||candidate[0]>=20*w||candidate[1]>=20*w)warnings|=1;
+  if(candidate[2]<0||candidate[2]>=w||candidate[3]<0||candidate[3]>=h)warnings|=2;
+  double angle=0;
+  for(int a=0;a<3;a++)for(int b=0;b<a;b++){
+   auto x=result.poses[a].rotation,y=result.poses[b].rotation;
+   double dot=std::fabs(x[2]*y[2]+x[5]*y[5]+x[8]*y[8]);
+   angle=std::max(angle,std::acos(std::min(1.,dot)));
+  }
+  if(angle<=.17)warnings|=4;warnings|=8;
+  if(!converged)reason=4;else if(result.rms>=3)reason=6;else if(!usable)reason=7;
+ }else if(status==1)reason=2;
+ else if(drop>=0||point_mode==2||std::exp(p[0])>1e7)reason=3;
+ else reason=1;
+ std::string candidate_bits;
+ for(int i=8;i>=0;i--)candidate_bits+=fword(candidate[i]);
+ vectors<<status<<' '<<usable<<' '<<metrics<<' '<<w<<' '<<h<<' '<<converged<<' '<<drop<<' '<<word(square)<<' '<<word(cost)<<' '<<pack(p)<<' '<<pack_points(points)<<' '<<camera<<' '<<pack(values)
+        <<' '<<reason<<' '<<warnings<<' '<<candidate_valid<<' '<<candidate_bits<<'\n';
  names<<++count<<": "<<name<<" status="<<status<<" metrics="<<metrics<<" usable="<<usable<<'\n';
 }
 int main(){if(!vectors || !names)return 2;add("physical");add("no_convergence",base(),1,false);add("square_25",base(),25);add("square_0.025",base(),.025);add("residual_offsets",base(),1,true,-1,640,480,-1,-1,1);

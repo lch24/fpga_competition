@@ -63,10 +63,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps
 实测角点的诊断链按以下顺序运行，结果统一写入 `build/debug`：
 
 ```powershell
+python scripts/debug/inspect_calibration.py data/calibration/uart_fold_corners.json
 python scripts/debug/replay_calibration.py data/calibration/uart_fold_corners.json
 powershell -File scripts/debug/replay_cpp.ps1 -VsRoot <VisualStudio目录>
 python scripts/calibration/engine/check_lm_replay.py
 ```
+
+`inspect_calibration.py --images raw0.png raw1.png raw2.png` 可把编号角点叠到同次拍摄的原始帧，
+不提供图片时仍输出覆盖统计和坐标图。覆盖预选与标定控制/UART 定向回归入口为
+`scripts/calibration/run_quality_checks.ps1 -IcarusBin <目录>`，不运行综合或上板。
 
 第一步独立复算完整模型和固定 `k3=0` 模型，并检查全图映射；第二步调用生产 C++ 算法交叉比较；第三步用同一批角点验证 RTL LM 的固定 k3 路径。第二步不是第三步的依赖。RTL 的自动重试顺序由 `run_calib_top.ps1 -ControlOnly` 单独验证。新采集数据放 `data/debug`，有长期回归价值的数据再归档到 `data/calibration`。
 

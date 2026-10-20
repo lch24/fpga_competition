@@ -10,11 +10,11 @@ module tb_board_debug #(parameter ENABLE_DISTORT_DEMO=0);
  reg [31:0] x=0,y=0,job=0;
  reg [287:0] params=288'h123456;
  reg [7:0] status=0;
- reg candidate=1,reduced=0;reg [3:0] reason=0,warnings=8;
+ reg candidate=1,reduced=0,low_coverage=0;reg [3:0] reason=0,warnings=8;
  reg finished=0;
  algorithm_debug rec(.clk(alg),.rst_n(rst),.functional_reset_n(fn),.start_cal(start),
  .detect_done(dv),.detect_count(16'd40),.detect_flags(8'd5),.job(job),.phase(6'd11),.view(8'd2),.corner_valid(cv),.corner_x(x),.corner_y(y),
- .candidate_valid(candidate),.reduced_model(reduced),.check_reason(reason),.check_warnings(warnings),
+ .candidate_valid(candidate),.reduced_model(reduced),.low_coverage(low_coverage),.check_reason(reason),.check_warnings(warnings),
  .result_valid(pv),.params(params),.diag_valid(dv),.metrics_valid(1'b1),.accepted_steps(16'd7),.converged(1'b1),
  .cal_phase(4'd2),.diag_status(status),.rms(64'h3ff0000000000000),
  .rsp_valid(rv),.rsp_status(status),.argument(arg),.snapshot(ad),
@@ -92,8 +92,12 @@ module tb_board_debug #(parameter ENABLE_DISTORT_DEMO=0);
   if(last_packet[70][1]||!last_packet[70][5]||!last_packet[70][6]||last_packet[71][7:4]!=7||last_packet[77][7:4]!=12)$fatal(1,"rejected candidate flags/reason/retry");
   if({last_packet[83],last_packet[82],last_packet[81],last_packet[80]}!=32'habcdef)$fatal(1,"rejected candidate payload");
   fn=0;query(8'h53,0);if(!last_packet[70][5]||last_packet[71][7:4]!=7)$fatal(1,"failed result retention");
+  // A separate result was reduced BEFORE fitting, not a post-fold retry.
+  fn=1;@(negedge alg);low_coverage=1;reason=0;status=0;pv=1;dv=1;
+  @(negedge alg);pv=0;dv=0;
+  query(8'h53,0);if(!last_packet[70][7]||!last_packet[70][6]||!last_packet[70][1])$fatal(1,"coverage policy flag");
   fn=1;@(negedge alg);start=1;@(negedge alg);start=0;
-  query(8'h53,0);if(last_packet[70][5]||last_packet[70][6]||last_packet[71][7:4]!=0||last_packet[77][7:4]!=0)$fatal(1,"new job stale candidate");
+  query(8'h53,0);if(last_packet[70][5]||last_packet[70][6]||last_packet[70][7]||last_packet[71][7:4]!=0||last_packet[77][7:4]!=0)$fatal(1,"new job stale candidate");
   send_byte(8'ha5);send_byte(8'h5a);send_byte(8'h53);send_byte(0);send_byte(0);send_byte(0);
   send_byte(8'ha5);send_byte(8'h5a);repeat(25000)@(posedge clk);
   rx=0;repeat(200)@(posedge clk);rx=1;repeat(100)@(posedge clk);

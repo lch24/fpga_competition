@@ -33,11 +33,16 @@ assert any(r['uptime_ms'] >= 1000 for r in rows)
 rejected = next(r for r in rows if r.get('candidate_params') and not r['params_valid'])
 assert rejected['params'] is None and rejected['candidate_valid']
 assert rejected['reduced_model']
+assert not rejected['low_coverage']
 assert rejected['check_reason'] == 'mapping_fold_or_degenerate'
 assert rejected['check_warnings'] == ['small_pose_variation', 'few_calibration_views']
 assert rejected['calibration_phase'] == 2 and rejected['last_result_phase'] == 2
 assert '被拒绝的候选参数' in readable(rejected)
 assert 'ddr_read_requests' not in concise(rejected)
+low = next(r for r in rows if r['low_coverage'])
+assert low['reduced_model'] and low['params_valid'] and low['check_reason_code'] == 0
+assert '覆盖不足' in readable(low) and '模型重试' not in readable(low)
+assert '覆盖不足' in readable(dict(low, metrics_valid=False))
 assert any(not r['candidate_valid'] and r['check_reason_code'] == 0 and r['calibration_job'] == 3 for r in rows)
 
 # No algorithm clock: a status reply with an unmatched old page must remain

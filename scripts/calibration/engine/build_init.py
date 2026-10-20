@@ -8,6 +8,31 @@ Image/grid arrays and final state follow the packed corners from address 1024.
 from build_lm import Program,M
 from assemble import ROOT,assemble
 
+def coverage_setup(p):
+    p.seti('fit_k3',0)
+    for name in ('coverage_left','coverage_right','coverage_top','coverage_bottom'):p.seti(name,0)
+    for dimension,lo,hi in (('fwidth','coverage_xlo','coverage_xhi'),('fheight','coverage_ylo','coverage_yhi')):
+        p.fbin(lo,'FSUB',dimension,'one')
+        p.fbin(lo,'FMUL',lo,'half');p.fbin(lo,'FMUL',lo,'half')
+        p.fbin(hi,'FMUL',lo,'three')
+
+def coverage_point(p):
+    # Existing FP engine/RAM only. Four observations per outer quarter-band
+    # prevent one stray corner enabling k3. This is not identifiability proof.
+    for value,limit,count,skip in (
+        ('h8','coverage_xlo','coverage_left',5),
+        ('h8','coverage_xhi','coverage_right',3),
+        ('h9','coverage_ylo','coverage_top',5),
+        ('h9','coverage_yhi','coverage_bottom',3)):
+        label=p.unique('coverage_next')
+        p.fb(value,skip,limit,label);p.addi(count,count,1);p.label(label)
+
+def coverage_select(p):
+    done=p.unique('coverage_done')
+    for name in ('coverage_left','coverage_right','coverage_top','coverage_bottom'):
+        p.ib(name,3,4,done)
+    p.seti('fit_k3',1);p.label(done)
+
 def addr(p,out,row,col,base):
     p.il(0,row);p.emit('IADD A1,A0,A0','IADD A1,A1,A1','IADD A1,A1,A1','IADD A0,A0,A1')
     p.il(1,col);p.emit('IADD A0,A0,A1',f'ADDI A0,A0,{base}');p.ist(out)
@@ -85,6 +110,7 @@ def homography(p):
     p.st('h8',1);p.st('h9',2)
     p.fb('h8',3,'zero','init_error');p.fb('h9',3,'zero','init_error')
     p.fb('h8',6,'fwidth','init_error');p.fb('h9',6,'fheight','init_error')
+    coverage_point(p)
     p.write('init_px','h8','t');p.write('init_py','h9','t')
     p.fbin('h2','FADD','h2','h8');p.fbin('h3','FADD','h3','h9')
     p.addi('pa','pa',1);p.addi('t','t',1);p.ib('t',3,'points','h_load')
@@ -137,7 +163,8 @@ def homography(p):
 
 def program():
     p=Program();e=p.emit;L=p.label
-    e('MOVI A7,0','GUARD init_error');p.seti('status',0);p.seti('view',0);p.icopy('pa','init_raw');p.seti('colbase',800)
+    e('MOVI A7,0','GUARD init_error');p.seti('status',0);coverage_setup(p)
+    p.seti('view',0);p.icopy('pa','init_raw');p.seti('colbase',800)
     L('init_view');p.icopy('endptr','pa');e('CALL homography')
     # Subroutines clobber cursors; derive next view from saved raw pointer.
     p.ibin('pa','IADD','endptr','points')
@@ -166,7 +193,8 @@ def program():
     L('load_pose_h');e('LD F0,A1,0','ST F0,A0,0','ADDI A0,A0,1','ADDI A1,A1,1','DBNZ A2,load_pose_h');p.ist('pb',1)
     e('CALL pose_view','MOVI A7,0');p.il(0,'ptr');e('MOVI A1,320')
     for offset in (55,56,57,30,31,54):e(f'LD F0,A1,{offset}','ST F0,A0,0','ADDI A0,A0,1')
-    p.ist('ptr',0);p.addi('view','view',1);p.ib('view',3,'views','init_pose');e('END 0')
+    p.ist('ptr',0);p.addi('view','view',1);p.ib('view',3,'views','init_pose')
+    coverage_select(p);e('END 0')
     L('init_error');e('MOVI A7,0');p.seti('status',4);e('END 0')
     homography(p);eigen(p)
     # Reuse the maintained pose source without duplicating its algorithm.

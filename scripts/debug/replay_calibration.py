@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'scripts/calibration/engine'))
 import generate_lm_fisheye as model
 from check_init_program import run as initialize
 from build_init import build
+from inspect_calibration import audit as audit_corners
 
 
 def camera(state, width, height):
@@ -55,6 +56,9 @@ def main():
     p.add_argument('--out', type=Path, default=ROOT/'build/debug/calibration_replay.json')
     args = p.parse_args()
     data = json.loads(args.corners.read_text())
+    input_audit = audit_corners(data, args.width, args.height, args.rows, args.cols)
+    if input_audit['errors']:
+        raise ValueError(f'Corner geometry invalid; run inspect_calibration.py: {input_audit["errors"]}')
     entries = data['corners']
     assert [e['index'] for e in entries] == list(range(len(entries)))
     observed = [e['xy'] for e in entries]
@@ -74,8 +78,10 @@ def main():
         source = source.relative_to(ROOT)
     except ValueError:
         pass
-    report = dict(source=source.as_posix(), initial=initial, views=views,
+    report = dict(source=source.as_posix(), initial=initial, views=views, input_audit=input_audit,
                   width=args.width, height=args.height, rows=args.rows, cols=args.cols)
+    report['initial_model'] = input_audit['selected_model']
+    print('COVERAGE', json.dumps(input_audit), flush=True)
     board = data['status'].get('candidate_params') or data['status'].get('params')
     if board:
         report['board'] = dict(camera=board, rms=data['status'].get('rms'),
@@ -92,6 +98,16 @@ def main():
                             state=result, accepted=accepted, converged=converged,
                             map=audit(k, args.width, args.height))
         print(name, json.dumps(report[name]), flush=True)
+    folded = input_audit['fit_k3'] and report['full']['map']['failed_samples'] != 0
+    report['selected_model'] = 'fixed_k3' if not input_audit['fit_k3'] or folded else 'full'
+    report['reduced_because'] = 'coverage' if not input_audit['fit_k3'] else 'mapping_fold' if folded else None
+    chosen = report[report['selected_model']]
+    report['selected_software_checks_pass'] = (
+        chosen['converged'] and chosen['rms'] < 3 and not chosen['map']['failed_samples'] and
+        all(math.isfinite(v) for v in chosen['camera'].values()) and
+        chosen['camera']['fx'] > 0 and chosen['camera']['fy'] > 0)
+    print('SELECTION', json.dumps({k:report[k] for k in
+          ('initial_model','selected_model','reduced_because','selected_software_checks_pass')}), flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2)+'\n')
 

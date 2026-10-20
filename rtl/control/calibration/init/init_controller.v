@@ -35,6 +35,7 @@ module init_controller #(parameter FP_SHARED=0, ENGINE_SHARED=0) (
     input wire seed_ready, // 父模块可缓存
     output wire [2:0] seed_id, // fixed diagnostic id 2
     output wire [`PAR_STATE_W-1:0] seed_state, // 内部PAR_STATE_N项FP64
+    output reg seed_fit_k3, // Advisory: >=4 corners in each outer quarter-band.
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
     output reg [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
@@ -95,7 +96,7 @@ module init_controller #(parameter FP_SHARED=0, ENGINE_SHARED=0) (
         GRID_Y:begin host_en=1;host_write=1;host_addr=BY+index;host_data=board_y(index);end
         READ_WAIT:begin host_en=point_rd_valid;host_write=1;host_addr=RAW+raw_index;host_data={point_rd_y_fp32,point_rd_x_fp32};end
         STATUS_REQ:begin host_en=1;host_addr=`LM_STATUS;end
-        OUT_REQ:begin host_en=1;host_addr=SEED_BASE+index;end
+        OUT_REQ:begin host_en=1;host_addr=index==`PAR_STATE_N?`LM_FIT_K3:SEED_BASE+index;end
         default:begin end
       endcase
     end
@@ -136,10 +137,10 @@ module init_controller #(parameter FP_SHARED=0, ENGINE_SHARED=0) (
     assign point_rd_view_id=view;assign point_rd_index=point;
     always @(posedge clk or negedge rst_n)begin
       if(!rst_n)begin state<=IDLE;index<=0;raw_index<=0;view<=0;point<=0;width<=0;height<=0;
-        payload<=0;count<=0;rsp_status<=0;end
+        payload<=0;count<=0;rsp_status<=0;seed_fit_k3<=0;end
       else case(state)
         IDLE:if(cmd_valid)begin
-          width<=cmd_width;height<=cmd_height;index<=0;count<=0;rsp_status<=0;
+          width<=cmd_width;height<=cmd_height;index<=0;count<=0;rsp_status<=0;seed_fit_k3<=0;
           if(cmd_width<2 || cmd_height<2)begin rsp_status<=`PAR_BAD_CONFIG;state<=RESPONSE;end
           else state<=INITIALIZE;
         end
@@ -170,8 +171,11 @@ module init_controller #(parameter FP_SHARED=0, ENGINE_SHARED=0) (
         end
         OUT_REQ:if(host_ready)state<=OUT_WAIT;
         OUT_WAIT:if(host_valid)begin
-          payload<={host_result,payload[`PAR_STATE_W-1:64]};
-          if(index==`PAR_STATE_N-1)state<=SEED;else begin index<=index+1;state<=OUT_REQ;end
+          if(index==`PAR_STATE_N)begin seed_fit_k3<=host_result[0];state<=SEED;end
+          else begin
+            payload<={host_result,payload[`PAR_STATE_W-1:64]};
+            index<=index+1;state<=OUT_REQ;
+          end
         end
         SEED:if(seed_ready)begin count<=1;state<=RESPONSE;end
         RESPONSE:if(rsp_ready)state<=IDLE;

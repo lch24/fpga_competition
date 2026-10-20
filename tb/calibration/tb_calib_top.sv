@@ -4,6 +4,10 @@
 module tb_calib_top;
  parameter CONTROL_ONLY=0;
  parameter REAL_INPUT=0;
+ // Historical numerical fixtures explicitly retain full-model fitting.
+ // Production AUTO_K3 defaults to 1; directed control cases exercise it below.
+ parameter AUTO_K3=0;
+ parameter FINISH_ON_DONE=0;
  reg [4095:0] vector_file;
  integer vector_arg;
  reg [15:0] test_width=640,test_height=480;
@@ -64,6 +68,7 @@ module tb_calib_top;
  wire [7:0] rsp_status;
  wire [31:0] rsp_job_id;
  always #5 clk=~clk;
+ defparam dut.AUTO_K3=CONTROL_ONLY?1:AUTO_K3;
  calib_top dut(.clk(clk),.rst_n(rst_n),.collect_valid(collect_valid),.collect_ready(collect_ready),.collect_job_id(collect_job_id),.corner_valid(corner_valid),.corner_ready(corner_ready),.corner_job_id(corner_job_id),.corner_view_id(corner_view_id),.corner_point_index(corner_point_index),.corner_x_fp32(corner_x_fp32),.corner_y_fp32(corner_y_fp32),.corner_last(corner_last),.view_rsp_valid(view_rsp_valid),.view_rsp_ready(view_rsp_ready),.view_rsp_job_id(view_rsp_job_id),.view_rsp_view_id(view_rsp_view_id),.view_rsp_status(view_rsp_status),.dbg_view_done(dbg_view_done),.dbg_view_status(dbg_view_status),.dbg_view_point_count(dbg_view_point_count),.dbg_view_format_error(dbg_view_format_error),.dbg_view_usable(dbg_view_usable),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),.cmd_job_id(cmd_job_id),.cmd_width(cmd_width),.cmd_height(cmd_height),.cmd_square_size_fp64(cmd_square_size_fp64),.camera_valid(camera_valid),.camera_ready(camera_ready),.camera_last(camera_last),.camera_calib_id(camera_calib_id),.camera_width(camera_width),.camera_height(camera_height),.camera_usable(camera_usable),.camera_params(camera_params),.diag_valid(diag_valid),.diag_ready(diag_ready),.diag_job_id(diag_job_id),.diag_status(diag_status),.diag_phase(diag_phase),.diag_metrics_valid(diag_metrics_valid),.diag_converged(diag_converged),.diag_weak_geometry(diag_weak_geometry),.diag_rms_fp64(diag_rms_fp64),.diag_view_rms_fp64(diag_view_rms_fp64),.diag_max_error_fp64(diag_max_error_fp64),.diag_poses_fp64(diag_poses_fp64),.diag_seed_id(diag_seed_id),.diag_accepted_steps(diag_accepted_steps),.rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.rsp_job_id(rsp_job_id));
 
  integer errors=0,cases=0,report,fd,rc,i,v,cycles=0,expected_id,expected_steps,expected_converged,expected_weak;
@@ -119,7 +124,7 @@ module tb_calib_top;
    check(!(dut.init_owner && dut.lm_owner) && !(dut.lm_owner && dut.check_owner) && !(dut.init_owner && dut.check_owner),"exclusive RAM owner");
    if(dut.pc==dut.INIT_WAIT && dut.seed_valid && dut.seed_ready)begin expected_seeds[dut.seed_count]=dut.seed_state;seed_inputs=seed_inputs+1;end
    if(dut.pc==dut.LM_CMD && dut.lm_ready)begin
-    check((dut.stage==2 && lm_commands==0)||(dut.stage==3 && lm_commands==1),"full fit then at most one reduced retry");
+    check(((dut.stage==2||dut.stage==3) && lm_commands==0)||(dut.stage==3 && lm_commands==1),"coverage-selected fit then at most one reduced retry");
     check(dut.current===expected_seeds[dut.seed_index],"each model starts from fresh initializer");
     lm_commands=lm_commands+1;
    end
@@ -189,6 +194,7 @@ module tb_calib_top;
  end endtask
  // Deliberate child-interface model for control branch tests only; no arithmetic claims from these cases.
  reg mock_init_ready=0,mock_init_valid=0,mock_seed_valid=0,mock_lm_ready=0,mock_lm_valid=0,mock_check_ready=0,mock_check_valid=0;
+ reg mock_fit_k3=1;
  reg [7:0] mock_init_status=0,mock_lm_status=0,mock_check_status=0,mock_accepted=0;
  reg [3:0] mock_reason=4;
  reg [2:0] mock_seed_id=0,mock_count=0;
@@ -198,6 +204,7 @@ module tb_calib_top;
   force dut.compute_rst_n=0;
   force dut.init_ready=mock_init_ready;force dut.init_valid=mock_init_valid;force dut.init_status=mock_init_status;force dut.init_count=mock_count;
   force dut.seed_valid=mock_seed_valid;force dut.seed_id=mock_seed_id;force dut.seed_state=mock_seed_state;
+  force dut.init_fit_k3=mock_fit_k3;
   force dut.lm_ready=mock_lm_ready;force dut.lm_valid=mock_lm_valid;force dut.lm_status=mock_lm_status;
   force dut.lm_state=mock_lm_state;force dut.lm_cost=mock_cost;force dut.lm_converged=mock_converged;force dut.lm_accepted=mock_accepted;
   force dut.check_ready=mock_check_ready;force dut.check_valid=mock_check_valid;force dut.check_status=mock_check_status;
@@ -208,7 +215,7 @@ module tb_calib_top;
   force dut.check_view_rms=192'h123;force dut.check_max=64'h4000000000000000;force dut.check_poses=2304'h456;
  end endtask
  task clear_mock;begin
-  mock_reason=4;
+  mock_reason=4;mock_fit_k3=1;
   mock_init_ready=0;mock_init_valid=0;mock_seed_valid=0;mock_lm_ready=0;mock_lm_valid=0;mock_check_ready=0;mock_check_valid=0;
   mock_init_status=0;mock_lm_status=0;mock_check_status=0;mock_count=0;mock_converged=0;mock_usable=0;mock_metrics=0;
  end endtask
@@ -331,6 +338,17 @@ module tb_calib_top;
    check(dut.diag_candidate_valid && dut.diag_check_reason==4 && dut.diag_check_warnings==12 &&
          camera_params==288'h12345678 && !camera_valid && !camera_usable,"failed candidate diagnostic retained without publication");
    finish_job(4,3,0);
+   // Central-only data selects stage 3 BEFORE any LM. A reduced failure is
+   // never retried, even for folding. Both results keep the coverage diagnosis.
+   for(n=0;n<2;n=n+1)begin
+    clear_mock();mock_fit_k3=0;begin_job();fill_points();launch();
+    mock_init_start();mock_seed(2);mock_init_end(1,0);
+    check(dut.stage==3 && dut.diag_low_coverage,"coverage selects fixed k3 before first fit");
+    mock_lm(1.1,1,0);mock_reason=n==0?0:7;mock_check(n==0?0:4,n==0,1);
+    check(dut.diag_reduced_model && dut.diag_low_coverage && lm_commands==1 && seed_inputs==1,"one reduced solve, no hidden retry");
+    check(diag_accepted_steps==4,"reduced solve retains its own accepted count");
+    finish_job(n==0?0:4,n==0?4:3,0);
+   end
    // Folding is retried once; other failures are never hidden by a retry.
    for(n=0;n<2;n=n+1)begin
     one_seed();mock_lm(1.0,1,0);mock_reason=7;mock_check(4,0,1);
@@ -338,7 +356,7 @@ module tb_calib_top;
     mock_init_start();mock_seed(2);mock_init_end(1,0);mock_lm(1.1,1,0);
     if(n==0)begin mock_reason=0;mock_check(0,1,1);end
     else mock_check(4,0,1);
-    check(dut.diag_reduced_model && lm_commands==2 && seed_inputs==2,"bounded retry and diagnostic flag");
+    check(dut.diag_reduced_model && !dut.diag_low_coverage && lm_commands==2 && seed_inputs==2,"bounded retry distinguished from coverage selection");
     check(diag_accepted_steps==4,"retry uses new convergence and accepted count");
     finish_job(n==0?0:4,n==0?4:3,0);
    end
@@ -380,5 +398,9 @@ module tb_calib_top;
   end
   $fdisplay(report,"RESULT cases=%0d errors=%0d",cases,errors);$fclose(report);
   done=1;$display("TOP_RESULT control=%0d cases=%0d errors=%0d",CONTROL_ONLY,cases,errors);
+  if(FINISH_ON_DONE)begin
+   if(errors!=0 || (CONTROL_ONLY && cases!=44))$fatal(1,"calib_top regression failed");
+   $display("PASS tb_calib_top cases=%0d",cases);$finish;
+  end
  end
 endmodule

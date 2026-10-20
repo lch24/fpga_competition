@@ -7,7 +7,7 @@ from build_lm import M,C,CONSTANTS
 from reference import Machine,bits,value
 from check_lm_program import layout
 
-def run(rom,views,rows,cols,width,height,points):
+def run(rom,views,rows,cols,width,height,points,return_policy=False):
     count=rows*cols;_,words=layout(views,count)
     machine=Machine(rom,words,words,instruction_limit=10000000)
     machine.mem.update({i:0 for i in range(288)})
@@ -23,7 +23,12 @@ def run(rom,views,rows,cols,width,height,points):
         machine.mem[by+i]=bits(i//cols-(rows-1)/2)
     assert machine.run(0,len(rom))==0
     result=[value(machine.mem.get(seed+i,0)) for i in range(9+6*views)]
-    return machine.mem[M['status']],result,machine.counts['instructions']
+    output=(machine.mem[M['status']],result,machine.counts['instructions'])
+    if return_policy:
+        return output+(dict(fit_k3=bool(machine.mem[M['fit_k3']]),
+                            edge_counts={edge:machine.mem[M['coverage_'+edge]]
+                                         for edge in ('left','right','top','bottom')}),)
+    return output
 
 def close(actual,expected,tolerance):
     assert all(math.isfinite(a) and abs(a-b)<=tolerance*(1+abs(b)) for a,b in zip(actual,expected)),(actual,expected)

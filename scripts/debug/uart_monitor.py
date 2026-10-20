@@ -108,6 +108,7 @@ def decode(frame):
         'converged': bool(flag & 8), 'calibration_phase': alg[7] & 15,
         'candidate_valid': bool(flag & 32),
         'reduced_model': bool(flag & 64),
+        'low_coverage': bool(flag & 128),
         'check_reason_code': alg[7] >> 4,
         'check_reason': CHECK_REASONS.get(alg[7] >> 4, 'unknown'),
         'check_warnings': [name for i, name in enumerate(CHECK_WARNINGS) if alg[13] & (16 << i)],
@@ -162,7 +163,7 @@ def concise(result):
     keys = ('uptime_ms', 'calibration_job', 'ui_phase', 'algorithm_phase', 'view',
             'captured_mask', 'distort_mode', 'busy', 'status', 'last_result_phase',
             'last_status', 'corner_count', 'params_valid', 'candidate_valid',
-            'converged', 'rms', 'check_reason', 'check_warnings', 'reduced_model')
+            'converged', 'rms', 'check_reason', 'check_warnings', 'reduced_model', 'low_coverage')
     out = {key: result[key] for key in keys if key in result}
     out['link_fresh'] = bool(result.get('page_matches') and not result.get('core_stale')
                             and not result.get('algorithm_stale'))
@@ -188,9 +189,11 @@ def readable(result, show_result=True):
              f"状态={result.get('status')}({result.get('status_text')}) 参数可用={result.get('params_valid')}"]
     if result.get('core_stale') or result.get('algorithm_stale') or not result.get('page_matches'):
         lines.append('状态快照过期或页面不匹配：以下结果不能视为当前状态。')
+    if show_result and result.get('low_coverage'):
+        lines.append('覆盖不足：边缘角点不足，已在拟合前固定 k3=0；请补充边缘覆盖和不同倾角，仍须检查全图校正效果。')
+    elif show_result and result.get('reduced_model'):
+        lines.append('模型重试：完整模型映射翻折，已选择固定 k3=0 重新拟合其余参数；仍须通过全部检查。')
     if show_result and result.get('metrics_valid'):
-        if result.get('reduced_model'):
-            lines.append('模型重试：完整模型映射翻折，已固定 k3=0 重新拟合其余参数；仍须通过全部检查。')
         lines.append(f"标定：收敛={result.get('converged')} RMS={result.get('rms')} 像素")
     if show_result and (reason or result.get('last_status')):
         why = REASON_TEXT[reason] if reason < len(REASON_TEXT) else f'未知原因 {reason}'

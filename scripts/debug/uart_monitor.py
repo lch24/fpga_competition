@@ -2,6 +2,7 @@
 
 python scripts/debug/uart_monitor.py COM5
 python scripts/debug/uart_monitor.py COM5 --once progress
+python scripts/debug/uart_monitor.py COM5 --once params --save data/debug/camera.json
 python scripts/debug/uart_monitor.py COM5 --corners data/debug/corners.json
 Only the live port requires pyserial; --self-test uses the standard library.
 """
@@ -19,6 +20,8 @@ ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'release_frame', 'calibration_command', 'calibration_wait',
              'map_command', 'map_wait', 'remap_command', 'remap_wait', 'response']
 PARAMS = ['fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'p1', 'p2']
+# Board top fixes the geometry; the status packet carries no image size.
+IMAGE_WIDTH, IMAGE_HEIGHT = 1280, 720
 CHECK_REASONS = {0: 'none', 1: 'nonfinite_or_numeric_failure',
                  2: 'invalid_configuration', 3: 'residual_evaluation_failed',
                  4: 'not_converged', 5: 'nonpositive_focal_length',
@@ -214,6 +217,59 @@ def command(op, index=0):
     return bytes([0xa5, 0x5a, op, lo, hi, op ^ lo ^ hi])
 
 
+def intrinsics(params):
+    """Nine FP32 slots -> 3x3 intrinsic matrix and OpenCV-ordered distortion.
+
+    The board publishes `fx,fy,cx,cy,k1,k2,k3,p1,p2`, already decoded to physical
+    pixels (the solver stores log focal length and normalised principal point).
+    OpenCV's five-coefficient model is the same Brown model in the order
+    (k1, k2, p1, p2, k3), so k3 moves to the last position here.
+    """
+    matrix = [[params['fx'], 0.0, params['cx']],
+              [0.0, params['fy'], params['cy']],
+              [0.0, 0.0, 1.0]]
+    distortion = [params['k1'], params['k2'], params['p1'], params['p2'], params['k3']]
+    return matrix, distortion
+
+
+def camera_report(result):
+    """Readable intrinsics/distortion report plus the OpenCV-compatible record."""
+    if result.get('params_valid'):
+        params, source = result['params'], 'validated'
+    elif result.get('candidate_valid'):
+        params, source = result['candidate_params'], 'candidate_rejected_by_validation'
+    else:
+        raise RuntimeError('No complete nine-parameter set in this snapshot; calibrate first')
+    if not all(params.get(key) for key in ('fx', 'fy')):
+        raise RuntimeError('Focal length is zero in this snapshot; parameter page is stale')
+    matrix, distortion = intrinsics(params)
+    record = {'source': source, 'image_width': IMAGE_WIDTH, 'image_height': IMAGE_HEIGHT,
+              'calibration_job': result.get('calibration_job'), 'rms_px': result.get('rms'),
+              'focal_length_px': {'fx': params['fx'], 'fy': params['fy']},
+              'principal_point_px': {'cx': params['cx'], 'cy': params['cy']},
+              'camera_matrix': matrix, 'distortion_coefficients': distortion,
+              'distortion_order': 'k1,k2,p1,p2,k3',
+              'reduced_model': result.get('reduced_model'), 'low_coverage': result.get('low_coverage'),
+              'check_warnings': result.get('check_warnings', [])}
+    lines = [f"相机标定参数（{'已通过全部检查' if source == 'validated' else '仅为候选，未通过检查'}）"
+             f"任务={record['calibration_job']}",
+             f"焦距 fx={params['fx']:.6f} px  fy={params['fy']:.6f} px",
+             f"主点 cx={params['cx']:.6f} px  cy={params['cy']:.6f} px",
+             '内参矩阵 K =',
+             f"    [{matrix[0][0]:.6f}, 0, {matrix[0][2]:.6f}]",
+             f"    [0, {matrix[1][1]:.6f}, {matrix[1][2]:.6f}]",
+             "    [0, 0, 1]",
+             '畸变系数（OpenCV 顺序 k1,k2,p1,p2,k3）= ['
+             + ', '.join(f'{value:.9g}' for value in distortion) + ']',
+             f"重投影 RMS = {record['rms_px']} px（{IMAGE_WIDTH}x{IMAGE_HEIGHT}）"]
+    if record['reduced_model']:
+        lines.append('模型：降阶拟合，k3 固定为 0（覆盖不足或完整模型曾发生映射翻折）')
+    if record['check_warnings']:
+        lines.append('质量提示（不阻止使用）：'
+                     + '、'.join(WARNING_TEXT[CHECK_WARNINGS.index(name)] for name in record['check_warnings']))
+    return '\n'.join(lines), record
+
+
 class Monitor:
     def __init__(self, port):
         self.port, self.framer = port, Framer()
@@ -274,14 +330,40 @@ def self_test():
     result = decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
     assert result['distort_mode'] and result['demo_map_ready']
     assert result['demo']['total_cycles'] == 210 and result['demo']['failed_passes'] == 3
-    print('PASS UART decoder: fragmentation, noise, CRC rejection, resynchronization, video counters/page validity')
+    # Parameter page: nine FP32 at payload[72], RMS at payload[108..116].
+    # Values are exact binary fractions so the FP32 round trip is unambiguous.
+    payload = bytearray(120)
+    payload[118:120] = b'\xff\xff'
+    struct.pack_into('<9f', payload, 72, 1171.5, 1170.0, 645.75, 351.25,
+                     0.015625, 0.5, 0.0, 0.0009765625, -0.001953125)
+    struct.pack_into('<d', payload, 108, 0.10747)
+    payload[62] |= 4  # metrics_valid
+    payload[62] |= 2  # params_valid
+    data = header + payload
+    result = decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
+    matrix, distortion = intrinsics(result['params'])
+    assert matrix == [[1171.5, 0.0, 645.75], [0.0, 1170.0, 351.25], [0.0, 0.0, 1.0]], matrix
+    assert distortion == [0.015625, 0.5, 0.0009765625, -0.001953125, 0.0], distortion
+    text, record = camera_report(result)
+    assert '内参矩阵' in text and '畸变系数' in text and record['source'] == 'validated'
+    assert record['rms_px'] == 0.10747 and record['distortion_order'] == 'k1,k2,p1,p2,k3'
+    empty = dict(result, params=None, params_valid=False, candidate_valid=False)
+    try:
+        camera_report(empty)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('camera_report accepted a snapshot without parameters')
+    print('PASS UART decoder: fragmentation, noise, CRC rejection, resynchronization, video counters/'
+          'page validity, intrinsics/distortion parsing')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('port', nargs='?')
     parser.add_argument('--baud', type=int, default=115200)
-    parser.add_argument('--once', choices=['status', 'progress', 'video', 'demo'])
+    parser.add_argument('--once', choices=['status', 'progress', 'video', 'demo', 'params'])
+    parser.add_argument('--save', type=Path, help='With --once params: write the parsed record as JSON')
     parser.add_argument('--video-seconds', type=float, help='Measure NEW-frame counter deltas over this interval')
     parser.add_argument('--corners', type=Path)
     parser.add_argument('--log', type=Path)
@@ -332,6 +414,13 @@ def main():
             print(json.dumps(dict(seconds=seconds, deltas=deltas,
                 new_frame_fps={k: deltas[k]/seconds for k in ('captured_frames', 'corrected_frames', 'displayed_new_frames')},
                 last=b), indent=2))
+        elif args.once == 'params':
+            text, record = camera_report(monitor.query(0x53))
+            print(text)
+            if args.save:
+                args.save.parent.mkdir(parents=True, exist_ok=True)
+                args.save.write_text(json.dumps(record, indent=2), encoding='utf-8')
+                print(f'Saved {args.save}')
         elif args.once:
             print(json.dumps(monitor.query({'status': 0x53, 'progress': 0x44, 'video': 0x56, 'demo': 0x45}[args.once]), indent=2))
         else:

@@ -140,6 +140,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps
 python scripts/debug/uart_monitor.py COM5 --log data/debug/board.jsonl
 # 查询状态、参数和 RMS
 python scripts/debug/uart_monitor.py COM5 --once status
+# 解析内参矩阵与畸变系数，并可保存成 JSON 供报告/OpenCV 对照
+python scripts/debug/uart_monitor.py COM5 --once params --save data/debug/camera.json
 # 查询共享程序 PC、指令计数和访存握手
 python scripts/debug/uart_monitor.py COM5 --once progress
 # 实时计数与上一次校正耗时；稳态下统计 10 秒真正的新帧率
@@ -207,6 +209,28 @@ DDR域与算法域分别采样，不保证属于同一物理时刻。每个快�
 算法页号 FFFF 为参数页，FFFE 为进度页，其余为角点索引。精确位布局见 `scripts/debug/uart_monitor.py::decode`，RTL 对应 `algorithm_debug.v` / `core_debug.v`，无需手工解释浮点数。
 
 包长和 CRC 不变，新增字段使用算法快照原保留位：字节 6 bit5 为候选有效，字节 7 高四位为检查原因，字节 13 高四位为警告掩码。两个字节的低四位仍为当前/结果阶段。原因码 0=无、1=数值异常、2=配置、3=残差服务、4=未收敛、5=非正焦距、6=RMS、7=映射翻折；警告 bit0..3 依次对应焦距、主点、姿态、图片数量。
+
+### 内参矩阵与畸变系数的解析
+
+参数页原本就带九个 FP32（低位起 `fx,fy,cx,cy,k1,k2,k3,p1,p2`），板上求解器存放的是 log 焦距和归一化主点，发布前已换算成**像素**。`--once params` 把它整理成题目要求的“内参矩阵 + 畸变系数”：
+
+```text
+相机标定参数（已通过全部检查）任务=3
+焦距 fx=1171.522583 px  fy=1170.120728 px
+主点 cx=645.760132 px  cy=351.260345 px
+内参矩阵 K =
+    [1171.522583, 0, 645.760132]
+    [0, 1170.120728, 351.260345]
+    [0, 0, 1]
+畸变系数（OpenCV 顺序 k1,k2,p1,p2,k3）= [0.0162264891, 0.594529152, 0.000332321, 0.00210273010, 0]
+重投影 RMS = 0.10747028196012501 px（1280x720）
+```
+
+`--save` 写出的 JSON 含 `camera_matrix`（3×3 嵌套数组）、`distortion_coefficients`（`k1,k2,p1,p2,k3`）、`focal_length_px`、`principal_point_px`、`rms_px` 和本次任务号，可直接与 OpenCV `calibrateCamera` 的 `cameraMatrix`/`distCoeffs` 逐项对照。**注意 OpenCV 的五系数顺序是 `k1,k2,p1,p2,k3`，与板上发布顺序不同**，脚本负责换位；直接读原始九槽位时不要按 OpenCV 顺序解释。
+
+板上模型与 OpenCV 一致：径向 `k1,k2,k3`（`1+k1r²+k2r⁴+k3r⁶`）加切向 `p1,p2`，只使用相机内参和畸变系数，R/t 不参与去畸变。参数未通过检查时脚本会明确标注“仅为候选，未通过检查”，并附 `check_reason`/`check_warnings`；`reduced_model=true` 表示 k3 固定为 0 的降阶拟合，此时畸变向量最后一项为 0。
+
+角度相关的那一档（焦距、主点、RMS）由 `--once params`、`--once status` 与持续监测三种输出共用同一份解码，不会出现两个脚本两套数字。上一个已烧录的比特流就带这些字段，**不需要重新综合**。
 
 ### 映射翻折时的自动重试
 

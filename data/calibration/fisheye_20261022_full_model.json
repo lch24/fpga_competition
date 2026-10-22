@@ -1,0 +1,69 @@
+{
+  "format": "fpga_competition.calibration_archive.v1",
+  "captured": "2026-10-22",
+  "recorded_from": {
+    "session": 1,
+    "job": 1,
+    "serial_port": "COM14",
+    "corner_file": "data/calibration/fisheye_20261022_corners.json"
+  },
+  "validation_source": "validated",
+  "image": {
+    "width": 1280,
+    "height": 720
+  },
+  "model": {
+    "selected": "full",
+    "k3_active": true,
+    "low_coverage": false,
+    "reduced_model": false
+  },
+  "quality": {
+    "rms_px": 1.0429002542689751,
+    "converged": true,
+    "check_reason": "none",
+    "check_warnings": [
+      "few_calibration_views"
+    ]
+  },
+  "coverage": {
+    "left": 11,
+    "right": 26,
+    "top": 8,
+    "bottom": 14
+  },
+  "focal_length_px": {
+    "fx": 345.7741394042969,
+    "fy": 344.34417724609375
+  },
+  "principal_point_px": {
+    "cx": 666.9884033203125,
+    "cy": 318.46014404296875
+  },
+  "camera_matrix": [
+    [
+      345.7741394042969,
+      0.0,
+      666.9884033203125
+    ],
+    [
+      0.0,
+      344.34417724609375,
+      318.46014404296875
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion_coefficients": [
+    -0.133895605802536,
+    0.01468430832028389,
+    -0.0005066212615929544,
+    0.00041339395102113485,
+    -0.0006652678712271154
+  ],
+  "distortion_order": "k1,k2,p1,p2,k3",
+  "note": "Real calibration of this camera/lens, full three-term Brown model. Use as a documented factory-calibration backup, not as a substitute for reporting a live calibration result."
+}

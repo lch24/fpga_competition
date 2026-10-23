@@ -8,6 +8,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
  output reg nat_entry,ref_entry,output reg [DEPTH-1:0] child_valid,
  output reg [15:0] oc,rc,out_oc,output reg [1:0] o_st,
  input wire order_valid,refine_valid,refine_done,refine_ok,map_done,resp_dump_done,
+ input wire [15:0] native_total,
  input wire [31:0] corner_x,corner_y,
  output reg out_valid,input wire out_ready,output reg [31:0] out_x,out_y,
  output reg [15:0] out_total,output reg out_grid_ok,
@@ -20,6 +21,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
    ST_NEXT=5,ST_FIN=6,ST_OUT=7,ST_DUMP=8;
  localparam O_IDLE=0,O_RD=1,O_EMIT=2;
  reg local_done;reg [31:0] local_result;
+ reg [15:0] fail_total;   // diagnostic: raw point count of a failed native layer
  wire service_done=seq_id[7:4]==1?filter_done:seq_id[7:4]==2?order_done:seq_id[7:4]==3?grid_done:local_done;
  wire [31:0] service_result=seq_id[7:4]==1?filter_result:seq_id[7:4]==2?order_result:seq_id[7:4]==3?grid_result:local_result;
  detection_program #(.USE_CE(USE_CE)) program_control(.clk(clk),.rst_n(rst_n),.ce(ce),.start(start),
@@ -28,7 +30,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin stage<=ST_IDLE;dl<=0;nat_entry<=0;ref_entry<=0;child_valid<=0;
    oc<=0;rc<=0;out_oc<=0;o_st<=O_IDLE;out_valid<=0;out_x<=0;out_y<=0;
-   out_total<=0;out_grid_ok<=0;local_done<=0;local_result<=0;end
+   out_total<=0;out_grid_ok<=0;local_done<=0;local_result<=0;fail_total<=0;end
   else if(!USE_CE || ce)begin
    nat_entry<=0;ref_entry<=0;
    if(!seq_valid)local_done<=0;
@@ -36,7 +38,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
     local_done<=0;local_result<=0;
     case(seq_id)
      DET_BOOT:begin stage<=ST_IDLE;dl<=DEPTH-1;child_valid<=0;oc<=0;rc<=0;
-       out_valid<=0;out_grid_ok<=0;out_total<=0;o_st<=O_IDLE;out_oc<=0;
+       out_valid<=0;out_grid_ok<=0;out_total<=0;o_st<=O_IDLE;out_oc<=0;fail_total<=0;
        local_result<=REPLAY_RESP && cfg_resp_dump_en;local_done<=1;end
      DET_NATIVE:begin stage<=ST_NATIVE;nat_entry<=1;local_done<=1;end
      DET_ORDER_OUTPUT:begin stage<=ST_ORDER;oc<=0;end
@@ -47,12 +49,16 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
        if(dl!=0)dl<=dl-1'b1;
      end
      DET_FINISH:begin local_result<=!child_valid[0];local_done<=1;stage<=ST_FIN;
-       if(child_valid[0])begin out_total<=CORNER_N;out_grid_ok<=1;end end
+       if(child_valid[0])begin out_total<=CORNER_N;out_grid_ok<=1;end
+       else out_total<=fail_total;end
      DET_OUTPUT:begin stage<=ST_OUT;out_oc<=0;o_st<=O_RD;local_result<=cfg_resp_dump_en;end
      DET_DUMP:stage<=ST_DUMP;
      default:begin local_done<=1;local_result<=1;end
     endcase
    end else begin
+    // Latch the native layer's raw count while order_total is still valid
+    // (the backend reset between stages clears it).
+    if(stage==ST_NATIVE && order_done && dl==0)fail_total<=native_total;
     if(stage==ST_ORDER && order_valid && oc<CORNER_N)begin
       oc<=oc+1'b1;if(oc+1'b1>=CORNER_N)local_done<=1;
     end

@@ -103,6 +103,13 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     localparam NCELL = ROWS * COLS;                 // 40
     localparam C_1E30F = 32'h7149f2ca;              // 1e30f
     localparam C_4    = 32'h40800000;               // 4.0f
+    // 行边界候选 gap 数：每行一个真实行边界，另留 5 个余量给杂点形成的 gap
+    localparam NCAND  = (ROWS + 5 > 16) ? 16 : ROWS + 5;
+    // 行窗口间距一致性上限（Σ((step-median)/median)² < 1.0）。
+    // 实测真实行（含鱼眼压缩）在 0.04–0.42；混入一个外围杂点后 >5。
+    localparam C_SCORE = 32'h3f800000;              // 1.0f
+    // 孤立点邻域：一个内角点相邻格距实测 43–97px，140px 内必有邻居
+    localparam C_BOX   = 32'h430c0000;              // 140.0f
 
     //--------------------------------------------------------------------
     // 状态
@@ -114,8 +121,9 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     assign seq_done=EXTERNAL_SEQ && seq_valid && !seq_enter &&
       ((seq_id==DET_ORDER_FINISH)?done:(state==S_WAIT));
 
-    localparam A_PROJ=0, A_VSORT=1, A_GAP=2, A_GSORT=3, A_GPSORT=4,
-               A_ROW=5, A_COST=6, A_BEST=7, A_ORIGIN=8, A_OUT=9, A_NEXT=10;
+    localparam A_PROJ=0, A_VSORT=1, A_GAP=2, A_GSORT=3, A_SEL=4, A_GPSORT=5,
+               A_ROW=6, A_COST=7, A_BEST=8, A_ORIGIN=9, A_OUT=10, A_NEXT=11,
+               A_FILT=12;
     reg [3:0] ast;
 
     localparam R_RSORT=0, R_WIN=1, R_GCPY=2, R_NEXT=3;
@@ -155,6 +163,8 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     reg [15:0] ks_cnt;                // R_RSORT 步进（0..7）
     reg [15:0] on_cnt;                // order 覆盖写指针（行 u 排序流）
     reg [3:0]  wc;                    // 窗口内步 c=1..COLS-1
+    reg [3:0]  sk;                    // 9 点窗口跳过位置（0=不跳）
+    reg [3:0]  sk_best;               // 最优窗口的跳过位置
     reg [3:0]  sd_cnt;                // W_STEP 步进
     reg [3:0]  med_cnt;               // W_MED 填充/收流计数
     reg [3:0]  sc_idx;                // W_SCORE 元素索引
@@ -178,6 +188,26 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     // 数组
     reg [N_ADDR_W-1:0] gap_pos  [0:15];
     reg [N_ADDR_W-1:0] gaps_arr [0:15];
+    // 行边界选择：候选 gap 位置（gap_pos[0] 为最大 gap），按最小分段长度筛选
+    reg [N_ADDR_W-1:0] sel_pos  [0:15];
+    reg [4:0]          sel_cnt;
+    reg [4:0]          sel_i;
+    reg [4:0]          sel_m_c;
+    integer            sel_j;
+    // 孤立点剔除：先算每点到最近邻的距离（存 keyv），取中位数 M，
+    // 再剔除最近邻距离 > 3M 的点。棋盘内角点的最近邻约为一个格距，
+    // 画面背景的假角点通常远离棋盘，会被这一条筛掉。
+    reg [15:0] fil_n, fil_i, fil_j, fil_keep, fil_sort_cnt;
+    reg [4:0]  fil_ph;
+    reg [31:0] fil_x, fil_y, fil_dx, fil_dy, fil_min, fil_m, fil_thr;
+    reg        fil_nbr;
+    reg        fil_key_rd_en;
+    reg [N_ADDR_W-1:0] fil_key_addr, fil_med_idx;
+    reg        filt_wr_en;
+    reg [N_ADDR_W-1:0] filt_wr_addr;
+    reg [63:0] filt_wr_data;
+    reg        fil_upd_pulse;   // 块 B 通知块 A 应用过滤后的点数
+    reg        fil_req;         // 块 A：本次采集需要先做孤立点剔除
     reg [N_ADDR_W-1:0] win_order [0:255];
     reg [31:0] wstep_r [0:COLS-2];
     reg [31:0] wmed_key [0:7];
@@ -258,12 +288,13 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(32), .ADDR_WIDTH(N_ADDR_W)) u_keyv (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .wr_en(keyv_wr_en), .wr_addr(proj_wr[N_ADDR_W-1:0]), .wr_data(keyv_wr),
-        .rd_en(s_rd_en && (ast == A_VSORT)), .rd_addr(s_rd_addr), .rd_data(keyv_rd)
+        .rd_en(fil_key_rd_en || (s_rd_en && (ast == A_VSORT || ast == A_FILT))),
+        .rd_addr(fil_key_rd_en ? fil_key_addr : s_rd_addr), .rd_data(keyv_rd)
     );
     dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(N_ADDR_W), .ADDR_WIDTH(N_ADDR_W)) u_idxv (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .wr_en(idxv_wr_en), .wr_addr(proj_wr[N_ADDR_W-1:0]), .wr_data(proj_wr[N_ADDR_W-1:0]),
-        .rd_en(s_rd_en && (ast == A_VSORT)), .rd_addr(s_rd_addr), .rd_data(idxv_rd)
+        .rd_en(s_rd_en && (ast == A_VSORT || ast == A_FILT)), .rd_addr(s_rd_addr), .rd_data(idxv_rd)
     );
     dual_port_ram #(.USE_CE(USE_CE),.DATA_WIDTH(32), .ADDR_WIDTH(N_ADDR_W)) u_vv (.ce(ce),
         .clk(clk), .rst_n(rst_n),
@@ -399,13 +430,13 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     reg [N_ADDR_W-1:0] wmed_id;
 
     // sort key/idx 多路（v 排序 / gap 排序 / 位置排序 / 行 u 排序 / 中位数）
-    assign s_rd_key = (ast == A_VSORT)  ? keyv_rd :
+    assign s_rd_key = (ast == A_VSORT || ast == A_FILT) ? keyv_rd :
                       (ast == A_GSORT)  ? gapk_rd :
                       (ast == A_GPSORT) ? gpos_kd :
                       ((ast == A_ROW) && (rst == R_RSORT)) ? keyu_rd :
                       ((ast == A_ROW) && (rst == R_WIN) && (wst == W_MED)) ? wmed_kd :
                       32'd0;
-    assign s_rd_idx = (ast == A_VSORT)  ? idxv_rd :
+    assign s_rd_idx = (ast == A_VSORT || ast == A_FILT) ? idxv_rd :
                       (ast == A_GSORT)  ? gapi_rd :
                       (ast == A_GPSORT) ? gpos_id :
                       ((ast == A_ROW) && (rst == R_RSORT)) ? idxu_rd :
@@ -464,19 +495,20 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     // Overflow is a rejected job, but continue draining the upstream filter.
     // Otherwise a held final point could prevent FILTER_FINISH/ORDER_CAPTURE.
     assign pts_ready = (state == S_CAP) || (EXTERNAL_SEQ && state==S_WAIT && N_reg>255);
-    assign pts_wr_en = pts_valid && pts_ready && state==S_CAP && cnt_pts<256;
-    assign pts_wr_addr = cnt_pts[N_ADDR_W-1:0];
-    assign pts_wr_x = pts_x;
-    assign pts_wr_y = pts_y;
+    assign pts_wr_en = filt_wr_en || (pts_valid && pts_ready && state==S_CAP && cnt_pts<256);
+    assign pts_wr_addr = filt_wr_en ? filt_wr_addr : cnt_pts[N_ADDR_W-1:0];
+    assign pts_wr_x = filt_wr_en ? filt_wr_data[31:0] : pts_x;
+    assign pts_wr_y = filt_wr_en ? filt_wr_data[63:32] : pts_y;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE; busy <= 1'b0; done <= 1'b0; status <= 2'b00;
-            cnt_pts <= 16'd0; go_angle <= 1'b0; N_reg <= 16'd0;
+            cnt_pts <= 16'd0; go_angle <= 1'b0; N_reg <= 16'd0; fil_req <= 1'b0;
             oc_cnt <= 16'd0; oc_idx2 <= 16'd0;
             out_total <= 16'd0; out_grid_ok <= 1'b0;
         end else if(!USE_CE || ce) begin begin
             go_angle <= 1'b0;
+            if (fil_upd_pulse) begin N_reg <= fil_keep; fil_req <= 1'b0; end
             case (state)
                 S_IDLE: if (start) begin
                     busy <= 1'b1; done <= 1'b0; status <= 2'b00;
@@ -487,13 +519,18 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                     if (pts_valid && pts_ready)
                         cnt_pts <= cnt_pts + 16'd1;
                     if (cnt_pts > 16'd255) begin
-                        N_reg<=cnt_pts;
+                        N_reg<=cnt_pts; fil_req <= 1'b0;
+                        // Diagnostic: report the raw captured point count on failure.
+                        out_total <= cnt_pts;
                         status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                     end else if (pts_done) begin
                         N_reg <= cnt_pts + (pts_valid ? 16'd1 : 16'd0);
                         if (cnt_pts + (pts_valid ? 16'd1 : 16'd0) < NCELL[15:0]) begin
+                            out_total <= cnt_pts + (pts_valid ? 16'd1 : 16'd0);
+                            fil_req <= 1'b0;
                             status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                         end else begin
+                            fil_req <= 1'b1;
                             go_angle <= !EXTERNAL_SEQ;
                             state <= EXTERNAL_SEQ?S_WAIT:S_ANGLE;
                         end
@@ -504,6 +541,8 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                         if(EXTERNAL_SEQ)state<=S_WAIT;
                         else begin
                             if (!found_best) begin
+                                // Diagnostic: keep N_reg visible when ordering fails.
+                                out_total <= N_reg;
                                 status <= 2'b10; done <= !EXTERNAL_SEQ; busy <= 1'b0; state <= EXTERNAL_SEQ?S_WAIT:S_DONE;
                             end else begin
                                 status <= 2'b01;
@@ -520,7 +559,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                     if(seq_id==DET_ANGLE)begin go_angle<=1;state<=S_ANGLE;end
                     else if(seq_id==DET_ORDER_FINISH)begin
                         status<=found_best?1:2;out_grid_ok<=found_best;
-                        out_total<=found_best?NCELL:0;oc_cnt<=0;oc_idx2<=0;
+                        out_total<=found_best?NCELL[15:0]:N_reg;oc_cnt<=0;oc_idx2<=0;
                         done<=1;busy<=0;state<=S_DONE;
                     end
                 end
@@ -579,6 +618,26 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     wire [63:0] src_buf_d = snapshot_data;
 
     //--------------------------------------------------------------------
+    // 行边界候选筛选：按 gap 大小降序尝试，只接受不会切出短于 COLS
+    // 的分段的位置。棋盘外多出的杂点会形成过大的 gap，其相邻分段不足
+    // COLS 点而被拒绝，后续真实行边界仍能取满 ROWS-1 个。
+    //--------------------------------------------------------------------
+    wire [4:0]  cand_cnt_c = ((N_reg - 16'd1) >= NCAND) ? NCAND[4:0] : (N_reg[4:0] - 5'd1);
+    wire [7:0]  sel_p_c    = gap_pos[sel_i];
+    // 已接受边界中比当前候选小的个数 = 插入位置
+    always @* begin
+        sel_m_c = 5'd0;
+        for (sel_j = 0; sel_j < ROWS - 1; sel_j = sel_j + 1)
+            if (sel_j < sel_cnt && sel_p_c > sel_pos[sel_j])
+                sel_m_c = sel_m_c + 5'd1;
+    end
+    wire [15:0] sel_prev_c = (sel_m_c == 5'd0) ? 16'hFFFF : {8'd0, sel_pos[sel_m_c - 5'd1]};
+    wire [15:0] sel_next_c = (sel_m_c == sel_cnt) ? (N_reg - 16'd1) : {8'd0, sel_pos[sel_m_c]};
+    wire [15:0] sel_cur_c  = {8'd0, sel_p_c};
+    wire        sel_ok_c   = ((sel_cur_c - sel_prev_c) >= COLS[15:0]) &&
+                             ((sel_next_c - sel_cur_c) >= COLS[15:0]);
+
+    //--------------------------------------------------------------------
     // 块 B：角度子状态机（A_PROJ…A_NEXT）
     //--------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
@@ -588,6 +647,10 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
             ak <= 8'd0; ai <= 16'd0;
             pp <= 4'd0; ov_addr <= 16'd0; gr_cnt <= 16'd0; gcnt <= 16'd0;
             gpos_cnt <= 16'd0; ku_addr <= 16'd0; ks_cnt <= 16'd0; on_cnt <= 16'd0;
+            sel_cnt <= 5'd0; sel_i <= 5'd0;
+            sk <= 4'd0; sk_best <= 4'd0;
+            fil_ph <= 4'd0; fil_i <= 16'd0; fil_j <= 16'd0; fil_keep <= 16'd0;
+            fil_key_rd_en <= 1'b0; filt_wr_en <= 1'b0; fil_upd_pulse <= 1'b0;
             r <= 16'd0; s <= 16'd0; c <= 16'd0;
             begin_idx <= 16'd0; end_idx <= 16'd0; seg_len <= 16'd0;
             best_cost <= 32'd0; cur_cost <= 32'd0;
@@ -636,10 +699,16 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
             if (go_angle) begin
                 // 新一轮初始化
                 run_angle <= 1'b1; angle_finish <= 1'b0;
-                ast <= A_PROJ; rst <= R_RSORT; wst <= W_STEP;
+                // 每层、每帧第一次角度调用前先剔除孤立点
+                ast <= (fil_req && (N_reg >= NCELL[15:0])) ? A_FILT : A_PROJ;
+                fil_ph <= 4'd0; fil_i <= 16'd0; fil_keep <= 16'd0; fil_n <= N_reg;
+                fil_key_rd_en <= 1'b0; filt_wr_en <= 1'b0; fil_upd_pulse <= 1'b0;
+                rst <= R_RSORT; wst <= W_STEP;
                 ak <= EXTERNAL_SEQ?seq_arg[7:0]:0; ai <= 16'd0;
                 pp <= 4'd0; ov_addr <= 16'd0; gr_cnt <= 16'd0; gcnt <= 16'd0;
                 gpos_cnt <= 16'd0; ku_addr <= 16'd0; ks_cnt <= 16'd0; on_cnt <= 16'd0;
+                sel_cnt <= 5'd0; sel_i <= 5'd0;
+                sk <= 4'd0; sk_best <= 4'd0;
                 r <= 16'd0; s <= 16'd0; c <= 16'd0;
                 begin_idx <= 16'd0; end_idx <= 16'd0; seg_len <= 16'd0;
                 if(!EXTERNAL_SEQ || seq_arg==0)best_cost <= C_1E30F; cur_cost <= 32'd0;
@@ -657,6 +726,152 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                 hyp_fire <= 1'b0; dv_fire <= 1'b0;
             end else if (run_angle) begin
                 case (ast)
+                //============================================ A_FILT
+                // 孤立点剔除：某点在 C_BOX 见方的邻域内没有其它点时判为棋盘外
+                // 杂点；剔除后在 pts 内原地紧凑，N_reg 由块 A 同步更新。
+                A_FILT: begin
+                    case (fil_ph)
+                        5'd0: begin
+                            pts_rd_en <= 1'b1;
+                            pts_rd_addr <= fil_i[N_ADDR_W-1:0];
+                            fil_ph <= 5'd1;
+                        end
+                        5'd1: begin
+                            pts_rd_en <= 1'b0;
+                            fil_ph <= 5'd2;
+                        end
+                        5'd2: begin
+                            fil_x <= pts_rd_x;
+                            fil_y <= pts_rd_y;
+                            fil_j <= 16'd0;
+                            fil_nbr <= 1'b0;
+                            fil_ph <= 5'd3;
+                        end
+                        5'd3: begin
+                            if (fil_j >= fil_n) begin
+                                fil_ph <= 5'd10;
+                            end else if (fil_j == fil_i) begin
+                                fil_j <= fil_j + 16'd1;
+                            end else begin
+                                pts_rd_en <= 1'b1;
+                                pts_rd_addr <= fil_j[N_ADDR_W-1:0];
+                                fil_ph <= 5'd4;
+                            end
+                        end
+                        5'd4: begin
+                            pts_rd_en <= 1'b0;
+                            fil_ph <= 5'd5;
+                        end
+                        5'd5: begin
+                            fil_dx <= pts_rd_x;
+                            fil_dy <= pts_rd_y;
+                            fil_ph <= 5'd6;
+                        end
+                        5'd6: begin
+                            if (sub_rdy) begin
+                                sub_a <= fil_dx;
+                                sub_b <= fil_x;
+                                sub_fire <= 1'b1;
+                                fil_ph <= 5'd7;
+                            end
+                        end
+                        5'd7: begin
+                            if (sub_v) begin
+                                fil_dx <= sub_r;
+                                fil_ph <= 5'd24;
+                            end
+                        end
+                        5'd24: begin
+                            if (sub_rdy) begin
+                                sub_a <= fil_dy;
+                                sub_b <= fil_y;
+                                sub_fire <= 1'b1;
+                                fil_ph <= 5'd25;
+                            end
+                        end
+                        5'd25: begin
+                            if (sub_v) begin
+                                fil_dy <= sub_r;
+                                fil_ph <= 5'd26;
+                            end
+                        end
+                        5'd26: begin
+                            // |dx|、|dy| 为非负 fp32，位模式直接比较
+                            if ({1'b0, fil_dx[30:0]} <= C_BOX &&
+                                {1'b0, fil_dy[30:0]} <= C_BOX) begin
+                                fil_nbr <= 1'b1;
+                                fil_ph <= 5'd10;
+                            end else begin
+                                fil_j <= fil_j + 16'd1;
+                                fil_ph <= 5'd3;
+                            end
+                        end
+                        5'd10: begin
+                            proj_wr <= fil_i;
+                            keyv_wr <= {31'd0, fil_nbr};
+                            keyv_wr_en <= 1'b1;
+                            fil_i <= fil_i + 16'd1;
+                            fil_ph <= 5'd11;
+                        end
+                        5'd11: begin
+                            if (fil_i >= fil_n) begin
+                                fil_i <= 16'd0;
+                                fil_keep <= 16'd0;
+                                fil_ph <= 5'd16;
+                            end else begin
+                                fil_ph <= 5'd0;
+                            end
+                        end
+                        5'd16: begin
+                            fil_key_addr <= fil_i[N_ADDR_W-1:0];
+                            fil_key_rd_en <= 1'b1;
+                            fil_ph <= 5'd17;
+                        end
+                        5'd17: begin
+                            fil_key_rd_en <= 1'b0;
+                            fil_ph <= 5'd18;
+                        end
+                        5'd18: begin
+                            if (fil_i >= fil_n) begin
+                                fil_upd_pulse <= 1'b1;
+                                fil_ph <= 5'd22;
+                            end else if (keyv_rd[0]) begin
+                                pts_rd_en <= 1'b1;
+                                pts_rd_addr <= fil_i[N_ADDR_W-1:0];
+                                fil_ph <= 5'd19;
+                            end else begin
+                                fil_i <= fil_i + 16'd1;
+                                fil_ph <= 5'd16;
+                            end
+                        end
+                        5'd19: begin
+                            pts_rd_en <= 1'b0;
+                            fil_ph <= 5'd20;
+                        end
+                        5'd20: begin
+                            filt_wr_en <= 1'b1;
+                            filt_wr_addr <= fil_keep[N_ADDR_W-1:0];
+                            filt_wr_data <= pts_rd64;
+                            fil_keep <= fil_keep + 16'd1;
+                            fil_i <= fil_i + 16'd1;
+                            fil_ph <= 5'd21;
+                        end
+                        5'd21: begin
+                            filt_wr_en <= 1'b0;
+                            fil_ph <= 5'd16;
+                        end
+                        5'd22: begin
+                            fil_upd_pulse <= 1'b0;
+                            fil_ph <= 5'd23;
+                        end
+                        5'd23: begin
+                            ai <= 16'd0;
+                            pp <= 4'd0;
+                            ast <= A_PROJ;
+                        end
+                        default: fil_ph <= 5'd0;
+                    endcase
+                end
                 //============================================ A_PROJ
                 A_PROJ: begin
                     if (ai >= N_reg) begin
@@ -812,12 +1027,10 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                 //============================================ A_GSORT
                 A_GSORT: begin
                     if (st_out_valid && s_out_ready) begin
-                        // out_idx = gapi = (N-2)-pos；恢复 pos（取末尾 rows-1 个）
-                        if (gcnt >= (N_reg - 1) - (ROWS[15:0] - 1)) begin
-                            if (gpos_cnt < ROWS[15:0] - 1) begin
-                                gap_pos[gpos_cnt] <= (N_reg - 2) - st_out_idx;
-                                gpos_cnt <= gpos_cnt + 16'd1;
-                            end
+                        // out_idx = gapi = (N-2)-pos；升序排出的末尾 NCAND 个
+                        // 即最大的 NCAND 个 gap，按降序存入 gap_pos[0..NCAND-1]
+                        if (gcnt + NCAND >= N_reg - 16'd1) begin
+                            gap_pos[(N_reg - 2) - gcnt] <= (N_reg - 2) - st_out_idx;
                         end
                         gcnt <= gcnt + 16'd1;
                         s_out_ready <= 1'b0;
@@ -827,10 +1040,40 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                     if (st_done) begin
                         s_out_ready <= 1'b0;
                         gpos_cnt <= 16'd0;
+                        sel_cnt <= 3'd0;
+                        sel_i <= 4'd0;
+                        ai <= 16'd0;
+                        ast <= A_SEL;
+                    end
+                end
+                //============================================ A_SEL
+                A_SEL: begin
+                    if (sel_cnt >= ROWS - 1) begin
+                        // 选满 ROWS-1 个边界 → 升序排序后切行
+                        for (sel_j = 0; sel_j < ROWS - 1; sel_j = sel_j + 1)
+                            gap_pos[sel_j] <= sel_pos[sel_j];
+                        gpos_cnt <= 16'd0;
                         s_n <= ROWS - 1;
                         s_start <= 1'b1;
                         ai <= 16'd0;
                         ast <= A_GPSORT;
+                    end else if (sel_i >= cand_cnt_c) begin
+                        // 筛选不出 ROWS-1 个边界 → 回退到原来的 top-(ROWS-1)
+                        // 行为（gap_pos[0..3] 仍保留最大的 4 个 gap）
+                        gpos_cnt <= 16'd0;
+                        s_n <= ROWS - 1;
+                        s_start <= 1'b1;
+                        ai <= 16'd0;
+                        ast <= A_GPSORT;
+                    end else begin
+                        sel_i <= sel_i + 5'd1;
+                        if (sel_ok_c) begin
+                            for (sel_j = 0; sel_j < ROWS - 1; sel_j = sel_j + 1)
+                                if (sel_j >= sel_m_c && sel_j < sel_cnt)
+                                    sel_pos[sel_j + 1] <= sel_pos[sel_j];
+                            sel_pos[sel_m_c] <= sel_p_c;
+                            sel_cnt <= sel_cnt + 5'd1;
+                        end
                     end
                 end
                 //============================================ A_GPSORT
@@ -956,6 +1199,8 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     s <= begin_idx;
                                     row_best <= C_1E30F;
                                     start_best <= 16'hFFFF;
+                                    sk <= 4'd0;
+                                    sk_best <= 4'd0;
                                     wc <= 4'd1;
                                     sd_cnt <= 4'd0;
                                     wst <= W_STEP;
@@ -972,7 +1217,9 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                             case (sd_cnt)
                                 4'd0: begin
                                     pts_rd_en <= 1'b1;
-                                    pts_rd_addr <= win_order[s - begin_idx + wc];
+                                    // 跳过窗口：第 sk 个点被跳过
+                                    pts_rd_addr <= win_order[s - begin_idx + wc +
+                                        ((sk != 4'd0 && wc >= sk) ? 4'd1 : 4'd0)];
                                     sd_cnt <= 4'd1;
                                 end
                                 4'd1: begin
@@ -983,7 +1230,8 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     px_reg <= pts_rd_x;   // 当前点 c
                                     py_reg <= pts_rd_y;
                                     pts_rd_en <= 1'b1;
-                                    pts_rd_addr <= win_order[s - begin_idx + wc - 4'd1];
+                                    pts_rd_addr <= win_order[s - begin_idx + wc - 4'd1 +
+                                        ((sk != 4'd0 && (wc - 4'd1) >= sk) ? 4'd1 : 4'd0)];
                                     sd_cnt <= 4'd3;
                                 end
                                 4'd3: begin
@@ -1101,10 +1349,12 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     if (add_v) begin
                                         score_acc <= add_r;
                                         if (sc_idx + 4'd1 >= COLS[3:0] - 4'd1) begin
-                                            // 7 个元素完成：比较更新
-                                            if (fp_lt(add_r, row_best)) begin
+                                            // 7 个元素完成：只接受间距一致性达标的窗口，
+                                            // 避免棋盘外杂点混入某一行后仍被当成合法行
+                                            if (fp_lt(add_r, row_best) && fp_lt(add_r, C_SCORE)) begin
                                                 row_best <= add_r;
                                                 start_best <= s;
+                                                sk_best <= sk;
                                             end
                                             scp <= 3'd5;
                                         end else begin
@@ -1114,38 +1364,53 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     end
                                 end
                                 3'd5: begin
-                                    // 窗口推进（start_best 已更新）
-                                    if (s + COLS[15:0] + 16'd1 > end_idx) begin
-                                        if (start_best == 16'hFFFF) begin
-                                            ast <= A_NEXT;      // 行中止
+                                    // 窗口推进：先枚举 9 点窗口的 7 种“跳 1 点”，
+                                    // 再推进起始位置（start_best 已更新）
+                                    if (sk == 4'd0) begin
+                                        if (s + COLS[15:0] + 16'd1 <= end_idx) begin
+                                            sk <= 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
+                                        end else if (start_best == 16'hFFFF) begin
+                                            ast <= A_NEXT;
                                         end else begin
-                                            rc <= 4'd0; c <= 16'd0;
-                                            rst <= R_GCPY;
+                                            rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
+                                        end
+                                    end else if (sk + 4'd1 <= COLS[3:0] - 4'd1) begin
+                                        sk <= sk + 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
+                                    end else if (s + COLS[15:0] + 16'd1 > end_idx) begin
+                                        if (start_best == 16'hFFFF) begin
+                                            ast <= A_NEXT;
+                                        end else begin
+                                            rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
                                         end
                                     end else begin
-                                        s <= s + 16'd1;
-                                        wc <= 4'd1;
-                                        sd_cnt <= 4'd0;
-                                        wst <= W_STEP;
+                                        s <= s + 16'd1; sk <= 4'd0;
+                                        wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
                                     end
                                 end
                             endcase
                         end
                         //------------------------------ W_SKIP
                         W_SKIP: begin
-                            // spacing<4 跳过（start_best 未更新）
-                            if (s + COLS[15:0] + 16'd1 > end_idx) begin
-                                if (start_best == 16'hFFFF) begin
-                                    ast <= A_NEXT;              // 行中止
+                            // spacing<4 跳过（start_best 未更新），推进方式与 W_SCORE 相同
+                            if (sk == 4'd0) begin
+                                if (s + COLS[15:0] + 16'd1 <= end_idx) begin
+                                    sk <= 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
+                                end else if (start_best == 16'hFFFF) begin
+                                    ast <= A_NEXT;
                                 end else begin
-                                    rc <= 4'd0; c <= 16'd0;
-                                    rst <= R_GCPY;
+                                    rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
+                                end
+                            end else if (sk + 4'd1 <= COLS[3:0] - 4'd1) begin
+                                sk <= sk + 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
+                            end else if (s + COLS[15:0] + 16'd1 > end_idx) begin
+                                if (start_best == 16'hFFFF) begin
+                                    ast <= A_NEXT;
+                                end else begin
+                                    rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
                                 end
                             end else begin
-                                s <= s + 16'd1;
-                                wc <= 4'd1;
-                                sd_cnt <= 4'd0;
-                                wst <= W_STEP;
+                                s <= s + 16'd1; sk <= 4'd0;
+                                wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
                             end
                         end
                         endcase
@@ -1155,7 +1420,9 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                         case (rc)
                             4'd0: begin
                                 pts_rd_en <= 1'b1;
-                                pts_rd_addr <= win_order[start_best - begin_idx + c];
+                                // 与窗口枚举一致的跳过映射
+                                pts_rd_addr <= win_order[start_best - begin_idx + c +
+                                    ((sk_best != 4'd0 && c >= sk_best) ? 4'd1 : 4'd0)];
                                 rc <= 4'd1;
                             end
                             4'd1: begin

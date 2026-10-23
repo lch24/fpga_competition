@@ -318,6 +318,8 @@ module detect_ctrl #(parameter FP_SHARED=0,parameter FIXED_BILINEAR=0, parameter
     wire [CORNER_AW-1:0] bs_pt_addr;
     wire bs_order_v,bs_order_done,bs_order_gok,bs_refine_v,bs_refine_done,bs_refine_val;
     wire [31:0] bs_order_x,bs_order_y,bs_refine_x,bs_refine_y;
+    // Diagnostic only: raw corner count seen by the shared ordering stage.
+    wire [15:0] shared_order_total;
     generate if(!SHARE_BACKEND) begin : g_no_scratch
         assign math_req_valid=0;assign math_req_op=0;assign math_req_a=0;assign math_req_b=0;
         assign math_active=0;assign math_rsp_ready=0;
@@ -495,6 +497,7 @@ module detect_ctrl #(parameter FP_SHARED=0,parameter FIXED_BILINEAR=0, parameter
                 .out_x(bs_order_x), .out_y(bs_order_y),
                 .out_total(order_total), .out_grid_ok(bs_order_gok)
             );
+            assign shared_order_total = order_total;
             grid_refine_ctrl #(.SHARED_ADD(1),.EXTERNAL_SEQ(1),.SHARED_HYPOT(1),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.SHARED_VALIDATE(1),.SHARED_SUBPIXEL(1),.VARIABLE_SCALE(1),.USE_CE(USE_CE),
                 .ROWS(ROWS), .COLS(COLS), .N_ADDR_W(CORNER_AW),
                 .IMG_W(W0), .IMG_H(H0), .GRAY_ADDR_W(GRAY_ADDR_W)
@@ -955,7 +958,7 @@ module detect_ctrl #(parameter FP_SHARED=0,parameter FIXED_BILINEAR=0, parameter
        .clk(clk),.rst_n(rst_n),.ce(ce),.start(start),.cfg_resp_dump_en(cfg_resp_dump_en),
        .busy(busy),.done(done),.status(status),.stage(stage),.dl(dl),.nat_entry(nat_entry),.ref_entry(ref_entry),
        .child_valid(child_valid),.oc(oc),.rc(rc),.out_oc(out_oc),.o_st(o_st),
-       .order_valid(slot_order_v[dl]),.refine_valid(slot_refine_v[dl]),
+       .order_valid(slot_order_v[dl]),.native_total(shared_order_total),.refine_valid(slot_refine_v[dl]),
        .refine_done(slot_refine_done[dl]),.refine_ok(slot_refine_val[dl]),.map_done(map_done),.resp_dump_done(resp_dump_done),
        .corner_x(cram_rd_x[dl]),.corner_y(cram_rd_y[dl]),.out_valid(out_valid),.out_ready(out_ready),
        .out_x(out_x),.out_y(out_y),.out_total(out_total),.out_grid_ok(out_grid_ok),

@@ -8,35 +8,45 @@ BUILD=ROOT/'build/image/detection_program'
 def main():
     BUILD.mkdir(parents=True,exist_ok=True);commands=[];cases=[]
     def call(i,arg=0,result=0):commands.append((i<<48)|(arg<<32)|result)
-    # Per layer: native rejection, candidate count, ordered grid found, refine valid.
-    # Mapping reuses the preceding valid layer; refines may fail without native retry.
+    def refine():
+        for service in (3,48,49,50,51,52):call(service)
+    def native(reject,n,ordered,valid):
+        call(1);call(16,result=int(reject))
+        if not reject:
+            call(17);call(18);call(19,result=(n<<16)|(2 if n==0 else 0))
+            for i in range(n):call(20,i)
+        call(21);call(32,result=int(reject or n==0))
+        if not reject and n:
+            for i in range(90):call(33,i)
+        ordered=ordered and not reject and n>0
+        call(34,result=int(not ordered))
+        if ordered:call(2);refine()
+        return ordered and valid
+    # Per layer: native rejection/count/order/refine, optional mapped-refine
+    # verdict. A failed mapped attempt is followed by one native attempt at
+    # the SAME level before the layer decision is made again.
     for layers in [[],[(False,3,True,True)],[(False,0,False,False)],
                    [(True,0,False,False)],[(False,2,False,False)],
                    [(False,1,True,True),(False,1,True,True)],
                    [(False,2,True,False),(False,4,True,True)],
-                   [(False,2,True,True),(False,2,True,False),(False,1,True,True)]]:
+                   [(False,2,True,True),(False,2,True,False),(False,1,True,True)],
+                   [(False,2,True,True),(False,3,True,True,False)],
+                   [(False,2,True,True),(False,3,True,True,False),(False,1,True,True)],
+                   [(False,2,True,True),(False,3,True,False,False)]]:
       for dump in (False,True):
         call(9,result=int(not layers))
         if not layers:cases.append((len(commands)<<2)|3);continue
         previous=False
-        for level,(reject,n,ordered,valid) in enumerate(layers):
+        for level,layer in enumerate(layers):
+          reject,n,ordered,valid=layer[:4]
+          mapped_valid=layer[4] if len(layer)>4 else valid
           if previous:
-            call(4)
+            call(4);refine();previous=mapped_valid
+            if not previous:
+              call(5,result=4) # Retry indication takes precedence over last-level completion.
+              previous=native(reject,n,ordered,valid)
           else:
-            call(1);call(16,result=int(reject))
-            if not reject:
-              call(17);call(18);call(19,result=(n<<16)|(2 if n==0 else 0))
-              for i in range(n):call(20,i)
-            call(21);call(32,result=int(reject or n==0))
-            if not reject and n:
-              for i in range(90):call(33,i)
-            ordered=ordered and not reject and n>0
-            call(34,result=int(not ordered))
-            if ordered:call(2)
-          if previous or ordered:
-            call(3);call(48);call(49);call(50);call(51);call(52)
-            previous=valid
-          else:previous=False
+            previous=native(reject,n,ordered,valid)
           call(5,result=int(level==len(layers)-1)|(int(previous)<<1))
         call(6,result=int(not previous))
         if previous:
@@ -60,8 +70,8 @@ def main():
     print(f'DETECTION_PROGRAM_PASS cases={len(cases)} services={len(commands)} reset=1')
     (BUILD/'program.log').write_text((BUILD/'vsim.log').read_text())
     (BUILD/'flow.do').write_text('onfinish stop\nonerror {quit -code 1 -f}\nonbreak {resume}\nrun -all\n'
-       'if {[examine /tb_detection_flow_control/finished] != 1 || [examine -radix unsigned /tb_detection_flow_control/checked] != 4} {quit -code 1 -f}\n'
+       'if {[examine /tb_detection_flow_control/finished] != 1 || [examine -radix unsigned /tb_detection_flow_control/checked] != 7} {quit -code 1 -f}\n'
        'echo DETECTION_FLOW_PASS\nquit -code 0 -f\n')
     run('vsim','-c','-voptargs=+acc','tb_detection_flow_control','-do','flow.do')
-    print('DETECTION_FLOW_PASS cases=4 depth=3 CE/backpressure/fallback/map/dump/restart')
+    print('DETECTION_FLOW_PASS cases=7 depth=3 CE/backpressure/same-level-retry/finite-failure/map/dump/restart')
 if __name__=='__main__':main()

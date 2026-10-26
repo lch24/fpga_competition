@@ -115,6 +115,11 @@ try {
   if($Board){
     Invoke-Tool 'vopt.exe' @('calibrated_view_top','-o','calibrated_view_top_checked') 'board_elaborate.log' | Out-Null
     Write-Host 'ELABORATE PASS calibrated_view_top (vendor IP port stubs only)'
+    foreach($demo in @(0,1)) {
+      $out=Invoke-Tool 'vsim.exe' @('-c','-novopt',('-gENABLE_DISTORT_DEMO='+$demo),'calibrated_view_top','-do',(Find-DoFile 'check_board_geometry.tcl')) ('board_geometry_'+$demo+'.log')
+      if($out -notmatch 'PASS board geometry' -or $out -match '\*\* (Error|Fatal):'){throw 'Board image geometry/stride mismatch'}
+      Write-Host "GEOMETRY PASS calibrated_view_top ENABLE_DISTORT_DEMO=$demo"
+    }
   }
   foreach($test in $tests) {
     if($OnlyTest -and $test -ne $OnlyTest){continue}

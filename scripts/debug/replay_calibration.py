@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / 'scripts/calibration/engine'))
 import generate_lm_fisheye as model
 from check_init_program import run as initialize
 from build_init import build
-from inspect_calibration import audit as audit_corners
+from inspect_calibration import audit as audit_corners, spatial_metrics, image_size
 
 
 def camera(state, width, height):
@@ -49,13 +49,14 @@ def audit(k, width, height):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('corners', type=Path)
-    p.add_argument('--width', type=int, default=1280)
-    p.add_argument('--height', type=int, default=720)
+    p.add_argument('--width', type=int)
+    p.add_argument('--height', type=int)
     p.add_argument('--rows', type=int, default=5)
     p.add_argument('--cols', type=int, default=8)
     p.add_argument('--out', type=Path, default=ROOT/'build/debug/calibration_replay.json')
     args = p.parse_args()
     data = json.loads(args.corners.read_text())
+    args.width, args.height = image_size(data, args.width, args.height)
     input_audit = audit_corners(data, args.width, args.height, args.rows, args.cols)
     if input_audit['errors']:
         raise ValueError(f'Corner geometry invalid; run inspect_calibration.py: {input_audit["errors"]}')
@@ -87,20 +88,23 @@ def main():
         report['board'] = dict(camera=board, rms=data['status'].get('rms'),
                                map=audit(board, args.width, args.height))
         print('BOARD', json.dumps(report['board']), flush=True)
-    for name, distortion in [('full', [4,5,6,7,8]), ('fixed_k3', [4,5,6,7])]:
+    # Legacy fits are experimental controls only, never runtime model selection.
+    for name, distortion in [('full', [4,5,6,7,8]), ('fixed_k3', [4,5,6,7]),
+                              ('regularized_full', [4,5,6,7,8])]:
         active = [0,1,2,3] + list(range(9, model.STATE_N)) + distortion
         ranges = [(0, len(observed)*2) if i < 9 else
                   ((i-9)//6*count*2, ((i-9)//6+1)*count*2) for i in active]
-        result, accepted, converged = model.optimize(initial, observed, active, ranges)
-        _, cost = model.residual(result, observed)
+        result, accepted, converged = model.optimize(initial, observed, active, ranges,
+                                                     lens_shape=name=='regularized_full')
+        residuals, cost = model.residual(result, observed)
         k = camera(result, args.width, args.height)
         report[name] = dict(camera=k, rms=math.sqrt(cost/len(observed)),
                             state=result, accepted=accepted, converged=converged,
-                            map=audit(k, args.width, args.height))
+                            map=audit(k, args.width, args.height),
+                            spatial=spatial_metrics(observed, args.width, args.height, residuals))
         print(name, json.dumps(report[name]), flush=True)
-    folded = input_audit['fit_k3'] and report['full']['map']['failed_samples'] != 0
-    report['selected_model'] = 'fixed_k3' if not input_audit['fit_k3'] or folded else 'full'
-    report['reduced_because'] = 'coverage' if not input_audit['fit_k3'] else 'mapping_fold' if folded else None
+    report['selected_model'] = 'regularized_full'
+    report['reduced_because'] = None
     chosen = report[report['selected_model']]
     report['selected_software_checks_pass'] = (
         chosen['converged'] and chosen['rms'] < 3 and not chosen['map']['failed_samples'] and

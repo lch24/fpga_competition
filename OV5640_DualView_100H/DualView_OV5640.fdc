@@ -748,24 +748,17 @@ create_generated_clock -name {cam2_i2c_clk} -source [get_pins {u_pll/u_gpll:CLKO
 # Verify against the camera module oscillator/register settings and measurement.
 create_clock -name {cmos1_pclk} [get_ports {cmos1_pclk}] -period 10.000 -waveform {0.000 5.000}
 create_clock -name {cmos2_pclk} [get_ports {cmos2_pclk}] -period 10.000 -waveform {0.000 5.000}
-# DVP source-synchronous inputs. These were previously UNCONSTRAINED (reported
-# as "not constrained, treated as combinational input"), so the tool never
-# checked the board pin-to-first-FF path of the byte unpacker. Budget: <=3 ns
-# board+pin skew, and a hold budget that leaves the tool no free margin (see -min
-# below). NOTE: cmos*_pclk period above is still the PROVISIONAL 100 MHz
-# assumption.
-set_input_delay -clock {cmos1_pclk} -max 3.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
-set_input_delay -clock {cmos1_pclk} -min 0.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
-set_input_delay -clock {cmos2_pclk} -max 3.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
-# -min is deliberately the pessimistic source-synchronous extreme: the sensor may
-# change data on the same instant as the launched pclk edge. With -min 0.5 the
-# tool assumed the data arrived late enough that hold was free and left only
-# 0.041 ns of margin (route delay == clock path); that near-zero margin lets the
-# sampled HREF width tip by one pclk on a boot-dependent fraction of lines, which
-# orphans one DVP byte and loses one pixel per affected line. At -min 0.0 the
-# placer/router is forced to actually hold-fix: place the input FF nearer the IOB
-# or lengthen the data path.
-set_input_delay -clock {cmos2_pclk} -min 0.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
+# OV5640 0x4740=0x20 preserves the original board's polarity; bit1 is not inverted.
+# FPGA captures DVP data and sync at the rising PCLK edge (bit5 unchanged).
+# DVP bytes change around the opposite (falling) PCLK edge. Use that launch
+# edge here: rising-to-rising delays incorrectly give the input FF a whole
+# period of setup time instead of half a period. VSYNC/data/HREF are sampled
+# by the same single-register input stage; no pin feeds pixel control directly.
+# Provisional board+sensor delay budget 0..3 ns; confirm on the actual module.
+set_input_delay -clock {cmos1_pclk} -clock_fall -max 3.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
+set_input_delay -clock {cmos1_pclk} -clock_fall -min 0.0 [get_ports {cmos1_data[*] cmos1_href cmos1_vsync}]
+set_input_delay -clock {cmos2_pclk} -clock_fall -max 3.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
+set_input_delay -clock {cmos2_pclk} -clock_fall -min 0.0 [get_ports {cmos2_data[*] cmos2_href cmos2_vsync}]
 # Realtime camera/HDMI FIFOs: do NOT globally false-path camera <-> DDR or
 # pixel <-> DDR. That would hide the Gray-pointer bit-skew requirement.
 # A <=8ns datapath bound is shorter than either endpoint period (camera PCLK

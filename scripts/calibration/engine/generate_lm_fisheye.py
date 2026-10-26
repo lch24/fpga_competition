@@ -12,6 +12,7 @@ risk this fixture targets. The module is also the reference used to regenerate
 import math
 import struct
 from pathlib import Path
+import lens_policy
 
 ROOT = Path(__file__).resolve().parents[3]
 WIDTH, HEIGHT = 640, 480
@@ -124,7 +125,15 @@ def solve_normal(a, b):
     return x
 
 
-def jacobian_columns(state, observed, active, ranges):
+def objective_residual(state, observed, lens_shape=True):
+    values, cost = residual(state, observed)
+    if lens_shape:
+        extra = lens_policy.regularization_residuals(state, WIDTH, HEIGHT, len(observed))
+        return values + extra, cost + sum(x*x for x in extra)
+    return values, cost
+
+
+def jacobian_columns(state, observed, active, ranges, lens_shape=True):
     """Scaled finite-difference columns; raises when a column is not range local."""
     columns, scales = [], []
     for position, index in enumerate(active):
@@ -133,13 +142,13 @@ def jacobian_columns(state, observed, active, ranges):
         plus, minus = state[:], state[:]
         plus[index] += step
         minus[index] = plus[index] - 2.0 * step
-        rp, _ = residual(plus, observed)
-        rm, _ = residual(minus, observed)
+        rp, _ = objective_residual(plus, observed, lens_shape)
+        rm, _ = objective_residual(minus, observed, lens_shape)
         values = [0.0] * len(rp)
         for r in range(first, last):
             values[r] = (rp[r] - rm[r]) / (2.0 * step)
         for r in list(range(0, first)) + list(range(last, len(rp))):
-            if values[r] != 0.0:
+            if rp[r] != rm[r]:
                 raise ValueError(f'column {index} is not range local')
         norm = math.sqrt(sum(v * v for v in values))
         if norm < SCALE_FLOOR:
@@ -152,7 +161,7 @@ def jacobian_columns(state, observed, active, ranges):
 
 def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COST_STOP,
              gradient_stop=GRADIENT_STOP, reduction_stop=REDUCTION_STOP, step_stop=STEP_STOP,
-             max_tries=16, relaxed_gradient=RELAXED_GRADIENT):
+             max_tries=16, relaxed_gradient=RELAXED_GRADIENT, lens_shape=True):
     """Damped Gauss-Newton in scaled columns; result state and accepted steps.
 
     The policy follows the documented LM program: central differences with a
@@ -162,16 +171,19 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
     code, which is what makes agreement with the RTL informative.
     """
     state = state[:]
-    residual_vector, cost = residual(state, observed)
+    residual_vector, cost = objective_residual(state, observed, lens_shape)
     damping = 1e-3
     accepted = 0
     if ranges is None:
         ranges = [(0, len(residual_vector))] * len(active)
+    elif lens_shape:
+        ranges = [(first, len(residual_vector) if index < 9 else last)
+                  for index, (first, last) in zip(active, ranges)]
 
     for _ in range(iterations):
         if cost < tolerance:
             break
-        jacobian, scales = jacobian_columns(state, observed, active, ranges)
+        jacobian, scales = jacobian_columns(state, observed, active, ranges, lens_shape)
         n = len(active)
         normal = [[sum(jacobian[i][r] * jacobian[j][r] for r in range(len(residual_vector)))
                    for j in range(n)] for i in range(n)]
@@ -191,15 +203,17 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
                 for j, index in enumerate(active):
                     trial[index] += step[j]
                 try:
-                    _, trial_cost = residual(trial, observed)
-                except (OverflowError, ValueError):
+                    _, trial_cost = objective_residual(trial, observed, lens_shape)
+                    if lens_shape and not lens_policy.feasible(trial, WIDTH, HEIGHT):
+                        trial_cost = float('inf')
+                except (OverflowError, ValueError, ZeroDivisionError):
                     trial_cost = float('inf')
             else:
                 trial, trial_cost = None, float('inf')
             reduction = cost - trial_cost
             if trial_cost < cost:
                 state, cost = trial, trial_cost
-                residual_vector, _ = residual(state, observed)
+                residual_vector, _ = objective_residual(state, observed, lens_shape)
                 damping = max(damping * 0.3, SCALE_FLOOR)
                 accepted += 1
                 stepnorm = max(abs(step[j]) / (1.0 + abs(state[active[j]] - step[j])) for j in range(n))

@@ -4,11 +4,12 @@ This isolates iteration/solve/rollback/control from projection. Real camera
 fixtures are separately checked by check_lm.py with the actual RTL service.
 """
 import math
-from build_lm import build, M, C, CONSTANTS
+from build_lm import build
+from workspace import M, C, CONSTANTS
 from reference import Machine,bits,value
 
 def layout(views,points):
-    n=9+6*views;ns=n;nr=2*views*points;banks=10+(n-(4+6*views))
+    n=9+6*views;ns=n;nr=2*views*points+4;banks=10+(n-(4+6*views))
     sizes=[('desc',4*n),('current',ns),('trial',ns),('baseline',nr),
            ('plus',nr),('minus',nr),('column',nr),('jac',banks*nr),
            ('normal',n*n),('augmented',n*(n+1)),('scales',n),('delta',n),('gradient',n)]
@@ -17,7 +18,8 @@ def layout(views,points):
     return result,1<<(at-1).bit_length()
 
 def run_case(rom,views=3,points=40,mode='normal'):
-    n=9+6*views;ns=n;nr=2*views*points;l,words=layout(views,points)
+    n=9+6*views;ns=n;data_nr=2*views*points;nr=data_nr+4;l,words=layout(views,points)
+    target=[math.log(640),math.log(640),.5,.5]+[0.]*(ns-4)
     dist=n-(4+6*views);pose_base=4+dist;banks=pose_base+6
     calls=0;accepted_costs=[];snapshots=[]
     def service(m,opcode):
@@ -29,10 +31,10 @@ def run_case(rom,views=3,points=40,mode='normal'):
         if mode=='invalid_baseline' and calls==1:status=4
         if mode=='invalid_difference' and calls==2:status=4
         total=0
-        for row in range(nr):
+        for row in range(data_nr):
             v=row//(2*points);axis=row%(2*points)%banks
             index=axis if axis<pose_base else 9+6*v+axis-pose_base
-            r=state[index];total+=r*r;m.write(dst+row,bits(r))
+            r=state[index]-target[index];total+=r*r;m.write(dst+row,bits(r))
         # Fail only trial evaluations, after initial and 2*n perturbations.
         if mode=='reject' and calls>1+2*n:total=1e200
         m.write(M['svc_status'],status);m.write(M['svc_cost'],bits(total))
@@ -41,8 +43,9 @@ def run_case(rom,views=3,points=40,mode='normal'):
     m.mem.update({i:0 for i in range(288)})
     m.mem.update({C[k]:v for k,v in CONSTANTS.items()})
     m.mem.update({280:bits(1e-30),281:bits(1e-14),282:0,283:0x7fefffffffffffff})
-    for key,val in dict(l,n=n,nr=nr,ns=ns,maxiter=8,maxtries=3).items():m.mem[M[key]]=val
-    initial=[0.01*(i+1) for i in range(ns)];initial[8]=0
+    for key,val in dict(l,n=n,nr=nr,data_nr=data_nr,ns=ns,maxiter=8,maxtries=3,
+                        fwidth=bits(640),fheight=bits(480),fp_total=bits(views*points)).items():m.mem[M[key]]=val
+    initial=[x+0.01*(i+1) for i,x in enumerate(target)];initial[8]=0
     for i,x in enumerate(initial):m.mem[l['current']+i]=bits(x)
     for k in range(n):
         state_index=k if k<4 else k+5 if k<4+6*views else k-6*views
@@ -55,7 +58,7 @@ def run_case(rom,views=3,points=40,mode='normal'):
     result=[value(m.mem[l['current']+i]) for i in range(ns)]
     if mode=='normal':
         assert get('status')==0 and get('converged')==1
-        assert max(abs(x) for x in result)<1e-7,(views,result)
+        assert max(abs(x-y) for x,y in zip(result,target))<1e-7,(views,result)
         assert value(get('cost'))<1e-12
     elif mode=='missing':assert get('status')==5 and result==initial
     else:

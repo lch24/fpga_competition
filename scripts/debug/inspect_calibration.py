@@ -14,6 +14,42 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def image_size(data, width=None, height=None):
+    geometry = data.get('geometry', {})
+    size = geometry['processing_size'] if geometry.get('supported') else (1280, 720)
+    return width if width is not None else size[0], height if height is not None else size[1]
+
+
+def spatial_metrics(points, width, height, residuals=None):
+    """Disjoint image regions; empty regions stay unmeasured, never zero-error.
+
+    Optional residuals are interleaved dx/dy from a fit on THESE observations.
+    They measure training reprojection error, not independent correction error.
+    """
+    if residuals is not None and len(residuals) != 2*len(points):
+        raise ValueError('Residual count does not match points')
+    regions = {name: [] for name in ('center', 'outer_band', 'outer_corners')}
+    cells = [[0]*4 for _ in range(3)]
+    for i, (x, y) in enumerate(points):
+        if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
+            continue
+        ex = x <= (width-1)/4 or x >= 3*(width-1)/4
+        ey = y <= (height-1)/4 or y >= 3*(height-1)/4
+        name = 'outer_corners' if ex and ey else 'outer_band' if ex or ey else 'center'
+        regions[name].append(i)
+        cells[min(2, int(y*3/height))][min(3, int(x*4/width))] += 1
+    stats = {}
+    for name, indices in regions.items():
+        errors = ([math.hypot(residuals[2*i], residuals[2*i+1]) for i in indices]
+                  if residuals is not None else [])
+        stats[name] = dict(count=len(indices),
+                           training_rms_px=math.sqrt(sum(e*e for e in errors)/len(errors)) if errors else None,
+                           training_max_px=max(errors) if errors else None)
+    return dict(regions=stats, grid_counts_top_to_bottom=cells,
+                empty_grid_cells=sum(n == 0 for row in cells for n in row),
+                error_scope='training reprojection only; empty regions have no accuracy evidence')
+
+
 def coverage(points, width, height):
     """Match build_init.py: >=4 corners in EACH outer quarter-band.
 
@@ -30,10 +66,11 @@ def coverage(points, width, height):
         counts['top'] += y <= (height-1)/4
         counts['bottom'] += y >= 3*(height-1)/4
     return dict(edge_counts=counts, minimum_per_edge=4,
-                fit_k3=all(n >= 4 for n in counts.values()))
+                coverage_ok=all(n >= 4 for n in counts.values()))
 
 
-def audit(data, width=1280, height=720, rows=5, cols=8):
+def audit(data, width=None, height=None, rows=5, cols=8):
+    width, height = image_size(data, width, height)
     if width < 2 or height < 2 or rows < 2 or cols < 2:
         raise ValueError('Image and grid dimensions must be at least 2')
     entries = data['corners']
@@ -77,7 +114,8 @@ def audit(data, width=1280, height=720, rows=5, cols=8):
     policy = coverage(points, width, height)
     return dict(width=width, height=height, rows=rows, cols=cols, views=views,
                 errors=errors, corner_geometry_ok=not errors, **policy,
-                selected_model='full' if policy['fit_k3'] else 'fixed_k3',
+                selected_model='regularized_full',
+                spatial=spatial_metrics(points, width, height),
                 notes=['Coverage is a heuristic, not proof of identifiability or accuracy.',
                        'Inspect numbered overlays, vary board tilt, and validate on independent image regions.',
                        'Do not replace fitted parameters with artificial-distortion presets.'])
@@ -116,14 +154,15 @@ def overlay(points, width, height, rows, cols, image=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('corners', type=Path)
-    parser.add_argument('--width', type=int, default=1280)
-    parser.add_argument('--height', type=int, default=720)
+    parser.add_argument('--width', type=int)
+    parser.add_argument('--height', type=int)
     parser.add_argument('--rows', type=int, default=5)
     parser.add_argument('--cols', type=int, default=8)
     parser.add_argument('--images', nargs='+', type=Path)
     parser.add_argument('--out', type=Path, default=ROOT/'build/debug/corner_audit')
     args = parser.parse_args()
     data = json.loads(args.corners.read_text(encoding='utf-8'))
+    args.width, args.height = image_size(data, args.width, args.height)
     report = audit(data, args.width, args.height, args.rows, args.cols)
     n = args.rows*args.cols
     count = len(report['views'])

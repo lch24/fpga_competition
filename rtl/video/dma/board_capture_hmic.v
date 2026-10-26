@@ -8,6 +8,7 @@ module board_capture_hmic #(
  parameter WIDTH=1280,HEIGHT=720,BASE=32'h0,FIFO_BITS=8,DYNAMIC_BASE=0
 )(
  input wire clk,rst_n,pclk,prst_n,vsync,pixel_valid,input wire [15:0] pixel,
+ input wire [3:0] source_frame_error,
  input wire cmd_valid,output wire cmd_ready,input wire [31:0] cmd_base,
  output wire rsp_valid,input wire rsp_ready,output reg [7:0] rsp_status,
  output wire [27:0] axi_awaddr,output wire [3:0] axi_awlen,axi_awuser_id,
@@ -18,7 +19,7 @@ module board_capture_hmic #(
  localparam TOTAL=WIDTH*HEIGHT;
  reg [31:0] base;
  wire [31:0] requested_base=DYNAMIC_BASE?cmd_base:BASE;
- reg request,finished,seen,armed,active,vs_d,bad;
+ reg request,finished,seen,armed,active,vs_r,vs_d,bad;
  reg [1:0] req_sync,done_sync /* synthesis PAP_ASYNC_REG=1 */;
  reg [31:0] count,accepted,final_words;reg final_bad;
  reg [255:0] packed_pixels;reg [3:0] lane;
@@ -35,13 +36,14 @@ module board_capture_hmic #(
  assign axi_awlen=0;assign axi_awuser_id=0;assign axi_awvalid=state==2;
  assign axi_wdata=payload;assign axi_wstrb=32'hffffffff;
  always @(posedge pclk or negedge prst_n)begin
-  if(!prst_n)begin req_sync<=0;finished<=0;seen<=0;armed<=0;active<=0;vs_d<=0;bad<=0;
+  if(!prst_n)begin req_sync<=0;finished<=0;seen<=0;armed<=0;active<=0;vs_r<=0;vs_d<=0;bad<=0;
    count<=0;accepted<=0;final_words<=0;final_bad<=0;packed_pixels<=0;lane<=0;end
   else begin
-   req_sync<={req_sync[0],request};vs_d<=vsync;
+   // Wait for the unpacker's completed-frame flags and last pixel to settle.
+   req_sync<={req_sync[0],request};vs_r<=vsync;vs_d<=vs_r;
    if(req_sync[1]!=seen)begin seen<=req_sync[1];armed<=1;bad<=0;count<=0;accepted<=0;lane<=0;end
-   if(vsync&&!vs_d)begin
-    if(active)begin active<=0;final_words<=accepted;final_bad<=bad||count!=TOTAL||lane!=0;finished<=seen;end
+   if(vs_r&&!vs_d)begin
+    if(active)begin active<=0;final_words<=accepted;final_bad<=bad||count!=TOTAL||lane!=0||(|source_frame_error);finished<=seen;end
     else if(armed)begin armed<=0;active<=1;end
    end
    if(active&&pixel_valid)begin

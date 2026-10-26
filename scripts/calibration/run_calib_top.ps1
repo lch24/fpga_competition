@@ -53,18 +53,16 @@ try {
   if (!(Select-String -LiteralPath simulation.log -SimpleMatch CALIB_TOP_PASS -Quiet)) { throw 'Missing pass marker' }
   $resultFile=if($ControlOnly){'calib_top_control_results.txt'}else{'calib_top_results.txt'}
   if (!$ControlOnly -and !$ExportDirectory) {
-   # Independently check that the actual minimum among RTL candidates was
-   # published. C++ candidates can be reordered by last-bit floating rounding.
+   # Check the single full-model result and its accepted-step count.
    $bestCost=[double]::PositiveInfinity; $bestSeed=-1; $bestSteps=0; $totalSteps=0; $callCount=0
    $reportedSeed=-1; $reportedSteps=-1
    foreach($line in Get-Content -LiteralPath $resultFile) {
     if($line -match '^LM seed=(\d+) stage=(\d+) cycles=(\d+) cost=(\S+) converged=(\d+) accepted=(\d+) status=(\d+)$') {
      $seedNumber=[int]$Matches[1]; $stageNumber=[int]$Matches[2]
      $costValue=[double]::Parse($Matches[4],[Globalization.CultureInfo]::InvariantCulture)
-     if([int]$Matches[7] -ne 0 -or $seedNumber -ne 2 -or $stageNumber -notin @(2,3) -or $callCount -ne 0) { throw 'Unexpected full RTL stage sequence/status' }
-     if($stageNumber -eq 0) { $totalSteps=0 }
+     if([int]$Matches[7] -ne 0 -or $seedNumber -ne 2 -or $stageNumber -ne 2 -or $callCount -ne 0) { throw 'Unexpected full RTL stage sequence/status' }
      $totalSteps += [int]$Matches[6]; $callCount++
-     if($stageNumber -in @(2,3) -and $costValue -lt $bestCost) { $bestCost=$costValue; $bestSeed=$seedNumber; $bestSteps=$totalSteps }
+     if($stageNumber -eq 2 -and $costValue -lt $bestCost) { $bestCost=$costValue; $bestSeed=$seedNumber; $bestSteps=$totalSteps }
     }
     if($line -match '^case=0 .* status=0 seed=(\d+) steps=(\d+)$') { $reportedSeed=[int]$Matches[1]; $reportedSteps=[int]$Matches[2] }
    }

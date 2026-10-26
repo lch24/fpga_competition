@@ -9,6 +9,7 @@
 | 源文件 | 生成什么 | 对应执行器 |
 |---|---|---|
 | `image/build_detection_program.py` | 检测任务 ROM、服务编号及指令清单 | `detection_program` |
+| `calibration/engine/program.py`、`workspace.py` | 公共指令生成接口、RAM 符号与常量 | 三阶段共用 |
 | `calibration/engine/build_init.py` | DLT/Jacobi/姿态初值程序 | 标定执行器 |
 | `calibration/engine/build_lm.py` | 差分、方程、阻尼和参数更新程序 | 标定执行器 |
 | `calibration/engine/build_validate.py` | 参数、残差统计、姿态和映射检查程序 | 标定执行器 |
@@ -32,11 +33,13 @@ python scripts/compute/microcode/build_math.py
 | 检测任务顺序、回退和背压 | `python scripts/image/check_detection_program.py` |
 | 检测共享加减 | `python scripts/compute/check_pair_add_pool.py` |
 | 检测候选输入边界 | `run_checks.ps1 -OnlyTest tb_detection_capture` |
+| 网格排序、杂点和重复任务 | `scripts/image/run_grid_order_checks.ps1` |
+| 摄像头字节/帧完整性、裁剪、配置 ACK 与恢复 | `scripts/video/run_camera_checks.ps1` |
 | 检测整条数值链 | `run_checks.ps1 -OnlyTest tb_detection_fixed` |
 | 初值程序/阶段接口 | `python scripts/calibration/engine/check_init.py` |
 | LM 程序/阶段接口 | `python scripts/calibration/engine/check_lm.py` |
 | LM 与真实残差服务 | `python scripts/calibration/engine/check_lm_service.py` |
-| 实测角点的固定 k3 重试 | `python scripts/calibration/engine/check_lm_replay.py`（先生成下述复算结果） |
+| 实测角点的完整模型回放 | `python scripts/calibration/engine/check_lm_replay.py`（先生成下述复算结果） |
 | 结果检查 | `python scripts/calibration/engine/check_validate.py` |
 | 标定任务控制（默认几何） | `scripts/calibration/run_calib_top.ps1` |
 | 可配置几何（视图/棋盘/迭代上限） | `scripts/calibration/run_configurable.ps1`（`-TopOnly` 只跑顶层接线） |
@@ -70,10 +73,14 @@ python scripts/calibration/engine/check_lm_replay.py
 ```
 
 `inspect_calibration.py --images raw0.png raw1.png raw2.png` 可把编号角点叠到同次拍摄的原始帧，
-不提供图片时仍输出覆盖统计和坐标图。覆盖预选与标定控制/UART 定向回归入口为
+不提供图片时仍输出覆盖统计和坐标图。覆盖诊断与标定控制/UART 定向回归入口为
 `scripts/calibration/run_quality_checks.ps1 -IcarusBin <目录>`，不运行综合或上板。
 
-第一步独立复算完整模型和固定 `k3=0` 模型，并检查全图映射；第二步调用生产 C++ 算法交叉比较；第三步用同一批角点验证 RTL LM 的固定 k3 路径。第二步不是第三步的依赖。RTL 的自动重试顺序由 `run_calib_top.ps1 -ControlOnly` 单独验证。新采集数据放 `data/debug`，有长期回归价值的数据再归档到 `data/calibration`。
+诊断工具比较独立软件拟合和空间误差；生产 C++ 可单独交叉核对。
+`check_lm_replay.py` 使用 `replay_calibration.py` 产生的参考结果，验证完整模型 RTL LM。
+形状公式用 `check_lens_program.py` 检查，已知真值边缘误差用 `check_lens_quality.py` 检查，
+完整镜头数值联调用 `check_lm_lens.py`。顶层控制使用 `run_calib_top.ps1 -ControlOnly`。
+新采集数据放 `data/debug`，长期回归输入归档到 `data/calibration`。
 
 `memory`、`image`、`remap`、`video` 保存各功能的仿真驱动；`system/integration_tests.json` 定义联合测试清单；`common` 负责工具定位。输入数据生成器放在 `data/generators`，不与运行器混放。
 

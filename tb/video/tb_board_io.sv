@@ -5,6 +5,7 @@ module tb_board_io;
  always #5 clk=~clk;always #7 pclk=~pclk;
  reg [31:0] cmd_base=32'h200000,expected_base=32'h200000;
  reg cmd=0,vs=0,pv=0;reg [15:0] pix=0;
+ reg [3:0] source_frame_error=0;
  wire cr,rv;reg rr=0;wire [7:0] status;
  wire [27:0] awaddr;wire [3:0] awlen,awid;wire awvalid;
  reg awready=0,wready=0,wlast=0;reg [3:0] wid=0;
@@ -13,6 +14,7 @@ module tb_board_io;
  reg [27:0] saved_addr;
  board_capture_hmic #(.WIDTH(64),.HEIGHT(2),.BASE(32'h100),.FIFO_BITS(2),.DYNAMIC_BASE(1)) cap(
   .clk(clk),.rst_n(rst),.pclk(pclk),.prst_n(rst),.vsync(vs),.pixel_valid(pv),.pixel(pix),
+  .source_frame_error(source_frame_error),
   .cmd_base(cmd_base),.cmd_valid(cmd),.cmd_ready(cr),.rsp_valid(rv),.rsp_ready(rr),.rsp_status(status),
   .axi_awaddr(awaddr),.axi_awlen(awlen),.axi_awuser_id(awid),.axi_awvalid(awvalid),.axi_awready(awready),
   .axi_wdata(wdata),.axi_wstrb(mask),.axi_wready(wready),.axi_wusero_last(wlast),.axi_wusero_id(wid));
@@ -96,6 +98,11 @@ module tb_board_io;
   start_capture();frame(117);take_response(3);
   @(negedge clk);writes=0;stall=1;
   start_capture();frame(128);stall=0;take_response(3);
+  // A complete pixel count must not override the source integrity verdict.
+  @(negedge clk);writes=0;source_frame_error=2;
+  start_capture();frame(128);take_response(3);
+  @(negedge clk);writes=0;source_frame_error=0;expected=0;
+  start_capture();frame(128);take_response(0);
   @(negedge clk);display_enable=1;
   wait(outputs>=5120);if(de)$fatal(1,"display error");
   // Malformed response must drain to RLAST then stop, without publishing it.

@@ -31,7 +31,7 @@ def build():
     loop(90);label('angle');call('ANGLE',True);nxt('angle')
     label('order_finish');call('ORDER_FINISH');br('next_layer',0);call('ORDER_OUTPUT')
     label('refine');call('REFINE');call('MINSTEP');call('HALFWIN');call('GRID_SUBPIXEL');call('VALIDATE');call('GRID_OUTPUT')
-    label('next_layer');call('NEXT_LAYER');br('finish',0);br('map',1);br('native')
+    label('next_layer');call('NEXT_LAYER');br('native',2);br('finish',0);br('map',1);br('native')
     label('map');call('MAP');br('refine')
     label('finish');call('FINISH');br('none',0);call('OUTPUT');br('success',0,0);call('DUMP')
     label('success');end(1)

@@ -18,12 +18,12 @@
 //     A_ROW    ：行循环：
 //                 R_RSORT：段 [begin,end) 按 u = x·co + y·si 排序（index_sort）
 //                           排序流同时写回 order[begin+c2] 并复制 win_order[]
-//                 R_WIN  ：连续 COLS 点窗口枚举：
+//                 R_WIN  ：COLS 点窗口，枚举跳过 0/1/2 个行内杂点：
 //                           W_STEP：7 间距 hypot(x[c]-x[c-1], y[c]-y[c-1])
 //                           W_MED ：index_sort n=7 取第 4 个 → spacing；
 //                                   spacing<4 跳过（W_SKIP 推进）
 //                           W_SCORE：Σ((step-spacing)/spacing)² → 选最小
-//                 R_GCPY ：grid[r*COLS+c] = pts[win_order[start_best+c]]
+//                 R_GCPY ：按最佳窗口及同一跳点映射复制 grid[r*COLS+c]
 //                 R_NEXT ：行推进
 //     A_COST   ：grid_validate（cost_ref 复刻）→ cost
 //     A_BEST   ：cost < best_cost → best ← grid（40 点）+ 记录
@@ -163,8 +163,10 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     reg [15:0] ks_cnt;                // R_RSORT 步进（0..7）
     reg [15:0] on_cnt;                // order 覆盖写指针（行 u 排序流）
     reg [3:0]  wc;                    // 窗口内步 c=1..COLS-1
-    reg [3:0]  sk;                    // 9 点窗口跳过位置（0=不跳）
-    reg [3:0]  sk_best;               // 最优窗口的跳过位置
+    // Skip positions are expressed in OUTPUT-column coordinates. Equal
+    // positions skip two adjacent input points. Zero disables that skip.
+    reg [3:0] sk,sk2;
+    reg [3:0] sk_best,sk2_best;
     reg [3:0]  sd_cnt;                // W_STEP 步进
     reg [3:0]  med_cnt;               // W_MED 填充/收流计数
     reg [3:0]  sc_idx;                // W_SCORE 元素索引
@@ -266,6 +268,9 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
 
     // grid_validate 输入（rd_en/rd_addr 是它的输出，wire）
     reg gv_start;
+    // done is held until the next start. Observe this request's busy before
+    // accepting done, otherwise the previous angle's score is reused.
+    reg [1:0] gv_phase;
     wire gv_rd_en;
     wire [5:0] gv_rd_addr;
 
@@ -416,7 +421,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
     grid_validate #(.USE_CE(USE_CE),.ROWS(ROWS), .COLS(COLS), .N_ADDR_W(6)) u_gv (.ce(ce),
         .clk(clk), .rst_n(rst_n),
         .start(gv_start), .busy(gv_busy), .done(gv_done),
-        .n_in(16'd40),
+        .n_in(NCELL[15:0]),
         .rd_en(gv_rd_en), .rd_addr(gv_rd_addr), .rd_x(grid_rd_x), .rd_y(grid_rd_y),
         .valid_out(gv_valid), .cost_out(gv_cost)
     );
@@ -478,6 +483,28 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
         else if (a[31])           fp_lt = (a > b);
         else                      fp_lt = (a < b);
     endfunction
+
+    function automatic [3:0] window_column(input [3:0] column,skip1,skip2);
+        window_column=column+(skip1!=0 && column>=skip1)+(skip2!=0 && column>=skip2);
+    endfunction
+
+    // Enumerate contiguous, one-skip and two-skip subsets using the SAME
+    // arithmetic/RAM ports. Endpoint omissions are covered by moving s.
+    // Shared by spacing rejection and score completion so the two paths
+    // cannot disagree about which subsets have already been tested.
+    task advance_window;
+        begin
+            wc<=1;sd_cnt<=0;wst<=W_STEP;
+            if(sk==0 && s+COLS<end_idx)sk<=1;
+            else if(sk!=0 && sk2==0 && sk<COLS-1)sk<=sk+1'b1;
+            else if(sk2==0 && s+COLS+1<end_idx)begin sk<=1;sk2<=1;end
+            else if(sk2!=0 && sk2<COLS-1)sk2<=sk2+1'b1;
+            else if(sk2!=0 && sk<COLS-1)begin sk<=sk+1'b1;sk2<=sk+1'b1;end
+            else if(s+COLS<end_idx)begin s<=s+1'b1;sk<=0;sk2<=0;end
+            else if(start_best==16'hffff)ast<=A_NEXT;
+            else begin rc<=0;c<=0;rst<=R_GCPY;end
+        end
+    endtask
 
     // 4 角索引（corner_ids = {0, COLS-1, (ROWS-1)*COLS, ROWS*COLS-1}）
     function automatic [5:0] cid_f(input [3:0] k);
@@ -648,7 +675,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
             pp <= 4'd0; ov_addr <= 16'd0; gr_cnt <= 16'd0; gcnt <= 16'd0;
             gpos_cnt <= 16'd0; ku_addr <= 16'd0; ks_cnt <= 16'd0; on_cnt <= 16'd0;
             sel_cnt <= 5'd0; sel_i <= 5'd0;
-            sk <= 4'd0; sk_best <= 4'd0;
+            sk <= 4'd0; sk_best <= 4'd0;sk2<=0;sk2_best<=0;
             fil_ph <= 4'd0; fil_i <= 16'd0; fil_j <= 16'd0; fil_keep <= 16'd0;
             fil_key_rd_en <= 1'b0; filt_wr_en <= 1'b0; fil_upd_pulse <= 1'b0;
             r <= 16'd0; s <= 16'd0; c <= 16'd0;
@@ -678,6 +705,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
             grd_rd_en <= 1'b0; grd_rd_addr <= 0;
             s_start <= 1'b0; s_n <= 16'd0; s_out_ready <= 1'b0;
             gv_start <= 1'b0;
+            gv_phase <= 0;
             mul_fire <= 1'b0; add_fire <= 1'b0; sub_fire <= 1'b0;
             hyp_fire <= 1'b0; dv_fire <= 1'b0;
             mul_a <= 32'd0; mul_b <= 32'd0; add_a <= 32'd0; add_b <= 32'd0;
@@ -708,7 +736,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                 pp <= 4'd0; ov_addr <= 16'd0; gr_cnt <= 16'd0; gcnt <= 16'd0;
                 gpos_cnt <= 16'd0; ku_addr <= 16'd0; ks_cnt <= 16'd0; on_cnt <= 16'd0;
                 sel_cnt <= 5'd0; sel_i <= 5'd0;
-                sk <= 4'd0; sk_best <= 4'd0;
+                sk <= 4'd0; sk_best <= 4'd0;sk2<=0;sk2_best<=0;
                 r <= 16'd0; s <= 16'd0; c <= 16'd0;
                 begin_idx <= 16'd0; end_idx <= 16'd0; seg_len <= 16'd0;
                 if(!EXTERNAL_SEQ || seq_arg==0)best_cost <= C_1E30F; cur_cost <= 32'd0;
@@ -1201,6 +1229,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     start_best <= 16'hFFFF;
                                     sk <= 4'd0;
                                     sk_best <= 4'd0;
+                                    sk2<=0;sk2_best<=0;
                                     wc <= 4'd1;
                                     sd_cnt <= 4'd0;
                                     wst <= W_STEP;
@@ -1218,8 +1247,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                 4'd0: begin
                                     pts_rd_en <= 1'b1;
                                     // 跳过窗口：第 sk 个点被跳过
-                                    pts_rd_addr <= win_order[s - begin_idx + wc +
-                                        ((sk != 4'd0 && wc >= sk) ? 4'd1 : 4'd0)];
+                                    pts_rd_addr <= win_order[s - begin_idx + window_column(wc,sk,sk2)];
                                     sd_cnt <= 4'd1;
                                 end
                                 4'd1: begin
@@ -1230,8 +1258,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     px_reg <= pts_rd_x;   // 当前点 c
                                     py_reg <= pts_rd_y;
                                     pts_rd_en <= 1'b1;
-                                    pts_rd_addr <= win_order[s - begin_idx + wc - 4'd1 +
-                                        ((sk != 4'd0 && (wc - 4'd1) >= sk) ? 4'd1 : 4'd0)];
+                                    pts_rd_addr <= win_order[s - begin_idx + window_column(wc-4'd1,sk,sk2)];
                                     sd_cnt <= 4'd3;
                                 end
                                 4'd3: begin
@@ -1355,64 +1382,24 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                                 row_best <= add_r;
                                                 start_best <= s;
                                                 sk_best <= sk;
+                                                sk2_best <= sk2;
                                             end
                                             scp <= 3'd5;
+                                        end else if(!fp_lt(add_r,row_best) || !fp_lt(add_r,C_SCORE))begin
+                                            // Remaining squared terms are nonnegative. Prune
+                                            // only when this window cannot improve the best.
+                                            advance_window;
                                         end else begin
                                             sc_idx <= sc_idx + 4'd1;
                                             scp <= 3'd0;
                                         end
                                     end
                                 end
-                                3'd5: begin
-                                    // 窗口推进：先枚举 9 点窗口的 7 种“跳 1 点”，
-                                    // 再推进起始位置（start_best 已更新）
-                                    if (sk == 4'd0) begin
-                                        if (s + COLS[15:0] + 16'd1 <= end_idx) begin
-                                            sk <= 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                                        end else if (start_best == 16'hFFFF) begin
-                                            ast <= A_NEXT;
-                                        end else begin
-                                            rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
-                                        end
-                                    end else if (sk + 4'd1 <= COLS[3:0] - 4'd1) begin
-                                        sk <= sk + 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                                    end else if (s + COLS[15:0] + 16'd1 > end_idx) begin
-                                        if (start_best == 16'hFFFF) begin
-                                            ast <= A_NEXT;
-                                        end else begin
-                                            rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
-                                        end
-                                    end else begin
-                                        s <= s + 16'd1; sk <= 4'd0;
-                                        wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                                    end
-                                end
+                                3'd5: advance_window;
                             endcase
                         end
                         //------------------------------ W_SKIP
-                        W_SKIP: begin
-                            // spacing<4 跳过（start_best 未更新），推进方式与 W_SCORE 相同
-                            if (sk == 4'd0) begin
-                                if (s + COLS[15:0] + 16'd1 <= end_idx) begin
-                                    sk <= 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                                end else if (start_best == 16'hFFFF) begin
-                                    ast <= A_NEXT;
-                                end else begin
-                                    rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
-                                end
-                            end else if (sk + 4'd1 <= COLS[3:0] - 4'd1) begin
-                                sk <= sk + 4'd1; wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                            end else if (s + COLS[15:0] + 16'd1 > end_idx) begin
-                                if (start_best == 16'hFFFF) begin
-                                    ast <= A_NEXT;
-                                end else begin
-                                    rc <= 4'd0; c <= 16'd0; rst <= R_GCPY;
-                                end
-                            end else begin
-                                s <= s + 16'd1; sk <= 4'd0;
-                                wc <= 4'd1; sd_cnt <= 4'd0; wst <= W_STEP;
-                            end
-                        end
+                        W_SKIP: advance_window;
                         endcase
                     end
                     //---------------------------------------- R_GCPY
@@ -1421,8 +1408,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                             4'd0: begin
                                 pts_rd_en <= 1'b1;
                                 // 与窗口枚举一致的跳过映射
-                                pts_rd_addr <= win_order[start_best - begin_idx + c +
-                                    ((sk_best != 4'd0 && c >= sk_best) ? 4'd1 : 4'd0)];
+                                pts_rd_addr <= win_order[start_best - begin_idx + window_column(c[3:0],sk_best,sk2_best)];
                                 rc <= 4'd1;
                             end
                             4'd1: begin
@@ -1439,6 +1425,7 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                                     // 本行复制完
                                     if (r + 16'd1 >= ROWS[15:0]) begin
                                         grid_full <= 1'b1;
+                                        gv_phase <= 0;
                                         ast <= A_COST;
                                     end else begin
                                         r <= r + 16'd1;
@@ -1463,14 +1450,17 @@ module grid_order_ctrl #(parameter SHARED_ADD=0, parameter EXTERNAL_SEQ=0, param
                 A_COST: begin
                     if (!grid_full) begin
                         ast <= A_NEXT;
-                    end else if (gv_done) begin
+                    end else if (gv_phase==0) begin
+                        gv_start <= 1'b1;
+                        gv_phase <= 1;
+                    end else if (gv_phase==1) begin
+                        if(gv_busy)gv_phase <= 2;
+                    end else if (gv_done && gv_valid) begin
                         cur_cost <= gv_cost;
                         if (fp_lt(gv_cost, best_cost))
                             ast <= A_BEST;
                         else
                             ast <= A_NEXT;
-                    end else if (!gv_busy) begin
-                        gv_start <= 1'b1;
                     end
                 end
                 //============================================ A_BEST

@@ -1,69 +1,66 @@
 # FPGA 相机标定与去畸变
 
-本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
+本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机标定、图像去畸变和 HDMI 显示。
+板级入口是 [calibrated_view_top.v](rtl/top/calibrated_view_top.v)，
+PDS 工程是 [DualView_OV5640.pds](OV5640_DualView_100H/DualView_OV5640.pds)，
+引脚和时钟约束在同目录的 [FDC](OV5640_DualView_100H/DualView_OV5640.fdc)。
 
-## 从输入到输出
-
-2026-10-19：增加基于角点边缘覆盖的保守 k3 模型选择，并提供角点编号叠图与软件复算。
-2026-10-20 普通模式实板测得约 30.01 个新校正帧/秒，稳态无新增失败/跳帧，停止重启及前后切换正常；资源已放下，但 125 MHz setup WNS 仍为 −0.718 ns，不能把功能通过当作时序签核。修改、实测参数和后续任务见[标定质量与实板交接](docs/CALIBRATION_QUALITY.md)。
-
-摄像头就绪后自动进入拍照预览。KEY0～KEY2 拍摄空槽位，成功后回看 2 秒；已有照片也回看 2 秒，然后恢复预览。人工畸变模式下预览与照片都经过人工加畸变。KEY3 标定结束、KEY4 停止校正视频后也返回预览。
+## 处理流程
 
 ```text
-摄像头 → RGB565 原图写入 DDR
-             ↓ 每张标定图
-       灰度/金字塔 → 候选点 → 有序棋盘角点 → 角点 RAM
-                                                  ↓ 收齐视图
-                                           初值 → LM → 结果检查
-                                                  ↓ 相机参数
-连续原图 DDR（3 槽）→ 源像素缓存 → 定点双线性插值 ← 64 位映射表（只建一次）
-                    ↓
-             校正图写入 DDR（2 槽）→ 完整帧切换 → HDMI
+摄像头 1280×720 → 中心裁剪 960×540 → RGB565 写入 DDR
+                                   ├→ 实时预览 / 按键保存三张照片
+三张照片 → 逐图灰度与角点检测 → 初值 → 完整模型 LM → 参数检查
+                                                        ↓
+连续采集 → DDR 原图 → 查校正映射表 → 双线性插值 → DDR 校正图
+                                                        ↓
+                                显示出口放大 4/3 → HDMI 1280×720
 ```
 
-三张标定原图分别保存在 DDR，检测依次处理它们，共用灰度金字塔和候选点工作区。视频另外使用三份原图槽位、两份校正槽位；不会覆盖标定照片。完整图像和映射表放在 DDR，片上只放块缓存、FIFO、角点和计算工作区。`REALTIME_VIDEO=0` 保留旧照片模式；默认板级不实例化旧的逐像素校正读写器。
+裁剪起点为 `(160,90)`，宽高各保留 75%。检测、标定和校正都在 960×540
+坐标系中进行；只在显示时放大。完整帧、灰度金字塔和映射表存放在 DDR，
+片上保存行缓存、FIFO、角点和计算工作区。
 
-## 当前架构
+默认 `REALTIME_VIDEO=1`：KEY0～KEY2 拍照或回看两秒，KEY3 检测与标定，
+KEY4 建表后启动校正视频，再按停止；视频期间 KEY0 切换校正前后。
+上电及回看结束后自动预览。按键、LED 和串口见[板上操作](docs/BOARD_OPERATION.md)。
 
-系统由专用数据通路和分层微程序控制器组成。像素扫描、采集显示、DDR、投影与插值保留专用电路；迭代和重复数值步骤通过程序复用运算器。
+人工畸变是编译期可选扩展，默认 `ENABLE_DISTORT_DEMO=0`。
+启用后可先人为改变输入图像，再独立检测、标定和校正；
+人工参数和人工映射表不进入求解器。操作见[人工畸变](docs/DISTORT_DEMO.md)。
 
-| 控制器 | 作用 | 代码入口 |
-|---|---|---|
-| 检测任务程序 | 管理金字塔层、候选遍历、方向搜索、精修调度 | `rtl/control/detection/detection_program.v` |
-| 标定程序 | 初值、LM、结果检查轮流使用同一执行器和工作 RAM | `rtl/compute/service/calib_execution_service.v` |
-| 精修微程序 | 求解局部张量方程、更新角点坐标、计算收敛量 | `rtl/compute/service/feature_program.v` |
-| 数学微程序 | 实现复杂数学函数内部的分步运算 | `rtl/compute/float/fp_math_program.v` |
+## 代码组织与阅读入口
 
-这些控制器属于不同层次。检测精修与标定通过仲裁共享 FP64 后端；检测的多个模块还共享 FP32 加减和距离服务。几何投影内部另有固定运算序列表。控制器数量不等于独立算术单元数量，也不意味着每个像素由通用 CPU 执行。
-
-程序源在 `scripts/*` 和 `data/programs`，生成的指令表在 `rtl/include`，随 FPGA bitstream 初始化。算法目标时钟为 40 MHz，摄像头、DDR 和显示通过跨时钟接口连接。
-
-## 阅读与代码组织
-
-| 入口 | 内容 |
+| 目录 | 内容 |
 |---|---|
-| [板上操作](docs/BOARD_OPERATION.md) | 按键、LED、拍照/标定/校正、串口调试和相关测试 |
-| [系统架构](docs/SYSTEM_ARCHITECTURE.md) | 整体流程、时钟、存储和模块之间的数据交接 |
-| [RTL 导航](rtl/README.md) | 按功能组织的目录及关键源码 |
-| [指令控制指南](docs/INSTRUCTION_CONTROL_GUIDE.md) | 启动、取指、执行、HOST 服务及程序生成 |
-| [检测设计](docs/DETECTION_ENGINE.md) | 检测任务程序和专用计算服务 |
-| [标定设计](docs/CALIBRATION_ENGINE_ARCHITECTURE.md) | 初值、LM、检查如何共用执行器 |
-| [测试平台](tb/README.md)、[脚本](scripts/README.md)、[数据](data/README.md) | 验证入口、程序源与参考数据 |
-| [C++ 参考](algorithom/closer2fpga/README.md) | 算法原理、软件实现及导出 |
+| [rtl](rtl/README.md) | 按功能划分的硬件：控制、计算、存储、图像、视频、调试和顶层连接 |
+| [scripts](scripts/README.md) | 程序生成、仿真运行、工程配置、串口和软件复算工具 |
+| [tb](tb/README.md) | HDL 测试与行为模型，按功能划分 |
+| [data](data/README.md) | 汇编源、ROM 表、测试输入、真实角点及独立参考数据 |
+| [algorithom/closer2fpga](algorithom/closer2fpga/README.md) | C++ 检测、标定与数据导出参考 |
+| `OV5640_DualView_100H` | PDS 工程、约束和厂商 PLL/DDR IP |
+| `build` | 可重新生成的仿真、分析输出，不提交 |
 
-板级入口是 [calibrated_view_top.v](rtl/top/calibrated_view_top.v)，算法 DDR 到 DDR 入口是 [vision_ddr_top.v](rtl/top/vision_ddr_top.v)。PDS 工程为 [DualView_OV5640.pds](OV5640_DualView_100H/DualView_OV5640.pds)，引脚和时钟约束为同目录 [DualView_OV5640.fdc](OV5640_DualView_100H/DualView_OV5640.fdc)。
+建议先读[系统架构](docs/SYSTEM_ARCHITECTURE.md)，再按任务阅读
+[实时视频](docs/REALTIME_VIDEO.md)、[检测](docs/DETECTION_ENGINE.md)、
+[标定架构](docs/CALIBRATION_ENGINE_ARCHITECTURE.md)和[算法质量指标](docs/CALIBRATION_QUALITY.md)。
+程序入口、取指和 HOST 服务见[指令控制指南](docs/INSTRUCTION_CONTROL_GUIDE.md)。
 
-源码按职责分为 `rtl/control` 调度、`rtl/compute` 计算服务、`rtl/memory` 存储、`rtl/image` 图像数据通路、`rtl/video` 采集显示，`rtl/top` 负责连接。厂商 IP 位于工程目录的 `ipcore`；仿真产物统一写入 `build`。
+复杂数值循环通过微程序复用计算资源；摄像头、DDR、像素流水、插值和显示保留专用电路。
+初值、LM、检查共用一个标定执行器；检测精修与标定共享 FP64 后端。
+这些程序随 bitstream 初始化，板上运行不依赖电脑。
 
-`rtl/io/uart` 提供串口字节收发，`rtl/debug` 独立采集状态和数值记录；电脑端入口为 `scripts/debug/uart_monitor.py`，测试位于 `tb/debug`。
+## 配置与接口
 
-## 配置和数据接口
+标定配置集中在 [calib_config.vh](rtl/include/calib_config.vh)，默认 3 张图、5×8 内角点。
+角点按视图、行优先点号存储，使用裁剪图像素坐标 FP32；`view` 区分图片，`job` 区分任务。
+标定内部主要使用 FP64，联合求解内参、五项畸变及每张图的 R/t。
+输出九项 FP32：`fx, fy, cx, cy, k1, k2, k3, p1, p2`；R/t 用于标定和诊断。
+生产路径始终拟合 k3，覆盖度仅作提示。
 
-默认 3 张图、5×8 内角点，标定配置集中在 [calib_config.vh](rtl/include/calib_config.vh)。板级图像为 1280×720 RGB565，检测使用 Gray8；角点以原图像素坐标 FP32 表示，按行优先排列。`view` 区分同一任务的各张图，`job` 区分整次任务。
-
-标定内部主要使用 FP64，输出九个 FP32 参数：`fx, fy, cx, cy, k1, k2, k3, p1, p2`，stage 2 的 k3 已计入 LM 活动参数。各图 R/t 参与 LM，但不作为图像去畸变的输入。RTL 当前使用 DLT/Jacobi 初值和单阶段 LM；C++ 的单应初值已简化为 8 元求解，两者是数值对照关系，并非逐指令相同。
-
-请求/响应在 `valid && ready` 时交接，背压期间保持载荷。算法 DDR 接口使用字节地址；物理 DDR 总线宽度和突发由访存适配层处理。
+请求在 `valid && ready` 时交接，背压时保持载荷。算法域为 40 MHz，DDR 控制域为
+125 MHz；跨域采用 FIFO 或请求应答快照。算法 DDR 地址按字节计，native HMIC
+按 32 位字计，标定工作 RAM 按 64 位字计。
 
 ## 实际板上资源数：
 
@@ -79,40 +76,38 @@
 | 用户 I/O                  |                    **300** | 器件用户端口上限；实际可用引脚还受板级布线、接口占用和电气约束限制，不能按封装的 676 个焊球计算                                                |
 | 板外 DDR3     |     **当前配置对应 1 GiB** | DDR IP 配置为 15 位行地址、10 位列地址、3 位 Bank 地址、32 位数据宽度，容量为`2^(15+10+3) × 4` 字节；属于外部存储，不增加 FPGA 内部 LUT/DRM |
 
-整幅 720p RGB565 图约 1.76 MiB，Gray8 图为 900 KiB，所以完整帧存放 DDR。DDR 的 1 GiB 是配置容量，不是算法实际用量。最终资源占用以当前版本整板综合和布局布线报告为准，局部优化估算不作为整板已放入的结论。
-
-2026-10-12 22:02 最新实时版：综合 60,310 LUT；布局后物理 LUT **66,024/66,600（99.14%）**，逻辑簇 **16,627/16,650（99.86%）**，FF 52,804，RAM 物理位置 105/155，APM 70/240。资源已放下但仅剩 23 个逻辑簇。125 MHz DDR/视频域 WNS **−0.949 ns**、113 个 setup 违例端点；40 MHz 算法域 +0.308 ns。资源通过不代表时序或 30 新帧/秒通过，下一位仍需上板验证。报告摘要和待办见[实时交接](docs/REALTIME_VIDEO.md#本次-pds-结果2026-10-12)。
+当前 960×540 RGB565 图约 0.99 MiB，Gray8 图约 506 KiB，完整帧存放 DDR。DDR 的 1 GiB 是配置容量，不是算法实际用量。最终资源占用以当前版本整板综合和布局布线报告为准，局部优化估算不作为整板已放入的结论。
 
 ## 当前 DDR 分区
 
-以下为默认 1280×720、两层灰度金字塔的**字节地址**。定义见板级顶层的 `RAW_BASE` 与算法顶层的地址参数。
+以下为当前 960×540、两层灰度金字塔的**字节地址**。定义见板级顶层的 `RAW_BASE` 与算法顶层的地址参数。
 
 | 内容             | 起始地址       | 有效数据量     |
 | ---------------- | -------------- | -------------- |
-| RGB565 原图 1 | `0x00000000` | 1,843,200 字节 |
-| RGB565 原图 2 | `0x00200000` | 1,843,200 字节 |
-| RGB565 原图 3 | `0x00400000` | 1,843,200 字节 |
-| 视频原图 0/1/2 | `0x00800000` / `0x00A00000` / `0x00C00000` | 每份 1,843,200 字节 |
-| 视频校正图 0/1 | `0x01000000` / `0x01200000` | 每份 1,843,200 字节 |
-| 打包定点映射表 | `0x02000000` | 7,372,800 字节 |
-| Gray8 灰度金字塔 | `0x03000000` | 1,152,000 字节 |
+| RGB565 原图 1 | `0x00000000` | 1,036,800 字节 |
+| RGB565 原图 2 | `0x00200000` | 1,036,800 字节 |
+| RGB565 原图 3 | `0x00400000` | 1,036,800 字节 |
+| 视频原图 0/1/2 | `0x00800000` / `0x00A00000` / `0x00C00000` | 每份 1,036,800 字节 |
+| 视频校正图 0/1 | `0x01000000` / `0x01200000` | 每份 1,036,800 字节 |
+| 打包定点映射表 | `0x02000000` | 4,147,200 字节 |
+| Gray8 灰度金字塔 | `0x03000000` | 648,000 字节 |
 | 候选点工作区     | `0x03200000` | 262,144 字节   |
 
-有效数据合计 23,532,544 字节（约 22.44 MiB）；每个 RGB565 帧槽预留 2 MiB。`0x02800000` 在实时模式不使用；旧照片模式仍使用分离 FP32 X/Y 表。
+有效数据合计 13,351,744 字节（约 12.73 MiB）；每个 RGB565 帧槽仍预留 2 MiB，行步长为 1,920 字节。显示放大后的帧不写回 DDR。`0x02800000` 在实时模式不使用；旧照片模式仍使用分离 FP32 X/Y 表。
 
-## 使用入口
+## 开发入口
 
-可选的[人工畸变演示](docs/DISTORT_DEMO.md)默认不编入硬件。顶层 `ENABLE_DISTORT_DEMO=1` 时，长按 KEY3 可切换“先人工加畸变、再独立标定和校正”；两遍图像处理共享同一重映射器。换摄像头后恢复为 `0` 并重新生成比特流即可移除扩展。首次人工建表的坐标计算约需 40 秒，详见该文档的操作、验证和时间说明。
-
-工具路径通过 `MODELSIM_BIN`、`PDS_SHELL` 或 PATH 指定。以下命令从仓库根目录运行：
+工具位置由 `MODELSIM_BIN`、`PDS_SHELL` 或 PATH 指定。以下命令从仓库根目录运行：
 
 ```powershell
 python scripts/build/check_rtl_layout.py
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build/configure_pds.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
+python scripts/build/check_test_layout.py
+python scripts/calibration/engine/build_rom.py
+powershell -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
+python scripts/debug/uart_monitor.py COM5 --once params
 ```
 
-PDS 配置脚本同步相对源码路径、准备图像 ROM 并保存、重新打开工程核对；不启动综合。按修改范围选择数值回归，具体命令见脚本文档。
-
-
-串口调试已接入板级顶层：115200 8N1，周期报告状态，可查询参数、角点和共享程序执行进度。使用方法见[板上操作](docs/BOARD_OPERATION.md#串口调试)。
+修改程序源后重新生成 `rtl/include` 中的 ROM；正常 clone 后可直接使用已提交的生成物。
+添加或删除 RTL 文件时，运行 `scripts/build/configure_pds.ps1` 同步相对路径并重新打开工程。
+按修改范围选择仿真，入口见[脚本说明](scripts/README.md)。
+实际资源与时序以该版本 PDS 布局布线报告为准。

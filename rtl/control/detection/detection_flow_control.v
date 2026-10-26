@@ -22,6 +22,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
  localparam O_IDLE=0,O_RD=1,O_EMIT=2;
  reg local_done;reg [31:0] local_result;
  reg [15:0] fail_total;   // diagnostic: raw point count of a failed native layer
+ reg mapped_attempt;    // failed propagation may retry native once at this level
  wire service_done=seq_id[7:4]==1?filter_done:seq_id[7:4]==2?order_done:seq_id[7:4]==3?grid_done:local_done;
  wire [31:0] service_result=seq_id[7:4]==1?filter_result:seq_id[7:4]==2?order_result:seq_id[7:4]==3?grid_result:local_result;
  detection_program #(.USE_CE(USE_CE)) program_control(.clk(clk),.rst_n(rst_n),.ce(ce),.start(start),
@@ -30,7 +31,7 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin stage<=ST_IDLE;dl<=0;nat_entry<=0;ref_entry<=0;child_valid<=0;
    oc<=0;rc<=0;out_oc<=0;o_st<=O_IDLE;out_valid<=0;out_x<=0;out_y<=0;
-   out_total<=0;out_grid_ok<=0;local_done<=0;local_result<=0;fail_total<=0;end
+   out_total<=0;out_grid_ok<=0;local_done<=0;local_result<=0;fail_total<=0;mapped_attempt<=0;end
   else if(!USE_CE || ce)begin
    nat_entry<=0;ref_entry<=0;
    if(!seq_valid)local_done<=0;
@@ -38,15 +39,22 @@ module detection_flow_control #(parameter USE_CE=0,DEPTH=3,CORNER_N=40,REPLAY_RE
     local_done<=0;local_result<=0;
     case(seq_id)
      DET_BOOT:begin stage<=ST_IDLE;dl<=DEPTH-1;child_valid<=0;oc<=0;rc<=0;
-       out_valid<=0;out_grid_ok<=0;out_total<=0;o_st<=O_IDLE;out_oc<=0;fail_total<=0;
+       out_valid<=0;out_grid_ok<=0;out_total<=0;o_st<=O_IDLE;out_oc<=0;fail_total<=0;mapped_attempt<=0;
        local_result<=REPLAY_RESP && cfg_resp_dump_en;local_done<=1;end
-     DET_NATIVE:begin stage<=ST_NATIVE;nat_entry<=1;local_done<=1;end
+     DET_NATIVE:begin stage<=ST_NATIVE;nat_entry<=1;local_done<=1;mapped_attempt<=0;end
      DET_ORDER_OUTPUT:begin stage<=ST_ORDER;oc<=0;end
      DET_REFINE:begin stage<=ST_REFINE;rc<=0;ref_entry<=1;local_done<=1;end
-     DET_MAP:stage<=ST_MAP;
+     DET_MAP:begin stage<=ST_MAP;mapped_attempt<=1;end
      DET_NEXT_LAYER:begin
-       local_result<={30'd0,child_valid[dl],dl==0};local_done<=1;stage<=ST_NEXT;
-       if(dl!=0)dl<=dl-1'b1;
+       local_done<=1;stage<=ST_NEXT;
+       if(mapped_attempt && !child_valid[dl])begin
+         // Keep dl unchanged, including dl=0. Native starts with a reset
+         // backend and clears mapped_attempt, so a failed retry cannot loop.
+         local_result<=32'd4;
+       end else begin
+         local_result<={30'd0,child_valid[dl],dl==0};
+         if(dl!=0)dl<=dl-1'b1;
+       end
      end
      DET_FINISH:begin local_result<=!child_valid[0];local_done<=1;stage<=ST_FIN;
        if(child_valid[0])begin out_total<=CORNER_N;out_grid_ok<=1;end

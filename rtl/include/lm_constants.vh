@@ -28,6 +28,15 @@
 217: initial_data=64'h39b4484bfeebc2a0;
 218: initial_data=64'h3d06849b86a12b9b;
 219: initial_data=64'h3ddb7cdfd9d7bdbb;
+220: initial_data=64'h4010000000000000;
+221: initial_data=64'h4014000000000000;
+222: initial_data=64'h401c000000000000;
+223: initial_data=64'h3ffbb67ae8584caa;
+224: initial_data=64'h3fa999999999999a;
+225: initial_data=64'h3f847ae147ae147b;
+226: initial_data=64'h3fb999999999999a;
+227: initial_data=64'h3ee4f8b588e368f1;
+228: initial_data=64'h41cdcd6500000000;
 280: initial_data=64'h39b4484bfeebc2a0;
 281: initial_data=64'h3d06849b86a12b9b;
 282: initial_data=0;

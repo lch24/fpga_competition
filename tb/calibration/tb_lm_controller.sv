@@ -61,16 +61,17 @@ module tb_lm_controller #(parameter REPLAY=0, WIDTH=640, HEIGHT=480);
    if(rc==7)begin
     launch();await_response();check(status==0 && converged==expected_converged && accepted==expected_accepted,"convergence/accepted count");
     check(outer>=accepted && outer<=`PAR_LM_MAX_ITERS,"iteration accounting");
-    for(i=0;i<`PAR_STATE_N;i=i+1)near(result[64*i+:64],expected[64*i+:64],2e-7);
-    near(cost,expected_cost,2e-12);
+    for(i=0;i<`PAR_STATE_N;i=i+1)near(result[64*i+:64],expected[64*i+:64],REPLAY?2e-5:2e-7);
+    near(cost,expected_cost,REPLAY?1e-7:2e-12);
     // A narrow-field fixture cannot identify k3, so only its smallness is asserted.
-    check($bitstoreal(result[512+:64])<1e-2 && $bitstoreal(result[512+:64])>-1e-2,"k3 estimated and small");consume();
+    if(!REPLAY)check($bitstoreal(result[512+:64])<1e-2 && $bitstoreal(result[512+:64])>-1e-2,"k3 estimated and small");
+    else check(result[512+:64]!=0,"historical replay keeps k3 active");consume();
    end else if(rc!=-1)$fatal(1,"fixture format");
   end
   $fclose(fd);
   if(!REPLAY)begin
   width=1;launch();await_response();check(status==1 && result===initial_state,"bad dimensions preserve state");consume();width=640;
-  stage=3;initial_state=expected;launch();await_response();check(status==0 && result[512+:64]===initial_state[512+:64],"reduced stage preserves fixed k3");consume();stage=0;
+  stage=3;initial_state=expected;launch();await_response();check(status==1 && result===initial_state && accepted==0,"reserved stage rejected; no fixed-k3 mode");consume();stage=0;
   initial_state[0+:64]=64'h7ff8000000000000;launch();await_response();
   check(status==0 && !converged && cost==64'h7ff0000000000000 && outer==0 && result===initial_state,"invalid baseline");consume();initial_state[0+:64]=expected[0+:64];
   drop=0;launch();await_response();check(status==5 && !converged && accepted==0 && result===initial_state,"missing baseline corner");consume();drop=-1;

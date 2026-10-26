@@ -20,9 +20,8 @@
 | `fixtures` | C++ 推荐算法的固定回归基准 |
 | `system` | 独立渲染图像、排序和系统参考 |
 | `rom` | 图像算法的权重/三角常量表 |
-| `reports` | 有日期和版本边界的历史验证证据 |
 | `generators` | 按 calibration/image/remap/system/rom 分类的数据生成程序 |
 
-`calibration/uart_fold_corners.json` 是 2026-10-18 板上导出的 120 个真实角点和当时的诊断快照，用于回归映射翻折及固定 k3 重试。快照中的失败候选参数是历史观测，不是测试期望值；期望值由独立参考重新计算。复算入口见[脚本目录](../scripts/README.md)。临时串口采集放在不提交的 `data/debug`，日志、复算结果和仿真工作库放在 `build`。
+`calibration/uart_fold_corners.json` 是 2026-10-18 板上导出的 120 个真实角点和当时的诊断快照，用于回归完整模型拟合及映射合理性。快照中的失败候选参数是历史观测，不是测试期望值；期望值由独立参考重新计算。复算入口见[脚本目录](../scripts/README.md)。临时串口采集放在不提交的 `data/debug`，日志、复算结果和仿真工作库放在 `build`。
 
-真实角点以 FP32 位模式输入 RTL，期望结果来自独立参考模型或保存的 C++ 导出；仿真实际输出在 `build`。独立算术向量生成器仍可写入 `data/image`；依赖已删除 Shi–Tomasi 软件接口的旧图像阶段导出器和孤立 TB 已清理。当前可运行入口见[脚本目录](../scripts/README.md)，历史结果见 [reports](reports/README.md)。
+真实角点以 FP32 位模式输入 RTL，期望结果来自独立参考模型或保存的 C++ 导出；仿真实际输出在 `build`。独立算术向量生成器仍可写入 `data/image`。当前可运行入口见[脚本目录](../scripts/README.md)。

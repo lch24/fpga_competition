@@ -15,7 +15,14 @@ module tb_async_fifo;
   if(rdata!==received[15:0])$fatal(1,"FIFO order got %d expected %d",rdata,received);
   received<=received+1;
  end
- initial begin #40;rst_n=1;wait(received==1024);repeat(8)@(negedge rclk);if(rvalid)$fatal(1,"FIFO not empty");
-  $display("PASS async FIFO: 1024 words, pointer wraps, unrelated clocks, random stalls");$finish;end
+ initial begin
+  #40;rst_n=1;wait(received==17);
+  // Abort an occupied FIFO, with upstream VALID deliberately held high during
+  // reset. Reset-free RAM may be written, but no old token may become visible.
+  @(negedge wclk);rst_n=0;wvalid=1;wdata=16'hdead;
+  repeat(8)@(negedge rclk);if(rvalid)$fatal(1,"FIFO valid while reset");
+  @(negedge wclk);sent=0;received=0;wvalid=0;rst_n=1;
+  wait(received==1024);repeat(8)@(negedge rclk);if(rvalid)$fatal(1,"FIFO not empty");
+  $display("PASS async FIFO: occupied reset with VALID high, 1024 fresh words, pointer wraps, unrelated clocks, random stalls");$finish;end
  initial begin #200000;$fatal(1,"FIFO timeout %d/%d",sent,received);end
 endmodule

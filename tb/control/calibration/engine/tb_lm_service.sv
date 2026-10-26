@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
 // Small rank-one arithmetic/control smoke through the BOARD shared engine.
-// Residual is independently defined as r[i]=state[0], with exact cost sum.
+// Residual is r[i]=state[0]-log(640), with a physically valid pinhole baseline.
 module tb_lm_service;
  reg clk=0;always #5 clk=~clk;reg rst_n=0,cmd_valid=0,rsp_ready=0;
  wire cmd_ready,rsp_valid;wire [7:0] status,accepted,outer;wire converged;
@@ -12,7 +12,7 @@ module tb_lm_service;
  calib_execution_service engine(.clk(clk),.rst_n(rst_n),.request(execution_req),.response(execution_rsp),
  .shared_req_valid(fv),.shared_req_ready(fr),.shared_req_op(fo),.shared_req_a(fa),.shared_req_b(fb),
  .shared_rsp_valid(sv),.shared_rsp_ready(sr),.shared_rsp_result(fd),.shared_rsp_flags(flags));
- calib_alu alu(.ce(1'b1),.clk(clk),.rst_n(rst_n),.req_valid(fv),.req_ready(fr),.req_op(fo),.req_a(fa),.req_b(fb),
+ fp_operator #(.FP_W(64),.ENABLE_LOG(0)) alu(.clk(clk),.rst_n(rst_n),.req_valid(fv),.req_ready(fr),.req_op(fo),.req_a(fa),.req_b(fb),
  .rsp_valid(sv),.rsp_ready(sr),.rsp_result(fd),.rsp_flags(flags),.rsp_less(),.rsp_equal(),.rsp_unordered());
  wire ev,er,dr,rr;wire [`PAR_STATE_W-1:0] es;
  reg busy=0;reg [31:0] count=0;reg [63:0] residual=0,rescost=0;
@@ -25,7 +25,7 @@ module tb_lm_service;
   if(!rst_n)begin busy<=0;count<=0;end
   else begin
    if(ev && er)begin
-    busy<=1;count<=0;residual<=es[63:0];x=$bitstoreal(es[63:0]);total=0;
+    busy<=1;count<=0;x=$bitstoreal(es[63:0])-$ln(640.0);residual<=$realtobits(x);total=0;
     for(integer k=0;k<`PAR_RESIDUALS;k=k+1)total=total+x*x;
     if(mode==2 && calls>0 && es[63:0]==0)total=1e10;
     rescost<=$realtobits(total);mock_status<=mode==1?8'd5:8'd0;calls=calls+1;
@@ -46,11 +46,13 @@ module tb_lm_service;
  .rsp_converged(converged),.rsp_accepted_steps(accepted),.rsp_outer_iterations(outer));
  task check;input condition;begin if(condition!==1'b1)begin errors=errors+1;$display("FAIL service case=%0d status=%d cost=%g",cases,status,$bitstoreal(cost));end end endtask
  task run;begin
- @(negedge clk);input_state=0;input_state[63:0]=$realtobits(0.25);calls=0;cmd_valid=1;
+ @(negedge clk);input_state=0;input_state[63:0]=$realtobits($ln(640.0)+0.25);
+ input_state[64+:64]=$realtobits($ln(640.0));input_state[128+:64]=$realtobits(0.5);input_state[192+:64]=$realtobits(0.5);
+ calls=0;cmd_valid=1;
  @(negedge clk);cmd_valid=0;cycles=0;
  while(!rsp_valid && cycles<5000000)begin @(negedge clk);cycles=cycles+1;end
  if(!rsp_valid)$fatal(1,"service timeout adapter=%d pc=%d",dut.state,engine.engine.sequencer.pc);
- if(mode==0)begin check(status==0 && converged && accepted>0 && $bitstoreal(cost)<1e-12);check(result[`PAR_STATE_W-1:64]==0);end
+ if(mode==0)begin check(status==0 && converged && accepted>0 && $bitstoreal(cost)<1e-12);check(result[`PAR_STATE_W-1:64]==input_state[`PAR_STATE_W-1:64]);end
  else check(status==5 && !converged && accepted==0 && result===input_state);
  repeat(5)begin @(negedge clk);check(rsp_valid && !cmd_ready);end
  $display("LM_SERVICE case=%0d cycles=%0d evaluations=%0d accepted=%0d cost=%g",cases,cycles,calls,accepted,$bitstoreal(cost));

@@ -2,7 +2,8 @@
 // first DE after VSYNC and at an SOF token. Underflow discards the rest of the
 // old frame, then waits for a new SOF and a new display frame (never shifts the
 // remaining pixels). Frame dimensions must match sync_vg's active dimensions.
-// This serial bring-up implementation does not promise 720p live throughput.
+// Use synchronous block RAM with a one-word-per-clock output stage: the HDMI
+// raster cannot wait between adjacent active pixels. No LUT RAM write tree.
 module hdmi_pixel_bridge #(parameter FIFO_BITS=10)(
  input wire clk,rst_n,in_valid,output wire in_ready,input wire [15:0] in_pixel,
  input wire in_first,in_last,
@@ -13,9 +14,9 @@ module hdmi_pixel_bridge #(parameter FIFO_BITS=10)(
  wire start=de&&frame_gate&&valid&&token[17];
  wire show=de&&valid&&(start||(running&&!token[17]));
  wire consume=show||(!running&&valid&&!token[17]);
- async_fifo #(.WIDTH(18),.ADDR_BITS(FIFO_BITS)) fifo(
+ async_bram_fifo #(.WIDTH(18),.ADDR_BITS(FIFO_BITS)) fifo(
   .wclk(clk),.wrst_n(rst_n),.wvalid(in_valid),.wready(in_ready),.wdata({in_first,in_last,in_pixel}),
-  .rclk(pclk),.rrst_n(prst_n),.rvalid(valid),.rready(consume),.rdata(token));
+  .rclk(pclk),.rrst_n(prst_n),.rvalid(valid),.rready(consume),.rdata(token),.wlevel());
  rgb565_to_rgb888 format(.pixel(show?token[15:0]:16'd0),.r(r),.g(g),.b(b));
  always @(posedge pclk or negedge prst_n)begin
   if(!prst_n)begin underflow<=0;running<=0;frame_gate<=0;vs_d<=0;end

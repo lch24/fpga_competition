@@ -11,7 +11,8 @@ from tools import modelsim_bin
 def run(phase):
     names={'init':('init_controller',9,3),'validate':('validate_result',66,5),
            'lm':('lm_controller',9,None),'lm_service':('lm_service',3,None),
-           'lm_fisheye':('lm_fisheye',1,None),'lm_replay':('lm_controller',1,None)}
+           'lm_fisheye':('lm_fisheye',1,None),'lm_replay':('lm_controller',1,None),
+           'lm_lens':('lm_lens',2,None)}
     name,cases,protocols=names[phase]
     quick='--quick' in sys.argv
     policy='--policy' in sys.argv
@@ -45,7 +46,7 @@ def run(phase):
     if phase=='lm_service':
         tb=ROOT/'tb/control/calibration/engine/tb_lm_service.sv'
         defines=['+define+PAR_BOARD_ROWS=2','+define+PAR_BOARD_COLS=2']
-    elif phase=='lm_replay':
+    elif phase in ('lm_replay','lm_lens'):
         import json
         from generate_lm_fisheye import bits, bits32
         report=json.loads((ROOT/'build/debug/calibration_replay.json').read_text())
@@ -54,8 +55,11 @@ def run(phase):
         defines=[f'+define+PAR_VIEWS={report["views"]}',f'+define+PAR_BOARD_ROWS={report["rows"]}',f'+define+PAR_BOARD_COLS={report["cols"]}']
         def pack(values):return ''.join(f'{bits(v):016x}' for v in reversed(values))
         points=''.join(f'{bits32(e["xy"][1]):08x}{bits32(e["xy"][0]):08x}' for e in reversed(raw['corners']))
-        ref=report['fixed_k3']
-        fixture=f'3 {int(ref["converged"])} {ref["accepted"]} {bits(ref["rms"]**2*len(raw["corners"])):016x} {pack(report["initial"])} {points} {pack(ref["state"])}\n'
+        ref=report['regularized_full']
+        fixture=f'2 {int(ref["converged"])} {ref["accepted"]} {bits(ref["rms"]**2*len(raw["corners"])):016x} {pack(report["initial"])} {points} {pack(ref["state"])}\n'
+        if phase=='lm_lens':
+            synthetic=(ROOT/'data/calibration/lm_fisheye_vectors.txt').read_text().split()
+            fixture='640 480 '+' '.join(synthetic[3:])+'\n'+f'{report["width"]} {report["height"]} '+' '.join(fixture.split()[3:])+'\n'
         (out/f'{name}_vectors.txt').write_text(fixture)
         tb=ROOT/f'tb/calibration/tb_{name}.sv'
     else:
@@ -84,7 +88,7 @@ quit -code 0 -f
 '''
     (out/'run.do').write_text(script)
     extra=[f'-gREPLAY=1',f'-gWIDTH={report["width"]}',f'-gHEIGHT={report["height"]}'] if phase=='lm_replay' else []
-    visibility=f'-voptargs=+acc=r+/tb_{name} -O5' if phase=='lm_replay' else '-voptargs=+acc'
+    visibility=f'-voptargs=+acc=r+/tb_{name} -O5' if phase in ('lm_replay','lm_lens','lm_fisheye') else '-voptargs=+acc'
     tool('vsim','-c',visibility,*extra,*(['-gQUICK=1'] if quick else []),f'work.tb_{name}','-do','do run.do')
     log=(out/'vsim.log').read_text(encoding='utf-8',errors='replace')
     assert marker in log

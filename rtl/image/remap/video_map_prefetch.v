@@ -13,8 +13,11 @@ module video_map_prefetch #(parameter PIXELS=1280*720)(
  reg [63:0] q0,q1,q2,q3;
  reg [1:0] ready_bank;reg fill_bank,read_bank,active,loading,requesting,pending;
  reg [3:0] beat;reg [5:0] pos;reg [1:0] lane;
- reg [31:0] base,issued,launched;
- assign arvalid=requesting;assign araddr=(base>>2)+(issued<<7);assign arlen=15;
+ localparam BLOCK_BITS=$clog2(PIXELS/64+1),PIXEL_BITS=$clog2(PIXELS+1);
+ reg [31:0] base;
+ reg [BLOCK_BITS-1:0] issued;reg [PIXEL_BITS-1:0] launched;
+ wire [27:0] issued_words=issued;
+ assign arvalid=requesting;assign araddr=(base>>2)+(issued_words<<7);assign arlen=15;
  wire launch=active&&launched<PIXELS&&ready_bank[read_bank]&&!pending&&(!out_valid||out_ready);
  wire [4:0] ra={read_bank,pos[5:2]},wa={fill_bank,beat};
  always @(posedge clk)begin

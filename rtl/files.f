@@ -125,3 +125,4 @@ rtl/video/dma/video_capture_hmic.v
 rtl/video/dma/video_frame_writer.v
 rtl/video/stream/hdmi_pixel_bridge.v
 rtl/video/stream/rgb565_format.v
+rtl/video/stream/video_scale_4_3.v

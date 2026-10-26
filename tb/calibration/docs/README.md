@@ -1,20 +1,34 @@
-# 当前标定验证导航
+# 标定验证导航
 
-测试对象是“阶段适配器＋共享指令执行服务”。初值、LM 和检查使用同一个板级执行架构，验证其数值、RAM 交接、背压及复位；旧的独立矩阵控制器测试已经移除。
+测试对象是阶段适配器、共享指令执行器和数值服务。算法设计统一见
+[标定架构](../../../docs/CALIBRATION_ENGINE_ARCHITECTURE.md)，
+取指和 HOST 时序见[指令指南](../../../docs/INSTRUCTION_CONTROL_GUIDE.md)。
+以下命令从仓库根目录执行，仿真产物写入 `build`。
 
-| 内容 | 实现说明 | 验证入口（仓库根目录） |
-|---|---|---|
-| 角点收集与读取 | `rtl/memory/parameters/corner_store.v` | `scripts/memory/run_corner_store.ps1` |
-| 初值 | [INIT](INIT.md) | `python scripts/calibration/engine/check_init.py` |
-| LM | [LM](LM.md) | `python scripts/calibration/engine/check_lm.py` |
-| LM/残差联调 | [LM](LM.md) | `python scripts/calibration/engine/check_lm_service.py` |
-| 鱼眼 LM（合成数据） | [LM](LM.md) | `scripts/calibration/run_lm_fisheye.ps1` |
-| 最终检查 | [VALIDATE_RESULT](VALIDATE_RESULT.md) | `python scripts/calibration/engine/check_validate.py` |
-| 标定任务控制 | [CALIB_TOP](CALIB_TOP.md) | `scripts/calibration/run_calib_top.ps1` |
-| 可配置几何（视图/棋盘/迭代上限） | [CALIB_TOP](CALIB_TOP.md) | `scripts/calibration/run_configurable.ps1`（`-TopOnly` 只跑顶层接线） |
-| 浮点后端 | [FP_OPERATOR](FP_OPERATOR.md) | `scripts/compute/run_fp_operator.ps1` |
-| 投影和残差 | [MODEL](MODEL.md) | `scripts/compute/run_project_point.ps1`、`run_residual_engine.ps1` |
+| 范围 | 验证入口 |
+|---|---|
+| 角点收集与同步读取 | `scripts/memory/run_corner_store.ps1` |
+| 初值程序与阶段接口 | `python scripts/calibration/engine/check_init.py` |
+| LM 程序与阶段接口 | `python scripts/calibration/engine/check_lm.py` |
+| LM/真实残差服务联调 | `python scripts/calibration/engine/check_lm_service.py` |
+| 完整 k3 与形状约束 | `python scripts/calibration/engine/check_lm_lens.py` |
+| 合成鱼眼数值联调 | `python scripts/calibration/engine/check_lm_fisheye.py` |
+| 最终参数与映射检查 | `python scripts/calibration/engine/check_validate.py` |
+| 标定阶段控制、错误及背压 | `scripts/calibration/run_calib_top.ps1 -ControlOnly` |
+| 完整标定任务 | `scripts/calibration/run_calib_top.ps1` |
+| 可配置视图/棋盘/迭代上限 | `scripts/calibration/run_configurable.ps1`，`-TopOnly` 只检查顶层接线 |
+| 独立姿态及不同视图数 | `python scripts/calibration/check_pose_views.py` |
+| 浮点后端 / 基础算术 | `scripts/compute/run_fp_operator.ps1`、`run_calib_alu.ps1` |
+| 旋转 / 投影 / 畸变 / 残差 | `scripts/compute/run_rotation.ps1`、`run_project_point.ps1`、`run_brown_distort.ps1`、`run_residual_engine.ps1` |
 
-角点存储按 view 和点号保存，成功提交一张图后才作为标定输入。读取是同步 RAM 接口，检测状态与点流分别检查；失败图不通过补点伪装成成功。
+初值和检查支持 `--quick` 单例；检查支持 `--policy` 选择验收政策用例。
+阶段测试支持 `--compile-only`。控制桩测试验证调度，数值正确性由真实服务与独立参考测试覆盖。
 
-旧完整算法的实拍对照归档在 [data/reports](../../../data/reports/README.md)，不作为当前代码刚刚完成端到端验证的记录。整体架构见[系统设计](../../../docs/SYSTEM_ARCHITECTURE.md)。
+初值/LM/检查输入在 `data/calibration/*_vectors.txt`，实际输出在
+`build/calibration_engine/<阶段>`。LM 参考由 `generate_lm_reference.py`、
+`generate_lm_fisheye.py` 生成；完整镜头测试同时包含已知真值和归档角点。
+真实导出数据可通过 `run_calib_top.ps1 -ExportDirectory <目录>` 输入。
+
+顶层生产流程只有一组初值（seed ID=2）和一个完整模型阶段（stage=2）。
+这些是接口编号，不表示还枚举前面的初值或阶段。
+完成响应、相机参数和诊断独立握手，测试分别施加背压和复位。

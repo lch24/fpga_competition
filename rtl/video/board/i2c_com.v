@@ -38,7 +38,7 @@ module i2c_com(clock_i2c        ,  //i2c控制接口传输所需时钟，0-400kh
     reg [5:0] cyc_count;
     reg reg_sdat;
     reg sclk;
-    reg ack1,ack2,ack3;
+    reg ack0,ack1,ack2,ack3;
     reg tr_end;
  
    
@@ -46,11 +46,13 @@ module i2c_com(clock_i2c        ,  //i2c控制接口传输所需时钟，0-400kh
     wire i2c_sdat;
     wire ack;
    
-    assign ack=ack1|ack2|ack3;
+    assign ack=ack0|ack1|ack2|ack3;
     assign i2c_sclk=sclk|(((cyc_count>=4)&(cyc_count<=39))?~clock_i2c:0);
     assign i2c_sdat=reg_sdat?1'bz:0; 
    
-    always@(posedge clock_i2c)
+    // Reset must release the bus even when the divider has stopped. A warm
+    // reconfiguration must not leave SCL/SDA low until the next SCCB clock.
+    always@(posedge clock_i2c or negedge camera_rstn)
     begin
        if(!camera_rstn)
          cyc_count<=6'b111111;
@@ -64,11 +66,12 @@ module i2c_com(clock_i2c        ,  //i2c控制接口传输所需时钟，0-400kh
     end
 	 
 	 
-    always@(posedge clock_i2c)
+    always@(posedge clock_i2c or negedge camera_rstn)
     begin
        if(!camera_rstn)
        begin
           tr_end<=0;
+          ack0<=1;
           ack1<=1;
           ack2<=1;
           ack3<=1;
@@ -77,7 +80,7 @@ module i2c_com(clock_i2c        ,  //i2c控制接口传输所需时钟，0-400kh
        end
        else
           case(cyc_count)
-          0:begin ack1<=1;ack2<=1;ack3<=1;tr_end<=0;sclk<=1;reg_sdat<=1;end
+          0:begin ack0<=1;ack1<=1;ack2<=1;ack3<=1;tr_end<=0;sclk<=1;reg_sdat<=1;end
           1:reg_sdat<=0;                 //开始传输
           2:sclk<=0;
           3:reg_sdat<=i2c_data[31];
@@ -89,7 +92,7 @@ module i2c_com(clock_i2c        ,  //i2c控制接口传输所需时钟，0-400kh
           9:reg_sdat<=i2c_data[25];
           10:reg_sdat<=i2c_data[24];
           11:reg_sdat<=1;                //应答信号
-          12:begin reg_sdat<=i2c_data[23];ack1<=i2c_sdat;end
+          12:begin reg_sdat<=i2c_data[23];ack0<=i2c_sdat;end
           13:reg_sdat<=i2c_data[22];
           14:reg_sdat<=i2c_data[21];
           15:reg_sdat<=i2c_data[20];

@@ -10,8 +10,9 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'scripts/calibration/engine'))
 from assemble import assemble
-from build_lm import Program, M, C, CONSTANTS
-from build_init import coverage_setup, coverage_point, coverage_select, build
+from program import Program
+from workspace import M, C, CONSTANTS
+from build_init import coverage_setup, coverage_point, coverage_report, build
 from check_init_program import run as initialize
 from reference import Machine, bits
 from inspect_calibration import coverage, audit, overlay
@@ -40,7 +41,7 @@ def microcode():
     p.st('h8', 1); p.st('h9', 2)
     coverage_point(p)
     p.addi('pa', 'pa', 1); p.addi('t', 't', 1); p.ib('t', 3, 'points', 'point')
-    coverage_select(p); p.emit('END 0')
+    coverage_report(p); p.emit('END 0')
     return assemble('\n'.join(p.lines), 512)[0]
 
 
@@ -69,17 +70,17 @@ def main():
                 m.mem[1024+i] = value
             assert m.run(0, len(rom)) == 0
             expected = coverage(points, width, height)
-            assert bool(m.mem[M['fit_k3']]) == expected['fit_k3']
+            assert bool(m.mem[M['coverage_ok']]) == expected['coverage_ok']
             assert {edge: m.mem[M['coverage_'+edge]] for edge in ('left', 'right', 'top', 'bottom')} == expected['edge_counts']
             tested += 1
     raw = json.loads((ROOT/'data/calibration/uart_fold_corners.json').read_text())
     report = audit(raw)
-    assert report['corner_geometry_ok'] and not report['fit_k3']
+    assert report['corner_geometry_ok'] and not report['coverage_ok']
     assert report['edge_counts'] == dict(left=0, right=4, top=0, bottom=4)
     initial_rom, _ = build()
     code, _, _, policy = initialize(initial_rom, 3, 5, 8, 1280, 720,
                                     packed([e['xy'] for e in raw['corners']]), return_policy=True)
-    assert code == 0 and policy['edge_counts'] == report['edge_counts'] and not policy['fit_k3']
+    assert code == 0 and policy['edge_counts'] == report['edge_counts'] and not policy['coverage_ok']
     # Complete initializer on wide-coverage, independently projected pinhole views.
     wide = []
     for angle, tz in ((.15, 9.5), (-.18, 9.8), (.2, 9.4)):
@@ -89,9 +90,9 @@ def main():
                 z = math.sin(angle)*y+tz
                 wide.append((f32(640*x/z+319.5), f32(640*math.cos(angle)*y/z+239.5)))
     expected = coverage(wide, 640, 480)
-    assert expected['fit_k3']
+    assert expected['coverage_ok']
     code, _, _, policy = initialize(initial_rom, 3, 5, 8, 640, 480, packed(wide), return_policy=True)
-    assert code == 0 and policy == dict(fit_k3=True, edge_counts=expected['edge_counts'])
+    assert code == 0 and policy == dict(coverage_ok=True, edge_counts=expected['edge_counts'])
     bad = copy.deepcopy(raw)
     bad['corners'][3]['xy'] = bad['corners'][12]['xy']
     assert not audit(bad)['corner_geometry_ok']

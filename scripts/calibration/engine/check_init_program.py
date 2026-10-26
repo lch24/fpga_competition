@@ -3,7 +3,7 @@ import math
 import struct
 from assemble import ROOT
 from build_init import build
-from build_lm import M,C,CONSTANTS
+from workspace import M, C, CONSTANTS
 from reference import Machine,bits,value
 from check_lm_program import layout
 
@@ -25,7 +25,7 @@ def run(rom,views,rows,cols,width,height,points,return_policy=False):
     result=[value(machine.mem.get(seed+i,0)) for i in range(9+6*views)]
     output=(machine.mem[M['status']],result,machine.counts['instructions'])
     if return_policy:
-        return output+(dict(fit_k3=bool(machine.mem[M['fit_k3']]),
+        return output+(dict(coverage_ok=bool(machine.mem[M['coverage_ok']]),
                             edge_counts={edge:machine.mem[M['coverage_'+edge]]
                                          for edge in ('left','right','top','bottom')}),)
     return output

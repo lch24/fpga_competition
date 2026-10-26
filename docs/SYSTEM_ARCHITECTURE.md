@@ -1,80 +1,87 @@
 # 整体处理流程与设计架构
 
-> 2026-10-12 实时版：默认 `REALTIME_VIDEO=1`。本文下方照片校正和分时 DDR 段落保留为旧模式说明。默认板级改为一次性打包建表、连续原图三槽、结果双槽、原生 DDR 突发仲裁与定点缓存采样，完整说明见 [REALTIME_VIDEO.md](REALTIME_VIDEO.md)。标定与检测数值架构不变；资源和帧率需本版重新测量。
+## 顶层与职责边界
 
-## 1. 两个入口
-
-[calibrated_view_top](../rtl/top/calibrated_view_top.v) 连接摄像头、DDR IP、算法时钟、任务控制和 HDMI。[vision_ddr_top](../rtl/top/vision_ddr_top.v) 连接灰度 DMA、角点检测、标定、建表和去畸变，是算法的 DDR 到 DDR 边界。
-
-板级通过三个拍照按钮获得三张稳定图像并分别保存地址。第四个按钮启动检测与标定，第五个按钮使用保存的参数校正所选原图。采集、显示与算法各自具有时钟和流量控制，通过 FIFO、跨域命令/响应与访存使用权交接连接。按键和 LED 定义见[板上操作](BOARD_OPERATION.md)。
-
-## 2. 一次任务如何运行
-
-| 阶段 | 输入 → 输出 | 控制与计算 | 数据保存位置 |
-|---|---|---|---|
-| 采集 | 摄像头像素 → 完整 RGB565 帧 | `video` 的采集通路与 `control/system` 任务调度 | DDR 原图区 |
-| 灰度 | RGB565 → Gray8 | 灰度 DMA、DDR 服务 | DDR 灰度区 |
-| 检测 | 灰度图 → 排好序的角点 | 检测任务程序调用候选、排序、精修服务 | 灰度/候选在 DDR，局部窗口和结果在片上 |
-| 收集 | 每图角点和检测状态 → 完整标定输入 | `corner_store` 按 view 和点号记录 | 片上角点 RAM |
-| 初值 | 角点 → 内参、畸变、各图姿态的初始状态 | 初值适配器启动共享标定程序 | 标定工作 RAM |
-| LM | 初始状态 → 优化状态 | 标定程序调度差分、方程和阻尼更新；调用残差服务 | 工作 RAM 与阶段状态缓存 |
-| 检查 | 优化状态 → 相机参数及诊断 | 检查程序计算残差统计、姿态和映射有效性 | 参数寄存器/发布接口 |
-| 建表 | 相机参数 → 每个输出像素的源坐标 | 映射坐标专用数据通路 | DDR X/Y 表 |
-| 校正 | 原图和映射表 → RGB565 校正图 | 地址生成、邻域读取、双线性插值和写回 | DDR 结果区 |
-| 显示 | 原图/结果区 → HDMI | 显示 DMA、跨域 FIFO、显示时序 | FIFO 加 DDR |
-
-检测与标定之间只传角点和状态，标定不再读取原图。三张原图保留供查看和校正，灰度金字塔与候选点空间逐图复用。标定成功后保存参数并返回空闲，等待独立的去畸变按键；算法通用入口仍可用编译期参数选择自动串联模式。
-
-显示与算法分时使用 DDR。切换前停止输出新像素，显示读模块排空在途事务，再交出使用权；HDMI FIFO 两端清空并同步释放复位，新图片从帧首开始。计算期间黑屏，结束后显示所选原图或成功生成的校正图。
-
-## 3. 指令控制器放在哪里
+[calibrated_view_top](../rtl/top/calibrated_view_top.v) 是板级顶层：连接相机、DDR IP、
+按钮、算法时钟、视频调度、HDMI 和串口。
+[vision_ddr_top](../rtl/top/vision_ddr_top.v) 是算法入口：从 DDR 原图检测角点，
+求解参数，并生成校正映射。默认板级的连续像素校正由 `realtime_remap` 承担。
 
 ```mermaid
 flowchart TD
-    TASK[板级和算法任务状态机] --> DET[检测任务程序]
-    DET --> SERVICES[候选合并 / 圆环检查 / 方向排序 / 网格精修]
-    SERVICES --> FEATURE[精修数值微程序]
-    TASK --> CAL[标定阶段适配器]
-    CAL --> SEQ[共享标定执行器：初值 / LM / 检查]
-    SEQ <--> RAM[共享标定工作 RAM]
-    SEQ --> RES[HOST 调用残差服务]
-    RES --> GEO[旋转与投影专用服务]
-    FEATURE --> POOL[FP64 请求仲裁]
-    SEQ --> POOL
-    GEO --> POOL
-    POOL --> MATH[浮点后端与数学微程序]
-    SERVICES --> ADD[共享 FP32 加减与距离服务]
+    CAM[摄像头 1280×720] --> CROP[解包并中心裁剪 960×540]
+    CROP --> CAP[采集 DMA]
+    CAP --> DDR[(DDR：照片 / 视频帧 / 映射 / 灰度工作区)]
+    DDR --> DET[灰度金字塔与角点检测]
+    DET --> CORNER[角点 RAM：视图与点号]
+    CORNER --> CAL[初值 → LM → 检查]
+    CAL --> PARAM[已验证相机参数]
+    PARAM --> MAP[一次建表]
+    MAP --> DDR
+    DDR --> REMAP[查表、邻域缓存、双线性插值]
+    REMAP --> DDR
+    DDR --> DISP[显示 DMA → 4/3 放大 → HDMI]
 ```
 
-检测程序决定“哪个候选、哪个方向、下一层还是结束”；数值服务负责“一次具体计算怎样完成”。标定执行器更细，直接执行工作 RAM 读写、浮点运算、循环和分支。数学微程序则实现一次复杂数学运算内部的步骤。
+全部算法使用裁剪后的坐标；相机内参和角点不乘显示放大比例。
+检测完成后，标定只读取角点，不再读取图像。
 
-此外 `geometry_engine` 使用固定运算序列完成投影，是残差服务内部的数据通路控制。这里不是一个大 CPU 管所有像素，也不能按指令控制器的数量推断浮点核数量。
+## 控制流程
 
-## 4. 为什么能够节省硬件
+`board_buttons` 同步并消抖按键，`video_board_flow` 管理照片槽、预览、标定、建表和视频。
+上电预览；拍照或回看前先排空在途任务，照片显示两秒后返回预览。
+KEY3 启动 `vision_sequence`，依次检测三张照片、收集角点、执行标定并保存参数。
+KEY4 根据有效参数建一次表，然后连续校正视频；停止后返回预览。
 
-初值、LM、检查按阶段执行，共用一个标定取指核心和一份工作 RAM；检测精修与标定的 FP64 请求汇入同一物理后端。检测中候选差值、累加、排序、网格精修的加减请求进入带独立响应槽的 FP32 池。
+照片槽在整个标定任务中保持稳定。视频使用另外三个原图槽和两个结果槽，
+由采集、重映射和显示依次持有；只有完整成功帧能够提交显示。
+视频时 DDR 读写分别仲裁，采集、校正、显示可以重叠。
+标定和建表阶段停止预览并排空事务。具体状态和所有权见[实时视频](REALTIME_VIDEO.md)。
 
-中间数据写 RAM，后续指令再读出，减少宽寄存器阵列和多路组合选择。共享增加等待周期，像素窗口、采集显示、DDR 接收等持续吞吐通路因此仍保留独立电路。
+`ENABLE_DISTORT_DEMO=1` 时，`distort_demo_flow` 包装板级流程，复用同一个重映射器
+完成“人工加畸变”和“独立标定后的校正”两遍处理，详见[演示设计](DISTORT_DEMO.md)。
+`REALTIME_VIDEO=0` 为独立照片模式，由 `board_flow` 和逐像素校正通路完成；
+这些分支由编译参数选择，不与默认视频路径同时实例化。
 
-## 5. 时钟和存储边界
+## 算法与共享计算
 
-算法时钟由 `rtl/clock/algorithm_clock.v` 提供，目标 40 MHz。板级顶层负责连接算法域与 DDR/视频域；跨域接口保留完整的命令、载荷及响应归属。像素流水通过专用 FIFO 保持顺序。
+| 层次 | 控制职责 | 计算资源 |
+|---|---|---|
+| 检测任务程序 | 金字塔层、候选遍历、方向搜索、精修调用 | 专用窗口、响应和候选服务 |
+| 检测精修微程序 | 张量求解、坐标更新、收敛量 | 共享 FP64 后端 |
+| 标定程序 | DLT/Jacobi 初值、LM 差分与求解、最终检查 | 一个执行器、一份工作 RAM、共享 FP64 后端 |
+| 残差服务 | 逐视图姿态与重投影残差 | 几何运算序列及共享浮点请求 |
+| 数学微程序 | EXP/LOG/三角函数等内部步骤 | 定点中间值与基础算术通路 |
+| 连续图像数据通路 | 缓存、查表、插值、写回 | 专用 BRAM、整数/定点流水 |
 
-DDR 地址表见[根 README](../README.md#当前-ddr-分区)。片上 RAM 主要分为行窗口/邻域缓存、请求响应 FIFO、角点缓存、排序工作区、标定工作区、程序 ROM。程序 ROM 存的是操作顺序，工作 RAM 存的是本次计算的数据，两者职责不同。
+初值、LM 和检查互斥运行，阶段结束后才交出执行器和工作区。
+HOST 指令暂停程序，请阶段适配器调用残差电路，暂停期间仍保留阶段所有权。
+检测的多个客户端另共享 FP32 加减和距离服务，以独立响应槽隔离背压。
 
-标定工作 RAM 按 64 位字寻址，算法 DDR 接口按字节寻址。程序由 Python 生成到 RTL 初始化头文件，配置 FPGA 时一起装入，运行中不依赖 PC 或 Python。
+## 时钟与存储
 
-## 6. 修改代码从哪里开始
+| 时钟域 | 主要模块 | 交接方式 |
+|---|---|---|
+| 摄像头 pclk | 字节解包、裁剪、像素打包 | 双时钟 FIFO 传递描述符及 START/DATA/END |
+| DDR 125 MHz | 帧调度、HMIC 仲裁、连续重映射、显示读取与放大 | 命令桥连接算法，像素 FIFO 连接显示 |
+| 算法 40 MHz | 检测、标定、建表 | `vision_clock_bridge` 原子传递命令、帧描述与响应 |
+| 显示 pix_clk | HDMI 时序和像素消费 | 帧首 token 对齐与欠载恢复 |
+| 系统 27 MHz | 串口和独立诊断 | 带页号、年龄的跨域快照 |
 
-| 修改内容 | 维护位置 |
+完整图像和映射表存放 DDR，地址表见[根 README](../README.md#当前-ddr-分区)。
+片上存储用于局部行/邻域缓存、FIFO、角点、排序工作区、程序 ROM 和标定工作 RAM。
+同步 RAM 的读延迟由控制状态显式处理；复位主要清有效位及指针。
+
+## 修改入口
+
+| 工作内容 | 入口 |
 |---|---|
-| 整次采集、标定和显示顺序 | `rtl/control/system`、`rtl/top` |
-| 检测阶段顺序、候选/方向循环 | `scripts/image/build_detection_program.py` |
-| 一个候选、一个方向内的算法 | `rtl/image/features` |
-| 初值、LM、检查的计算步骤 | `scripts/calibration/engine/build_*.py`、`data/programs/calibration` |
-| 指令执行、共享运算和数值精度 | `rtl/control/calibration/engine`、`rtl/compute` |
-| DDR、缓存和带宽 | `rtl/memory` |
-| 校正吞吐和采样 | `rtl/image/remap` |
-| 摄像头和 HDMI | `rtl/video`、板级顶层和 FDC |
+| 操作顺序、帧所有权 | `rtl/control/system`、`rtl/control/demo` |
+| 检测流程与算子 | `scripts/image/build_detection_program.py`、`rtl/image/features` |
+| 初值、LM、检查 | `scripts/calibration/engine/build_*.py`、`data/programs/calibration` |
+| 指令执行和共享计算 | `rtl/control/calibration/engine`、`rtl/compute` |
+| DDR、缓存、带宽 | `rtl/memory`、`rtl/image/remap` |
+| 摄像头与显示 | `rtl/video` |
+| 板级连接与约束 | `rtl/top/calibrated_view_top.v`、工程 FDC |
 
-完整程序接口见[指令控制指南](INSTRUCTION_CONTROL_GUIDE.md)，检测流程见[检测设计](DETECTION_ENGINE.md)，标定程序分工见[标定设计](CALIBRATION_ENGINE_ARCHITECTURE.md)。
+各执行器的启动、取指和指令编码见[指令指南](INSTRUCTION_CONTROL_GUIDE.md)。

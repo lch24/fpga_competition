@@ -3,10 +3,8 @@
 The three stage lines keep the original physical-Brown truth and the original
 initialiser convention (truth plus a small deterministic perturbation on each
 active parameter); only the expectations now come from the Python solve in
-generate_lm_fisheye.py, which leaves k3 active in stage 2. The reference was
-first checked against the previous C++ fixture: stages 0 and 1 reproduce that
-state to 1.6e-14 and the same accepted-step count, so the stage-2 change is
-attributable to k3 becoming active rather than to the reference itself.
+generate_lm_fisheye.py, including the current lens-shape regularization.
+Stages 0/1 remain diagnostic fixtures; production uses the full stage 2.
 """
 import math
 import struct
@@ -50,7 +48,12 @@ def build():
         _, cost = residual(result, observed)
         deviation = max(abs(result[i] - TRUTH[i]) / (1.0 + abs(TRUTH[i])) for i in range(STATE_N))
         assert converged and accepted >= 1, (stage, converged, accepted)
-        assert deviation < 2e-3, (stage, deviation)
+        # In this narrow-board case k2/k3 are weakly separated. Check the
+        # observable full-field mapping, rather than demand identical individual
+        # coefficients after adding the lens-shape prior.
+        from check_lens_quality import mapping_error
+        field_error=mapping_error(result,TRUTH,WIDTH,HEIGHT)
+        assert max(field_error.values()) < .05, (stage,field_error,deviation)
         lines.append(f'{stage} 1 {accepted} {bits(cost):016x} {pack_state(initial)} '
                      f'{pack_points(observed)} {pack_state(result)}')
         summary.append(f'stage{stage} physical Brown model, active={len(active)} accepted={accepted} '

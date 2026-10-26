@@ -2,6 +2,8 @@
 
 python scripts/debug/uart_monitor.py COM5
 python scripts/debug/uart_monitor.py COM5 --once progress
+python scripts/debug/uart_monitor.py COM5 --once capture
+python scripts/debug/uart_monitor.py COM5 --once geometry
 python scripts/debug/uart_monitor.py COM5 --once params --save data/debug/camera.json
 python scripts/debug/uart_monitor.py COM5 --corners data/debug/corners.json
 Only the live port requires pyserial; --self-test uses the standard library.
@@ -20,7 +22,7 @@ ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'release_frame', 'calibration_command', 'calibration_wait',
              'map_command', 'map_wait', 'remap_command', 'remap_wait', 'response']
 PARAMS = ['fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'p1', 'p2']
-# Board top fixes the geometry; the status packet carries no image size.
+# Fallback for old bitstreams without the geometry page. New boards report it.
 IMAGE_WIDTH, IMAGE_HEIGHT = 1280, 720
 CHECK_REASONS = {0: 'none', 1: 'nonfinite_or_numeric_failure',
                  2: 'invalid_configuration', 3: 'residual_evaluation_failed',
@@ -35,7 +37,7 @@ STATUS_TEXT = {0: '正常', 1: '配置/接口格式错误', 2: '未找到有效�
                4: '标定结果未通过检查', 5: '访存错误', 6: '超时',
                0x81: '采集像素不足', 0x82: '采集像素过多', 0x83: '采集像素打包未对齐',
                0x84: '采集 FIFO 丢失一个字', 0x85: '采集 FIFO 丢失多个字',
-               0x86: '摄像头帧格式异常', 0x8b: '1–3 行像素不足',
+               0x86: '摄像头帧格式异常', 0x87: '采集 FIFO 帧结束数据校验失败', 0x8b: '1–3 行像素不足',
                0x8c: '4–15 行像素不足', 0x8d: '至少 16 行像素不足'}
 
 
@@ -120,7 +122,7 @@ def decode(frame):
         'last_status': alg[14], 'last_error': alg[15],
         'corner_count': int.from_bytes(alg[60:62], 'little'), 'page': tag,
     }
-    if frame[3] in (0x56, 0x45) and result['page_matches']:
+    if (frame[3] in (0x56, 0x45) or tag in (0xfffb, 0xfffa)) and result['page_matches']:
         for key in ('ui_dwell_cycles', 'ddr_read_requests', 'ddr_return_activity',
                     'ddr_write_requests', 'last_hmic_word_address', 'core_reset_released',
                     'sticky_display_error', 'sticky_underflow', 'first_ui_error', 'ignored_busy_keys'):
@@ -137,6 +139,32 @@ def decode(frame):
             remap_state=(stage >> 10) & 3, first_pass=bool(stage & 4), photo_job=bool(stage & 8),
             error=(stage >> 12) & 255, first_pass_cycles=u32(core, 12), second_pass_cycles=u32(core, 16),
             total_cycles=u32(core, 20), failed_passes=u32(core, 24), build_elapsed_ms=u32(core, 28))
+    if tag == 0xfffb and result['page_matches']:
+        result.pop('video', None)
+        meta = u32(core, 20)
+        result['capture'] = dict(supported=u32(core, 8) == 0x43415031,
+            source_pixel_count=u32(core, 12), ddr_completed_words=u32(core, 16),
+            source_status=meta & 255, source_lane=(meta >> 8) & 15,
+            short_lines_saturated=(meta >> 14) & 63,
+            source_frame_error_bits=(meta >> 23) & 15,
+            source_frame_errors=[name for i,name in enumerate(
+                ('roi_short_line','odd_byte_count','long_line','wrong_row_count')) if meta & (1 << (23+i))],
+            frame_open=bool(meta & (1 << 21)), token_integrity_ok=bool(meta & (1 << 22)),
+            completed_tokens=u32(core, 24), corrupt_end_tokens=u32(core, 28))
+    if tag == 0xfffa and result['page_matches']:
+        result.pop('video', None)
+        pair = lambda offset: [u32(core, offset) & 65535, u32(core, offset) >> 16]
+        flags = u32(core, 28)
+        result['geometry'] = dict(supported=u32(core, 8) == 0x43525031,
+            sensor_size=pair(12), processing_size=pair(16), crop_origin=pair(20), display_size=pair(24),
+            scaler_error=bool(flags & 1), reader_error=bool(flags & 2), scaler_phase=(flags >> 2) & 3,
+            scaler_reset_released=bool(flags & 16), display_enabled=bool(flags & 32),
+            scaled_frames_since_display_enable=flags >> 8)
+        if result['geometry']['supported']:
+            w, h = result['geometry']['processing_size']
+            result['geometry'].update(expected_pixels=w*h, expected_capture_words=w*h//16,
+                rgb565_stride_bytes=w*2, rgb565_frame_bytes=w*h*2, packed_map_bytes=w*h*8,
+                parameter_coordinates='cropped image pixels; display scaling excluded')
     if tag == 0xffff:
         result['params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 2 else None
         result['candidate_params'] = dict(zip(PARAMS, struct.unpack_from('<9f', alg, 16))) if flag & 32 else None
@@ -155,7 +183,7 @@ def decode(frame):
             'last_accepted_steps': int.from_bytes(alg[46:48], 'little'),
             'last_error_job': u32(alg, 48),
         }
-    elif tag not in (0xfffd, 0xfffc):
+    elif tag not in (0xfffd, 0xfffc, 0xfffb, 0xfffa):
         result['corner_valid'] = bool(flag & 16)
         result['corner_xy'] = struct.unpack_from('<2f', alg, 16) if flag & 16 else None
     return result
@@ -176,7 +204,7 @@ def concise(result):
         out['rejected_candidate_params'] = result.get('candidate_params')
     if result.get('last_status') == 4 and result.get('check_reason_code') == 0:
         out['diagnostic'] = 'No detailed reason reported (older bitstream or failure before validation).'
-    for key in ('progress', 'video', 'demo'):
+    for key in ('progress', 'video', 'demo', 'capture', 'geometry'):
         if key in result:
             out[key] = result[key]
     return out
@@ -193,15 +221,21 @@ def readable(result, show_result=True):
     if result.get('core_stale') or result.get('algorithm_stale') or not result.get('page_matches'):
         lines.append('状态快照过期或页面不匹配：以下结果不能视为当前状态。')
     if show_result and result.get('low_coverage'):
-        lines.append('覆盖不足：边缘角点不足，已在拟合前固定 k3=0；请补充边缘覆盖和不同倾角，仍须检查全图校正效果。')
+        if result.get('reduced_model'):
+            lines.append('旧固件降阶结果：覆盖门限使 k3 固定为 0。')
+        else:
+            lines.append('覆盖提示：边缘角点较少；仍使用含 k3 的完整模型，未因此禁用参数或拒绝标定。')
     elif show_result and result.get('reduced_model'):
-        lines.append('模型重试：完整模型映射翻折，已选择固定 k3=0 重新拟合其余参数；仍须通过全部检查。')
+        lines.append('旧固件降阶结果：完整模型曾映射翻折，重试时固定了 k3=0。')
     if show_result and result.get('metrics_valid'):
         lines.append(f"标定：收敛={result.get('converged')} RMS={result.get('rms')} 像素")
     if show_result and (reason or result.get('last_status')):
         why = REASON_TEXT[reason] if reason < len(REASON_TEXT) else f'未知原因 {reason}'
         if not reason:
-            why = '未提供详细原因（旧比特流或校验之前失败），请结合 last_result_phase/last_status 查询'
+            if result.get('last_status') == 2 and result.get('last_result_phase') == 0:
+                why = '棋盘检测未组成完整网格；progress 页可查看失败图片编号及检测结束点数'
+            else:
+                why = '未提供详细原因（旧比特流或校验之前失败），请结合 last_result_phase/last_status 查询'
         lines.append(f"诊断：{why}；阶段={result.get('last_result_phase')} 错误码={result.get('last_status')}")
     if show_result and warning:
         lines.append('质量提示（不阻止使用）：' + '、'.join(WARNING_TEXT[CHECK_WARNINGS.index(x)] for x in warning))
@@ -232,7 +266,7 @@ def intrinsics(params):
     return matrix, distortion
 
 
-def camera_report(result):
+def camera_report(result, geometry=None):
     """Readable intrinsics/distortion report plus the OpenCV-compatible record."""
     if result.get('params_valid'):
         params, source = result['params'], 'validated'
@@ -243,7 +277,10 @@ def camera_report(result):
     if not all(params.get(key) for key in ('fx', 'fy')):
         raise RuntimeError('Focal length is zero in this snapshot; parameter page is stale')
     matrix, distortion = intrinsics(params)
-    record = {'source': source, 'image_width': IMAGE_WIDTH, 'image_height': IMAGE_HEIGHT,
+    geometry = geometry or result.get('geometry', {})
+    width, height = geometry['processing_size'] if geometry.get('supported') else (IMAGE_WIDTH, IMAGE_HEIGHT)
+    record = {'source': source, 'image_width': width, 'image_height': height,
+              'geometry': geometry, 'geometry_source': 'board' if geometry.get('supported') else 'legacy_1280x720_assumption',
               'calibration_job': result.get('calibration_job'), 'rms_px': result.get('rms'),
               'focal_length_px': {'fx': params['fx'], 'fy': params['fy']},
               'principal_point_px': {'cx': params['cx'], 'cy': params['cy']},
@@ -261,7 +298,7 @@ def camera_report(result):
              "    [0, 0, 1]",
              '畸变系数（OpenCV 顺序 k1,k2,p1,p2,k3）= ['
              + ', '.join(f'{value:.9g}' for value in distortion) + ']',
-             f"重投影 RMS = {record['rms_px']} px（{IMAGE_WIDTH}x{IMAGE_HEIGHT}）"]
+             f"重投影 RMS = {record['rms_px']} px（{width}x{height}，处理图像坐标）"]
     if record['reduced_model']:
         lines.append('模型：降阶拟合，k3 固定为 0（覆盖不足或完整模型曾发生映射翻折）')
     if record['check_warnings']:
@@ -317,6 +354,34 @@ def self_test():
     assert result['video_active'] and result['map_ready']
     assert result['video']['corrected_frames'] == 89 and result['video']['displayed_new_frames'] == 88
     assert result['video']['last_remap_ms'] == 24.0 and 'ddr_read_requests' not in result
+    capture_payload = bytearray(payload)
+    struct.pack_into('<H', capture_payload, 118, 0xfffb)
+    struct.pack_into('<6I', capture_payload, 32, 0x43415031, 921600, 57600,
+                     (1 << 22) | (1 << 21) | (17 << 14) | (11 << 23), 35, 0)
+    capture_header = header[:3] + b'C' + header[4:]
+    capture_data = capture_header + capture_payload
+    capture_result = decode(capture_data + struct.pack('<H', binascii.crc_hqx(capture_data[2:], 0xffff)))
+    assert capture_result['capture']['supported'] and capture_result['capture']['token_integrity_ok']
+    assert capture_result['capture']['source_pixel_count'] == 921600
+    assert capture_result['capture']['ddr_completed_words'] == 57600
+    assert capture_result['capture']['short_lines_saturated'] == 17
+    assert capture_result['capture']['source_frame_error_bits'] == 11
+    assert capture_result['capture']['source_frame_errors'] == ['roi_short_line','odd_byte_count','wrong_row_count']
+    assert 'video' not in capture_result and 'ddr_read_requests' not in capture_result
+    geometry_payload = bytearray(capture_payload)
+    struct.pack_into('<H', geometry_payload, 118, 0xfffa)
+    struct.pack_into('<6I', geometry_payload, 32, 0x43525031, (720 << 16) | 1280,
+                     (540 << 16) | 960, (90 << 16) | 160, (720 << 16) | 1280,
+                     (123 << 8) | 0x35)
+    geometry_data = capture_header + geometry_payload
+    geometry_result = decode(geometry_data + struct.pack('<H', binascii.crc_hqx(geometry_data[2:], 0xffff)))
+    geometry = geometry_result['geometry']
+    assert geometry['supported'] and geometry['processing_size'] == [960, 540]
+    assert geometry['crop_origin'] == [160, 90] and geometry['display_size'] == [1280, 720]
+    assert geometry['expected_pixels'] == 518400 and geometry['expected_capture_words'] == 32400
+    assert geometry['rgb565_frame_bytes'] == 1036800 and geometry['packed_map_bytes'] == 4147200
+    assert geometry['scaled_frames_since_display_enable'] == 123 and geometry['scaler_error']
+    assert 'corner_xy' not in geometry_result and 'ddr_read_requests' not in geometry_result
     payload[5] = 0
     data = video_header + payload
     assert 'video' not in decode(data + struct.pack('<H', binascii.crc_hqx(data[2:], 0xffff)))
@@ -347,6 +412,9 @@ def self_test():
     text, record = camera_report(result)
     assert '内参矩阵' in text and '畸变系数' in text and record['source'] == 'validated'
     assert record['rms_px'] == 0.10747 and record['distortion_order'] == 'k1,k2,p1,p2,k3'
+    _, cropped_record = camera_report(result, geometry)
+    assert (cropped_record['image_width'], cropped_record['image_height']) == (960, 540)
+    assert cropped_record['camera_matrix'] == matrix  # no silent display rescale
     empty = dict(result, params=None, params_valid=False, candidate_valid=False)
     try:
         camera_report(empty)
@@ -362,7 +430,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('port', nargs='?')
     parser.add_argument('--baud', type=int, default=115200)
-    parser.add_argument('--once', choices=['status', 'progress', 'video', 'demo', 'params'])
+    parser.add_argument('--once', choices=['status', 'progress', 'video', 'demo', 'params', 'capture', 'geometry'])
     parser.add_argument('--save', type=Path, help='With --once params: write the parsed record as JSON')
     parser.add_argument('--video-seconds', type=float, help='Measure NEW-frame counter deltas over this interval')
     parser.add_argument('--corners', type=Path)
@@ -381,6 +449,10 @@ def main():
     with serial.Serial(args.port, args.baud, timeout=0.1) as port:
         monitor = Monitor(port)
         if args.corners:
+            geometry_page = monitor.query(0x43, 0xfffa)
+            if not geometry_page['query_page_valid'] or geometry_page['core_stale']:
+                raise RuntimeError('Cannot establish image geometry from a fresh snapshot')
+            geometry = geometry_page.get('geometry', {})
             state = monitor.query(0x53)
             if (not state['query_page_valid'] or state['algorithm_stale'] or state['core_stale'] or not state['algorithm_seen']
                     or not state['core_seen'] or state['busy']):
@@ -394,7 +466,11 @@ def main():
                     raise RuntimeError('Calibration changed or snapshot expired during export')
                 points.append({'index': index, 'xy': point['corner_xy']})
             args.corners.parent.mkdir(parents=True, exist_ok=True)
-            args.corners.write_text(json.dumps({'status': state, 'corners': points}, indent=2), encoding='utf-8')
+            final = monitor.query(0x53)
+            if (not final['query_page_valid'] or final['uptime_ms'] < geometry_page['uptime_ms'] or
+                    final['calibration_job'] != state['calibration_job'] or final['busy']):
+                raise RuntimeError('Board reset/job changed during corner export')
+            args.corners.write_text(json.dumps({'geometry': geometry, 'status': state, 'corners': points}, indent=2), encoding='utf-8')
             print(f'Saved {len(points)} corners to {args.corners}')
         elif args.video_seconds is not None:
             if args.video_seconds < 1:
@@ -415,12 +491,21 @@ def main():
                 new_frame_fps={k: deltas[k]/seconds for k in ('captured_frames', 'corrected_frames', 'displayed_new_frames')},
                 last=b), indent=2))
         elif args.once == 'params':
-            text, record = camera_report(monitor.query(0x53))
+            geometry_page = monitor.query(0x43, 0xfffa)
+            state = monitor.query(0x53)
+            if (not geometry_page['query_page_valid'] or geometry_page['core_stale'] or
+                    state['uptime_ms'] < geometry_page['uptime_ms']):
+                raise RuntimeError('Geometry stale or board reset between queries')
+            text, record = camera_report(state, geometry_page.get('geometry'))
             print(text)
             if args.save:
                 args.save.parent.mkdir(parents=True, exist_ok=True)
                 args.save.write_text(json.dumps(record, indent=2), encoding='utf-8')
                 print(f'Saved {args.save}')
+        elif args.once == 'capture':
+            print(json.dumps(monitor.query(0x43, 0xfffb), indent=2))
+        elif args.once == 'geometry':
+            print(json.dumps(monitor.query(0x43, 0xfffa), indent=2))
         elif args.once:
             print(json.dumps(monitor.query({'status': 0x53, 'progress': 0x44, 'video': 0x56, 'demo': 0x45}[args.once]), indent=2))
         else:

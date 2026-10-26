@@ -5,7 +5,7 @@
 // The initializer fills current state one word per cycle under backpressure.
 // Jobs still identify external transactions; reset cancels work and output
 // backpressure preserves the result until both consumers acknowledge it.
-module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
+module calib_top #(parameter EXTERNAL_FP=0)(
     // Optional detection scalar client. Active deassertion cancels its reply.
     input wire math_req_valid,output wire math_req_ready,input wire [4:0] math_req_op,
     input wire [63:0] math_req_a,math_req_b,input wire math_active,
@@ -66,8 +66,8 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
     output wire [`PAR_POSES_W-1:0] diag_poses_fp64, // 三视图R和t；平移恢复首角点原点并乘square_size
     output wire [2:0] diag_seed_id, // 2=width-based seed; 7=no valid result
     output wire [15:0] diag_accepted_steps, // 当前单阶段 LM 已接受更新总数
-    output wire diag_reduced_model, // Fixed k3=0, either coverage policy or mapping-fold retry.
-    output reg diag_low_coverage, // Coverage policy selected the reduced model before LM.
+    output wire diag_reduced_model, // Reserved legacy diagnostic; full model always used.
+    output reg diag_low_coverage, // Advisory only; never disables k3 or rejects a fit.
     output wire rsp_valid, // 完成响应有效；最后一笔输出握手后才置位
     input wire rsp_ready, // 接收完成响应
     output wire [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
@@ -120,7 +120,7 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
         else child_clear<=(pc==OUTPUT || pc==RESPONSE);
 
     wire store_corner_ready,store_rsp_ready;
-    wire init_ready,init_valid,seed_valid,init_fit_k3;
+    wire init_ready,init_valid,seed_valid,init_coverage_ok;
     wire [7:0] init_status;
     wire [2:0] seed_id,init_count;
     wire [`PAR_STATE_W-1:0] seed_state;
@@ -176,7 +176,7 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
     assign camera_height=height;
     assign camera_usable=(status==`PAR_OK && metrics);
     assign camera_params=camera_q;
-    assign diag_reduced_model=(stage==3);
+    assign diag_reduced_model=1'b0;
     assign diag_job_id=job;
     assign diag_status=status;
     assign diag_phase=phase;
@@ -300,7 +300,7 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
         .cmd_valid(rst_n && pc==INIT_CMD),.cmd_ready(init_ready),.cmd_width(width),.cmd_height(height),
         .point_rd_en(init_rd),.point_rd_view_id(init_view),.point_rd_index(init_index),
         .point_rd_valid(init_owner && rd_valid),.point_rd_x_fp32(rd_x),.point_rd_y_fp32(rd_y),
-        .seed_valid(seed_valid),.seed_ready(seed_ready),.seed_id(seed_id),.seed_state(seed_state),.seed_fit_k3(init_fit_k3),
+        .seed_valid(seed_valid),.seed_ready(seed_ready),.seed_id(seed_id),.seed_state(seed_state),.seed_coverage_ok(init_coverage_ok),
         .rsp_valid(init_valid),.rsp_ready(rst_n && pc==INIT_WAIT),.rsp_status(init_status),.rsp_seed_count(init_count));
     lm_controller #(.FP_SHARED(1),.SHARE_RESIDUAL(1),.ENGINE_SHARED(1)) optimizer(.execution_req(lm_execution_req),.execution_rsp(execution_rsp),.ext_rst_n(lm_ext_rst_n),.ext_cmd_valid(lm_ext_cmd_valid),.ext_cmd_ready(lm_ext_cmd_ready),.ext_cmd_width(lm_ext_cmd_width),.ext_cmd_height(lm_ext_cmd_height),.ext_cmd_state(lm_ext_cmd_state),.ext_point_rd_en(lm_ext_point_rd_en),.ext_point_rd_view_id(lm_ext_point_rd_view_id),.ext_point_rd_index(lm_ext_point_rd_index),.ext_point_rd_valid(lm_ext_point_rd_valid),.ext_point_rd_x_fp32(lm_ext_point_rd_x_fp32),.ext_point_rd_y_fp32(lm_ext_point_rd_y_fp32),.ext_data_valid(lm_ext_data_valid),.ext_data_ready(lm_ext_data_ready),.ext_data_index(lm_ext_data_index),.ext_data_fp64(lm_ext_data_fp64),.ext_data_last(lm_ext_data_last),.ext_rsp_valid(lm_ext_rsp_valid),.ext_rsp_ready(lm_ext_rsp_ready),.ext_rsp_status(lm_ext_rsp_status),.ext_rsp_cost_fp64(lm_ext_rsp_cost_fp64),.shared_req_valid(),.shared_req_ready(9'd0),.shared_req_op(),.shared_req_a(),.shared_req_b(),.shared_active(),.shared_rsp_valid(9'd0),.shared_rsp_ready(),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(compute_rst_n),
         .cmd_valid(rst_n && pc==LM_CMD),.cmd_ready(lm_ready),.cmd_width(width),.cmd_height(height),
@@ -386,12 +386,9 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
                     else if(seed_valid || init_count!=seed_count) fail(`PAR_BAD_CONFIG,1);
                     else if(seed_count==0) fail(`PAR_CALIB_INVALID,1);
                     else begin
-                        // No new FP datapath: initializer counts edge observations
-                        // in its existing RAM. Never enable an unconstrained k3
-                        // on a central-only data set. Stage 3 excludes ONLY k3.
-                        if(AUTO_K3 && stage==2 && !init_fit_k3)begin
-                            stage<=3;diag_low_coverage<=1;
-                        end
+                        // Coverage is useful debug information, not model selection.
+                        // LM fits k1/k2/k3/p1/p2 together with lens-shape regularization.
+                        diag_low_coverage<=!init_coverage_ok;
                         seed_index<=0;phase<=2;pc<=LM_CMD;
                     end
                 end
@@ -422,16 +419,7 @@ module calib_top #(parameter EXTERNAL_FP=0, AUTO_K3=1)(
             CHECK_WAIT: if(check_valid) begin
                 // 成功状态必须同时有usable与metrics；不能发布不完整的参数包。
                 if(check_status==0 && (!check_usable || !check_metrics)) fail(`PAR_BAD_CONFIG,3);
-                else if(check_status==`PAR_CALIB_INVALID && check_reason==7 && stage==2) begin
-                    // An unconstrained k3 can fit the board but fold outside it.
-                    // Retry ONCE from the ordinary zero-distortion initializer,
-                    // fitting every other parameter. Never clip a fitted model
-                    // or bypass validation; no synthetic-camera preset is used.
-                    stage<=3;phase<=1;pc<=INIT_CMD;
-                    seed_count<=0;seed_index<=0;seed_seen<=0;seed_word<=0;
-                    accepted<=0;best_valid<=0;best_converged<=0;best_id<=7;
-                    best_accepted<=0;best_cost<=64'h7ff0000000000000;
-                end else begin
+                else begin
                     status<=check_status;phase<=(check_status==0)?4:3;
                     metrics<=check_metrics;weak_geometry<=check_metrics && check_weak;
                     rms_q<=check_metrics?check_rms:64'b0;

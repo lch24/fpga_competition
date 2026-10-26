@@ -1,26 +1,27 @@
-# 板上按键操作与任务流程
-
-本文主体描述普通模式的操作。当前顶层默认 `ENABLE_DISTORT_DEMO=1`，包含人工畸变演示；KEY3 短按释放后启动标定、长按两秒切换输入模式，切换会清空照片和标定有效状态。设为 0 重新编译可裁剪演示扩展。完整操作和关闭方法见[人工畸变演示](DISTORT_DEMO.md)。
-
-板级入口为 `rtl/top/calibrated_view_top.v`。默认使用摄像头 2、1280×720 RGB565，算法运行在 40 MHz，DDR 控制域运行在 125 MHz。摄像头就绪后自动进入实时预览；三张标定照片的保存和标定仍由按钮触发。
+# 板上操作与串口接口
 
 ## 操作顺序
 
-1. 看实时预览调整棋盘位置，分别按 KEY0、KEY1、KEY2，保存三种姿态的照片。拍摄顺序不限，成功后显示该照片 2 秒，再自动回到实时预览。鱼眼镜头下要让三张照片累计覆盖画面四个四分带，具体摆位、倾角和像素目标见[标定质量诊断](CALIBRATION_QUALITY.md#2026-10-22-鱼眼实拍拍摄规范与完整模型验证)。
-2. 再按已成功的照片键，回看对应照片 2 秒，然后回到预览，不重新拍摄。回看期间也可按其他照片键。失败槽位保持为空，再按可重试。
-3. 三张照片均成功后，按 KEY3，依次检测角点、计算初值、运行 LM 并检查结果。结束后恢复实时预览；成功时保存参数并点亮 LED5。
-4. 按 KEY4：使用已保存参数生成一次打包映射表，随后连续采集、校正并显示视频；不是校正所选照片。建表期间黑屏，完成后无需继续按键。再次按 KEY4 停止，排空在途帧后恢复拍照预览。再次启动复用映射表；KEY3 重新标定会使旧表失效。
-5. 重新采集一组照片需要全局复位。照片槽位的有效标记、参数和结果有效标记随复位清空；无需把 DDR 内容逐字节清零。
+摄像头就绪后自动预览。默认处理传感器中心 960×540 区域，显示时放大到 1280×720。
 
-拍摄、标定和建表期间黑屏，LED4 亮，其他用户按键不排队。视频期间 LED4 持续亮，KEY0 切换校正前／校正后，KEY4 停止；KEY1～KEY3 短按被忽略。每次进入视频默认显示校正后。切换对后续帧生效，在途帧先完成，显示仍在完整帧边界更新；不清除照片、标定参数或映射表。人工畸变模式的校正前画面是已经加上人工畸变的图像。异常视频帧不发布，保持上一个完整帧并记录错误。停止期间不强制复位 DDR。`REALTIME_VIDEO=0` 才保留旧 KEY4 单照片校正功能。详细缓存与交接说明见[实时视频](REALTIME_VIDEO.md)。
+1. 按 KEY0、KEY1、KEY2 分别拍摄三张照片，顺序不限。成功后回看两秒，再返回预览。
+2. 已成功的照片键再次按下只回看两秒；失败槽仍为空，可再次拍摄。重新采集整组需全局复位。
+3. 三张照片齐全后按 KEY3，依次检测、求初值、LM 和结果检查。成功保存参数并点亮 LED5，结束后回到预览。
+4. 按 KEY4，根据当前参数建表并进入连续校正视频；再按 KEY4 排空并停止，回到预览。
+5. 校正视频中按 KEY0 切换校正前后；每次进入视频默认显示校正后。重新标定会使旧校正表失效。
 
-拍照预览与 KEY4 启动的校正视频是两个操作阶段：预览时 KEY0 仍然是第一张照片键，LED4 不因持续预览而常亮。普通模式预览原始输入，人工畸变模式预览加畸变后的输入。首次人工建表完成前不启动预览。按拍照键后先排空预览任务，再采集完整新帧，因此照片不是对按键瞬间 HDMI 画面的冻结。2 秒从显示模块开始读取照片的第一帧计时（125 MHz 下 `REVIEW_CYCLES=250000000`）。
+拍照时先排空预览，再采集完整新帧，因此照片不是按键瞬间 HDMI 的冻结。
+两秒从显示模块开始读取照片第一帧计时。拍摄、标定和建表期间黑屏，忙时不排队保存按键。
+视频期间 KEY4 停止优先于 KEY0 切换，KEY1～KEY3 短按忽略；预览期间 KEY0 仍是第一张照片键。
 
-按键经过两级同步和约 20 ms 消抖，长按只触发一次。照片阶段多个按钮同时触发时，KEY0～KEY4 按编号从小到大优先；视频阶段 KEY4 停止优先于 KEY0 切换。人工畸变扩展启用后，KEY3 的长短按含义见下方扩展说明。
+默认 `ENABLE_DISTORT_DEMO=0`。启用该编译参数后，KEY3 短按释放开始标定，长按两秒切换人工畸变模式；
+切换会清除照片、参数和校正表的有效状态。详见[人工畸变设计](DISTORT_DEMO.md)。
+`REALTIME_VIDEO=0` 才是 KEY4 校正单张照片的独立模式。
 
 ## 按键与 LED
 
-引脚依据硬件手册印刷页 46～47（PDF 第 50～51 页）：按键低有效，LED 高有效。约束已写入 `OV5640_DualView_100H/DualView_OV5640.fdc`。
+按键低有效，约 20 ms 消抖，长按只触发一次；LED 高有效。
+引脚由主工程 FDC 定义，对应硬件手册印刷页 46～47。
 
 | 按键       | FPGA 引脚        | 功能                                                |
 | ---------- | ---------------- | --------------------------------------------------- |
@@ -31,7 +32,8 @@
 | KEY4       | B20              | 标定成功后建表并启动实时视频；视频期间停止          |
 | 硬件 RESET | 沿用板上硬件连接 | 保留为全局复位用途                                  |
 
-手册确认有 5 个用户键和 1 个硬件复位键，但没有给出硬件 RESET 的普通 FPGA IO 映射，因此没有新增虚构的第六个 IO 约束。硬件 RESET 是否会重新加载配置、是否依赖 Flash 中的程序，仍需按实际板卡电路或上板实验确认；本次仿真验证的是 RTL 复位后的状态清除。
+硬件 RESET 沿用板卡连接。RTL 复位清除有效位与控制状态，不逐字清 DDR；
+硬件按钮是否重新加载配置由板卡复位电路决定。
 
 | LED  | FPGA 引脚 | 亮灯含义                                        |
 | ---- | --------- | ----------------------------------------------- |
@@ -46,100 +48,30 @@
 
 LED6 表示结果有效，不表示当前屏幕一定在显示校正图。LED7 的操作错误在下一次有效操作时清除；显示错误在停显、重新启显时重新统计。LED0 不代表摄像头配置一定完成，摄像头未就绪时按拍照键会被拒绝。
 
-## DDR 中保存什么
+## 控制与数据入口
 
-三张原图长期保留在 DDR，片上不新增整帧缓存。每张有效数据为 1,843,200 字节，每个槽位预留 2 MiB。
-
-| 内容               | 字节起始地址                                     |
-| ------------------ | ------------------------------------------------ |
-| 原图 1             | `0x00000000`                                   |
-| 原图 2             | `0x00200000`                                   |
-| 原图 3             | `0x00400000`                                   |
-| 视频原图 0 / 1 / 2 | `0x00800000` / `0x00A00000` / `0x00C00000` |
-| 视频校正图 0 / 1   | `0x01000000` / `0x01200000`                  |
-| 64 位打包映射表    | `0x02000000`                                   |
-| 灰度金字塔         | `0x03000000`                                   |
-| 候选点工作区       | `0x03200000`                                   |
-
-三张图依次检测，共用灰度金字塔和候选点工作区。视频采用三个原图槽、两个校正槽，全部有效数据约 22.44 MiB。下面的旧 `board_flow` 架构说明针对 `REALTIME_VIDEO=0`；默认实时版控制入口为 `video_board_flow`，DDR 使用 `video_hmic_arbiter` 并发仲裁，详见[实时设计](REALTIME_VIDEO.md)。
-
-## 控制与代码入口
-
-默认实时版入口是 `video_board_flow`（演示模式由 `distort_demo_flow` 包装）：上电预览 → 排空 → 拍照/回看 → 定时返回预览；标定、建表同样从排空状态进入。预览复用视频采集器和重映射器，显示使用原有 HDMI 通路。下图及 `board_flow` 表项是 `REALTIME_VIDEO=0` 的旧单照片模式，默认版结构见[实时视频](REALTIME_VIDEO.md)。
-
-```text
-key_n → board_buttons → board_flow
-                          ├─ 拍照 → board_capture_hmic → 对应原图槽位
-                          ├─ 显示 → board_display_hmic → HDMI FIFO → HDMI
-                          └─ 命令 / 帧地址 → vision_clock_bridge
-                                               ↓ 40 MHz
-                                          vision_sequence
-                               KEY3：灰度 → 检测 ×3 → 标定 → 保存参数
-                               KEY4：已保存参数 → 建表 → 校正所选图
-```
-
-| 模块                                 | 职责                                                                   |
-| ------------------------------------ | ---------------------------------------------------------------------- |
-| `control/system/board_buttons.v`   | 异步按键同步、消抖、产生一次按下脉冲                                   |
-| `control/system/board_flow.v`      | 照片有效位、选图、任务启动、错误状态、DDR 使用权交接                   |
-| `control/system/vision_sequence.v` | 检测/标定与去畸变两个独立命令；保存参数及有效位                        |
-| `memory/ddr/vision_clock_bridge.v` | 原子跨域传递启动类型、源图地址、帧地址及结果；算法请求帧后才发送描述符 |
-| `video/dma/board_capture_hmic.v`   | 接收并锁存本次写入基地址，完整帧写入完成后才报告成功                   |
-| `video/dma/board_display_hmic.v`   | 全屏读取选定地址；停止时排空已发出的 DDR 读事务                        |
-| `top/calibrated_view_top.v`        | 接线、三个时钟域、LED、显示 FIFO 的同步释放复位                        |
-
-`board_flow` 的核心状态为：空闲 → 停显排空 → 拍摄或启动算法 → 等待结果 → 空闲。标定过程中按槽位 1、2、3 提供帧描述，逐张等待释放。释放与结果分别跨域，控制器先接收释放再接收结果，失败重试不会遗留旧帧。
-
-显示与算法仍分时使用 DDR。停止显示后，旧读请求保持到握手并收齐返回数据，`display_idle` 才允许切换使用权。HDMI FIFO 两端同时清空、各自在本时钟域同步释放复位，新画面从帧首开始，避免旧图尾部混入新图。
-
-板级设定 `MANUAL_CONTROL=1`。算法通用入口默认保留自动串联模式，供已有独立调用者使用；这是同一套模块的编译期选择，不会在板上额外实例化一套算法。
-
-## 仿真入口
-
-默认版预览/回看的定向测试：
-
-```powershell
-python scripts/demo/run_checks.py --modelsim $env:MODELSIM_BIN --only tb_photo_preview
-```
-
-测试把 2 秒计数缩短为 32 个时钟，检查起算点、完整等待和自动返回；同时覆盖普通/人工预览、背压、模式排空、拍照失败、回看不重拍，以及从预览启动标定和校正。
-
-在仓库根目录运行，工具路径由 `MODELSIM_BIN` 指定：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_flow
-```
-
-将 `-OnlyTest` 换成以下名称可分别重跑。本次均已通过，不运行综合或布局布线。
-
-| 测试                        | 覆盖内容                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------ |
-| `tb_board_buttons`        | 五键消抖、长按不重复、释放抖动、复位                                           |
-| `tb_board_flow`           | 乱序拍摄、显示切换、前置条件、失败重试、参数有效位、复位                       |
-| `tb_board_flow_cdc`       | 125/40 MHz 操作交接、地址顺序、第一张检测失败后重试、独立校正命令              |
-| `tb_vision_clock_bridge`  | 跨域各通道随机反压、操作类型与地址完整性                                       |
-| `tb_vision_manual`        | 真实算法调度器配协议模型，检查参数保留、多次校正、失败和重新标定               |
-| `tb_board_io`             | 动态拍摄地址锁存、完整/不完整帧、FIFO 溢出、DDR 返回错误                       |
-| `tb_board_display_switch` | 整图像素、不同地址、请求及返回阶段停显、反压、错误后恢复                       |
-| `tb_board_video`          | 两幅完整 720p HDMI 画面，切换原图/校正图及清空 FIFO，共 1,843,200 像素，无下溢 |
-
-板级端口连接已展开检查，PDS 源码路径和 FDC 引脚唯一性已检查。数值算法未修改；没有重跑完整数值端到端回归。DDR PHY 和实际摄像头/HDMI 电气行为仍由上板验证。
+`board_buttons → video_board_flow → vision_clock_bridge → vision_sequence` 是按键到算法的主路径。
+`video_board_flow` 管理三照片槽、三视频原图槽和双结果槽；`vision_sequence` 管理逐图检测、标定、参数和建表。
+照片在 DDR 中保留，检测逐张复用灰度和候选工作区。内存地址见[根 README](../README.md#当前-ddr-分区)，
+帧交接和重映射数据通路见[实时视频](REALTIME_VIDEO.md)。
 
 ## 串口调试
 
-板级串口为 `uart_rx`（B24）、`uart_tx`（C24），设置为 **115200、8N1**。引脚定义保存在主工程 `DualView_OV5640.fdc`，PDS 使用调试模块的相对路径。工程使用 `rtl/io/uart/debug_uart.v`，不依赖独立串口实验目录。
+TX 为 C24，RX 为 B24，**115200、8N1**。串口在独立 27 MHz 系统域运行，
+每秒报告心跳，状态改变时发送合并通知；PLL、DDR 或算法未就绪时仍可查询健康状态。
+查询只读取信息，不启动任务或取消 DDR 事务。
 
-串口运行在 27 MHz `sys_clk` 域，以配置后的上电计数器初始化，不等待 PLL、DDR 或摄像头就绪。每秒发一次心跳，UI 状态改变后也会发送合并通知。调试命令只查询，不启动拍照、不修改参数、不复位 DDR；按键操作保持不变。
-
-### 电脑端使用
-
-在仓库根目录执行，将 COM5 换成实际端口。电脑端依赖 `pyserial`，可用 `python -m pip install pyserial` 安装。
+电脑端需要 `pyserial`。将示例端口替换为实际端口：
 
 ```powershell
 # 持续显示状态并保存 JSONL 日志
 python scripts/debug/uart_monitor.py COM5 --log data/debug/board.jsonl
 # 查询状态、参数和 RMS
 python scripts/debug/uart_monitor.py COM5 --once status
+# 核对实际烧录版本的裁剪/处理/显示尺寸，以及显示放大器状态
+python scripts/debug/uart_monitor.py COM5 --once geometry
+# 查看最近采集帧的像素数、短行和跨域 token 完整性
+python scripts/debug/uart_monitor.py COM5 --once capture
 # 解析内参矩阵与畸变系数，并可保存成 JSON 供报告/OpenCV 对照
 python scripts/debug/uart_monitor.py COM5 --once params --save data/debug/camera.json
 # 查询共享程序 PC、指令计数和访存握手
@@ -153,43 +85,72 @@ python scripts/debug/uart_monitor.py COM5 --corners data/debug/corners.json
 
 输出为可读 JSON。`ui_phase=camera_preview` 表示拍照预览，`live_video` 表示 KEY4 启动的校正视频；`algorithm_phase` 表示算法阶段，`calibration_phase` 进一步区分初值、LM、检查和发布。`view` 从 0 开始。`display_corrected` 跟随已提交显示帧的校正标记，不再仅按缓冲地址判断；预览和校正前画面为 false。`corrected` 仅表示曾产生有效校正结果。
 
-判断停滞时结合以下数据：
+默认终端用中文显示状态变化、结果和错误，每十秒补一条心跳。
+`--json` 显示完整包，`--log` 始终保存完整 JSON。
 
-- `health_bits`：bit0 到 bit7 分别为板级 PLL 锁定、算法 PLL 锁定、DDR 初始化完成、摄像头1/2配置完成、HDMI配置完成、DDR域复位释放、算法域复位释放。
-- `camera_clock_stale` 与 `camera_frame_count_mod256`：区分像素时钟停止，和时钟仍有但 VSYNC 不再出现；帧计数按 256 回绕。
-- `ui_dwell_cycles`：UI 状态字保持不变的周期数，按 DDR 核心时钟计数，饱和于 32 位最大值；不是毫秒数。
-- `progress.shared_program_pc` 和 `instructions`：来自板上实际共用的标定执行核心；指令计数随核心重新启动而清零。它们不是检测或数学微程序的 PC。
-- `progress.lm_state` 是 LM 适配器状态；`lm_completed_outer_iterations` 在适配器读回结果后才更新，不表示执行中的实时迭代进度。`last_accepted_steps` 保存最近诊断结果的有效更新次数。
-- DDR 请求数、返回活动数、握手位及最后地址：可区分等待接受、等待返回和计算活动。核心域 HMIC 地址按接口字地址记录，算法域读地址为字节地址。
-- `last_detect_count/view/flags`：最近检测完成的点数、视图和状态；flags bit[1:0] 是检测原状态码，bit2 是网格检查通过。
-- `first_ui_error`、`sticky_display_error`、`sticky_underflow` 保存配置以来的错误；`last_error` 和 `last_error_job` 保存最近非零算法错误及所属标定任务。成功重试不会擦掉这些历史标记。
+### 尺寸与采集诊断
 
-### 结构与数据有效性
+| 字段                                             | 正常值及含义                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `sensor_size` / `crop_origin`                | `[1280,720]` / `[160,90]`                                              |
+| `processing_size` / `display_size`           | `[960,540]` / `[1280,720]`                                             |
+| `expected_pixels` / `expected_capture_words` | 518,400 像素 / 32,400 个 256 位 DDR 数据字                                 |
+| `rgb565_stride_bytes` / `rgb565_frame_bytes` | 1,920 / 1,036,800 字节                                                     |
+| `scaler_phase`                                 | 0 填行、1 输出插值像素、2 排空末尾流水线                                   |
+| `scaler_error` / `reader_error`              | 均为 false；分别对应放大器帧首尾标记异常、显示 DDR 读取异常                |
+| `scaled_frames_since_display_enable`           | 送入显示桥的完整放大帧数，包含重复画面；停显复位时清零，不能当作新校正帧率 |
 
-| 文件                              | 职责                                      |
-| --------------------------------- | ----------------------------------------- |
-| `rtl/io/uart/debug_uart.v`      | 锁存发送字节，接收同步、起始位/停止位校验 |
-| `rtl/debug/board_debug.v`       | 独立上电、轮询、心跳、命令解析、封包、CRC |
-| `rtl/debug/debug_snapshot.v`    | 带页选择参数的请求/应答跨域快照           |
-| `rtl/debug/core_debug.v`        | 旁路观察 UI、DDR 事务和显示错误           |
-| `rtl/debug/algorithm_debug.v`   | 保存角点、参数、误差、检测结果和错误历史  |
-| `scripts/debug/uart_monitor.py` | 协议解码、查询、日志与角点导出            |
+`capture.source_pixel_count` 和 `ddr_completed_words` 对应最近完成的采集帧，应与上表一致。`short_lines_saturated` 统计原始传感器全帧的短行，最高 63，包含裁掉的行。采集不补造缺失像素；像素总数正确还需结合帧完整性判断。`source_status`、`token_integrity_ok` 和 `corrupt_end_tokens` 区分源图像错误与跨域帧尾数据异常。结合 `--once video` 的失败帧增量、状态页的 `sticky_underflow` 判断故障位置。
 
-默认监测以中文显示状态变化、计算结果和错误，每 10 秒补一条心跳，不再逐秒刷访存计数。`--json` 恢复每包完整 JSON；`--log` 无论终端显示模式如何都会保存完整 JSON。`--once status` 仍返回完整 JSON，`--once progress` 可查接受步数和程序位置。
+`source_frame_error_bits` 的 bit0..3 对应下表，`source_frame_errors` 直接列出名称。它们随最近帧尾锁存，正常为 0 / 空数组；旧固件没有这四位诊断，读到 0 不代表已经具备新检查。
 
-源域先锁存总线并保持到应答完成，页选择参数在握手内也保持稳定，不逐位同步状态总线。工作模块的复位不清调试记录。新标定清本次参数/候选参数/误差有效位、具体原因和角点计数，去畸变不覆盖标定结果。
+| 名称 | 含义 |
+|---|---|
+| `roi_short_line` | 保留区域的某行像素不足 |
+| `odd_byte_count` | 保留行收到奇数字节，RGB565 配对不完整 |
+| `long_line` | 保留行超过传感器配置宽度 |
+| `wrong_row_count` | 原始帧的 HREF 行数与传感器高度不符 |
 
-2026-10-18 起，参数页包含两种有效性：`params_valid` 表示可用于正式校正；`candidate_valid` 表示九个候选参数已完整生成，可通过 `candidate_params` 查看，即使最终检查失败也会保留。失败候选只用于诊断，不发布给映射模块。极早期失败或参数转换溢出时仍没有完整候选值。查看结果必须结合任务号、有效位和快照是否过期；旧比特流不能靠更新 Python 恢复未保存的数据。
+上述错误使当前帧不被提交为照片或预览；下一帧正常即可恢复。该检查能识别数量和边界异常，不能识别保持相同像素数的任意数据位错误。摄像头寄存器写入未收到 ACK 时会重试，`camera_configured` 保持 false。
 
-`check_reason` 给出具体拒绝原因：数值异常、配置无效、重投影/角点读取失败、未收敛、非正焦距、RMS 达到 3 像素、映射翻折或退化。`check_warnings` 给出不阻止使用的质量提示：焦距超出经验范围、主点位于画面外、棋盘法向最大夹角不超过约 9.74°、图片少于五张。原先约 0.57° 的姿态硬门限已移除；默认三张图会有“图片较少”提示，这是允许的正常使用方式。C++ 参考与 RTL 使用相同的新验收政策。警告不代表校正精度已经得到保证，仍需独立图片检查。
+角点与相机参数都使用裁剪坐标。`--once params` 和 `--corners` 自动查询并保存尺寸；
+旧固件不支持尺寸页时，工具明确标记使用 1280×720 假设。
 
-角点使用同步读 RAM，容量跟随 `PAR_TOTAL_POINTS`；默认 120 点、每点两个 FP32，共 960 字节。新标定只清有效计数，不清整块 RAM，不额外缓存图像。完整成功收集时，扁平索引为 `view * PAR_POINTS + point`；检测失败时只包含实际收到的点，不能当作完整有效棋盘。
+### 状态、进度和有效性
 
-DDR域与算法域分别采样，不保证属于同一物理时刻。每个快照都有年龄和首次采样标志，100 ms 未更新即标为 stale。源时钟停止后继续报告旧值及年龄；查询最多等待约 20 ms 后封包，发送一包约 11.3 ms。源域不回应不会堵住串口。页号不匹配时 `page_matches=false`，不能把旧页解释为新查询结果。
+| 字段 | 含义 |
+|---|---|
+| `health_bits` | bit0..7：板级 PLL、算法 PLL、DDR 初始化、相机1配置、相机2配置、HDMI配置、DDR域复位释放、算法域复位释放 |
+| `camera_clock_stale` / `camera_frame_count_mod256` | 像素时钟活性与按 256 回绕的 VSYNC 帧计数 |
+| `ui_dwell_cycles` | 当前 UI 状态持续的 DDR 域周期数，32 位饱和 |
+| `progress.shared_program_pc` / `instructions` | 实际共享标定程序位置与指令计数，启动阶段时重新计数 |
+| `progress.lm_state` | LM 硬件适配器状态；外迭代数在结果读回后更新 |
+| `last_detect_count/view/flags` | 最近检测点数、视图；flags bit[1:0] 为状态，bit2 为网格检查结果 |
+| `params_valid` | 已通过检查，可正式用于去畸变 |
+| `candidate_valid` / `candidate_params` | 候选已完整生成，最终失败时也可查看；不发布给校正模块 |
+| `metrics_valid` / `converged` | 误差统计有效、算法收敛；结合任务号解释结果 |
+| `first_ui_error` / `last_error_job` | 首次操作错误、最近算法错误所属任务 |
+| `sticky_display_error` / `sticky_underflow` | 历史显示错误，不等于当前帧正在出错 |
 
-串口不反压功能接口。快速 UI 变化可合并为最新快照，通过 `ui_events` 观察变化次数；这不是完整事件轨迹。只有一个待处理查询槽，拥堵时增加 `rejected_queries`，电脑脚本有有界重试。接收帧错误、校验错误、不完整命令超时增加 `rx_errors`。计数器除另有说明外按位宽回绕。
+源域通过请求应答锁存整份快照，数据和页号保持到应答；没有逐位同步多位状态总线。
+DDR 和算法快照不是同一瞬间，分别携带年龄。超过 100 ms 未更新会标 stale，
+`page_matches=false` 时不解释为所请求的新页。查询约 20 ms 超时后仍可报告旧值及年龄。
+调试不反压功能接口；只有一个待查询槽，拥堵增加 `rejected_queries`，协议错误增加 `rx_errors`。
 
-掉电、未完成 FPGA 配置、基础 `sys_clk` 停止或 USB 串口链路断开时无法发送，电脑脚本超过 3 秒无心跳会提示检查链路。监测超时仅用于诊断，不自动取消 DDR 事务或强制切换控制流。
+新标定清本次结果有效位和角点计数；去畸变保留标定诊断。
+角点按同步 RAM 保存，完整索引为 `view * PAR_POINTS + point`。
+检测失败只导出实际收到的点，不能将其视为完整棋盘。
+
+### 参数与失败原因
+
+板上发布顺序为 `fx,fy,cx,cy,k1,k2,k3,p1,p2`，焦距和主点单位为处理图像素。
+`--once params` 输出 K 矩阵及 OpenCV 顺序的 `k1,k2,p1,p2,k3`，`--save` 保存 JSON。
+R/t 参与标定，不参与图像去畸变。
+
+`check_reason` 区分数值、配置、残差服务、未收敛、非正焦距、RMS 不合格及映射翻折。
+`check_warnings` 中的焦距经验范围、主点位置、姿态差异和图片数量只作提示。
+生产流程始终拟合完整 k3；`low_coverage` 不关闭高阶项。
+算法目标、RMS 与边缘误差的区别见[标定质量](CALIBRATION_QUALITY.md)。
 
 ### 二进制协议
 
@@ -206,65 +167,10 @@ DDR域与算法域分别采样，不保证属于同一物理时刻。每个快�
 | 24       |     32 | UI 状态、变化/访存计数、历史错误            |
 | 56       |     64 | 算法快照，内部最后两字节为实际页号          |
 
-算法页号 FFFF 为参数页，FFFE 为进度页，其余为角点索引。精确位布局见 `scripts/debug/uart_monitor.py::decode`，RTL 对应 `algorithm_debug.v` / `core_debug.v`，无需手工解释浮点数。
+保留页号 FFFF 为参数、FFFE 为进度、FFFD 为视频、FFFC 为人工畸变、FFFB 为采集、FFFA 为尺寸与放大状态；非保留页号用于角点索引。采集/尺寸查询复用操作码 0x43，数据包长度不变。精确位布局见 `scripts/debug/uart_monitor.py::decode`，RTL 对应 `algorithm_debug.v` / `core_debug.v` 及板级顶层的诊断页选择。
 
-包长和 CRC 不变，新增字段使用算法快照原保留位：字节 6 bit5 为候选有效，字节 7 高四位为检查原因，字节 13 高四位为警告掩码。两个字节的低四位仍为当前/结果阶段。原因码 0=无、1=数值异常、2=配置、3=残差服务、4=未收敛、5=非正焦距、6=RMS、7=映射翻折；警告 bit0..3 依次对应焦距、主点、姿态、图片数量。
+算法快照字段：字节 6 bit5 为候选有效，字节 7 高四位为检查原因，字节 13 高四位为警告掩码。两个字节的低四位仍为当前/结果阶段。原因码 0=无、1=数值异常、2=配置、3=残差服务、4=未收敛、5=非正焦距、6=RMS、7=映射翻折；警告 bit0..3 依次对应焦距、主点、姿态、图片数量。
 
-### 内参矩阵与畸变系数的解析
-
-参数页原本就带九个 FP32（低位起 `fx,fy,cx,cy,k1,k2,k3,p1,p2`），板上求解器存放的是 log 焦距和归一化主点，发布前已换算成**像素**。`--once params` 把它整理成题目要求的“内参矩阵 + 畸变系数”：
-
-```text
-相机标定参数（已通过全部检查）任务=3
-焦距 fx=1171.522583 px  fy=1170.120728 px
-主点 cx=645.760132 px  cy=351.260345 px
-内参矩阵 K =
-    [1171.522583, 0, 645.760132]
-    [0, 1170.120728, 351.260345]
-    [0, 0, 1]
-畸变系数（OpenCV 顺序 k1,k2,p1,p2,k3）= [0.0162264891, 0.594529152, 0.000332321, 0.00210273010, 0]
-重投影 RMS = 0.10747028196012501 px（1280x720）
-```
-
-`--save` 写出的 JSON 含 `camera_matrix`（3×3 嵌套数组）、`distortion_coefficients`（`k1,k2,p1,p2,k3`）、`focal_length_px`、`principal_point_px`、`rms_px` 和本次任务号，可直接与 OpenCV `calibrateCamera` 的 `cameraMatrix`/`distCoeffs` 逐项对照。**注意 OpenCV 的五系数顺序是 `k1,k2,p1,p2,k3`，与板上发布顺序不同**，脚本负责换位；直接读原始九槽位时不要按 OpenCV 顺序解释。
-
-板上模型与 OpenCV 一致：径向 `k1,k2,k3`（`1+k1r²+k2r⁴+k3r⁶`）加切向 `p1,p2`，只使用相机内参和畸变系数，R/t 不参与去畸变。参数未通过检查时脚本会明确标注“仅为候选，未通过检查”，并附 `check_reason`/`check_warnings`；`reduced_model=true` 表示 k3 固定为 0 的降阶拟合，此时畸变向量最后一项为 0。
-
-角度相关的那一档（焦距、主点、RMS）由 `--once params`、`--once status` 与持续监测三种输出共用同一份解码，不会出现两个脚本两套数字。上一个已烧录的比特流就带这些字段，**不需要重新综合**。
-
-### 映射翻折时的自动重试
-
-2026-10-19 起，默认会在初始化中先统计角点边缘覆盖：覆盖不足直接固定 `k3=0` 拟合，
-串口 `low_coverage=true`；此时 `reduced_model` 不再一定表示发生过重试。
-完整模型仍保留下面的一次翻折重试，所有发布检查不变。阈值、角点叠图及定位顺序见
-[标定质量诊断](CALIBRATION_QUALITY.md)。以下 2026-10-18 数据为此前版本的重试证据。
-
-标定先拟合完整的五项畸变模型。如果最后检查发现映射翻折或局部退化，控制器只重试一次：重新计算普通初值，固定 `k3=0`，重新拟合其余内参、畸变和每张图的姿态，然后执行相同的全部检查。第二次仍失败就报告失败，不发布去畸变参数。其他错误不会触发此重试。整个过程不使用人工加畸变的预设参数。
-
-串口 `reduced_model=true` 表示结果来自这次重试，终端会显示中文说明；它本身不代表标定成功，仍看 `params_valid` 和 `check_reason`。对应算法快照字节 6 的 bit6，包长度不变。正常成功的标定不增加计算；发生翻折时会多执行一次初值、LM 和检查，复用原有计算单元和存储。
-
-2026-10-18 实测角点已保存为 `data/calibration/uart_fold_corners.json`。独立软件复现原模型 RMS 0.754663，825 个映射采样点中 79 个失败；固定 k3 并重新拟合后 RMS 0.755488，825 个采样点均通过。这个结果说明本次翻折可由减少高阶自由度解决，不代表已经证明全图校正精度。
-
-这批角点的 RTL LM 从初值完成 19 个接受步骤，参数、代价和收敛状态对照独立参考通过；控制回归 42 项通过，包含重试成功、再次失败、旧结果不发布和新结果不被旧低代价覆盖。串口 20 个实际仿真数据包及人工畸变开/关两种板级顶层连接检查通过。尚未重新综合或上板验证此重试功能。
-
-可复现诊断与 RTL 数值测试：
-
-```powershell
-python scripts/debug/replay_calibration.py data/calibration/uart_fold_corners.json
-powershell -File scripts/debug/replay_cpp.ps1 -VsRoot <VisualStudio目录>
-python scripts/calibration/engine/check_lm_replay.py
-```
-
-### 验证
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -Board -OnlyTest tb_board_debug
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_debug_snapshot
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/system/run_checks.ps1 -OnlyTest tb_core_debug
-```
-
-`tb_board_debug` 按真实 UART 位时间收发，覆盖未初始化、参数/角点/进度读取、功能复位、源时钟停止与恢复、心跳、错误/不完整命令、break 和查询拥堵。其输出字节再由电脑端解码器交叉验证。`tb_debug_snapshot` 检查持续变化总线的一致性及停钟/恢复；`tb_core_debug` 检查错误保留、忙时按键和事务计数。标定控制回归已扩充至 42 个用例，包含映射翻折后的单次重试。
-
-RTL 仿真、主机解码及顶层连接检查已通过。2026-10-12 的用户综合和布线后报告已确认包含串口模块：LUT 59,023/66,600，算法 40 MHz 域余量 +0.853 ns，串口所在 sys_clk 域内部余量 +29.034 ns。
-
-上述资源和时序数字属于 2026-10-12 的历史构建，不代表当前代码。后续时序分析与修改见 [时序报告](TIMING_CLOSURE_REPORT.md)，最新改动仍需用户重新综合确认。实体串口已用于读取板上状态、候选参数和全部角点；固定 k3 自动重试及对应的新诊断标志已通过仿真，尚待新比特流上板验证。
+协议维护位置为 `rtl/debug` 和 `scripts/debug/uart_monitor.py`。
+`python scripts/debug/uart_monitor.py --self-test` 可在无串口时检查解码；
+`tb_board_debug`、`tb_debug_snapshot` 和 `tb_core_debug` 覆盖封包、快照、停钟及复位。

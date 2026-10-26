@@ -16,11 +16,12 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
  localparam IDLE=0,START=1,RUN=2,RESPONSE=3;
  reg [1:0] state;reg [31:0] source,destination,mapping,cycles;
  // Dedicated start pulse prevents the state decoder driving all writer CEs.
- reg start;
- always @(posedge clk or negedge rst_n)
-  if(!rst_n)start<=0;else start<=state==START;
- wire mv,mr,cv,cr,pv,pr,me,ce,we,done;
+ reg start,map_start;
  reg bypass,identity_valid;
+ always @(posedge clk or negedge rst_n)
+  if(!rst_n)begin start<=0;map_start<=0;end
+  else begin start<=state==START;map_start<=state==START&&!bypass;end
+ wire mv,mr,cv,cr,pv,pr,me,ce,we,done;
  reg [$clog2(WIDTH)-1:0] identity_x;
  reg [$clog2(HEIGHT)-1:0] identity_y;
  wire [13:0] identity_x14=identity_x,identity_y14=identity_y;
@@ -56,7 +57,7 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6)(
  wire [15:0] dx,dy,pixel;
  assign cmd_ready=state==IDLE;assign rsp_valid=state==RESPONSE;
  video_map_prefetch #(.PIXELS(WIDTH*HEIGHT)) maps(
-  .clk(clk),.rst_n(rst_n),.start(start&&!bypass),.map_base(mapping),.out_valid(map_valid),.out_ready(map_ready),.descriptor(map_descriptor),.error(map_error),
+  .clk(clk),.rst_n(rst_n),.start(map_start),.map_base(mapping),.out_valid(map_valid),.out_ready(map_ready),.descriptor(map_descriptor),.error(map_error),
   .arvalid(arvalid[0]),.arready(arready[0]),.araddr(araddr[0+:28]),.arlen(arlen[0+:4]),
   .rvalid(rvalid[0]),.rdata(rdata),.rlast(rlast),.rid(rid));
  video_neighbor_cache #(.WIDTH(WIDTH),.INDEX_BITS(CACHE_INDEX_BITS)) cache(

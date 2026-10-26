@@ -10,6 +10,7 @@ module tb_video_capture;
  reg [15:0] memory[0:2047];integer i,responses=0;reg [7:0] results[0:7];reg [31:0] bases[0:7];
  video_capture_hmic #(.WIDTH(W),.HEIGHT(H),.FIFO_BITS(4)) dut(
   .clk(clk),.rst_n(rst),.pclk(pclk),.prst_n(rst),.vsync(vs),.pixel_valid(pv),.pixel(pixel),.line_short(6'd0),
+  .source_frame_error(4'd0),
   .cmd_valid(cmd),.cmd_ready(ready),.cmd_base(base),.rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.rsp_base(rsp_base),.skipped_frames(skipped),
   .axi_awaddr(addr),.axi_awlen(len),.axi_awuser_id(id),.axi_awvalid(av),.axi_awready(aq),
   .axi_wdata(data),.axi_wstrb(strb),.axi_wready(wr),.axi_wusero_last(complete),.axi_wusero_id(4'b0));

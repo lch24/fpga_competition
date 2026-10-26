@@ -7,7 +7,7 @@
 module tb_init_coverage_transport;
  reg clk=0,rst_n=0,cmd_valid=0,seed_ready=0,rsp_ready=0;
  always #5 clk=~clk;
- wire cmd_ready,seed_valid,rsp_valid,seed_fit_k3,point_rd_en;
+ wire cmd_ready,seed_valid,rsp_valid,seed_coverage_ok,point_rd_en;
  wire [7:0] rsp_status;wire [2:0] seed_id,rsp_seed_count;
  wire [`PAR_STATE_W-1:0] seed_state;
  wire [127:0] request;wire [95:0] response;
@@ -25,7 +25,7 @@ module tb_init_coverage_transport;
    host_valid<=request[0]&&!request[1];
    if(request[0]&&!request[1])begin
     if(request[33:2]==`LM_STATUS)host_result<=status_value;
-    else if(request[33:2]==`LM_FIT_K3)begin host_result<=fit_value;fit_reads<=fit_reads+1;end
+    else if(request[33:2]==`LM_COVERAGE_OK)begin host_result<=fit_value;fit_reads<=fit_reads+1;end
     else if(request[33:2]>=SEED_BASE && request[33:2]<SEED_BASE+`PAR_STATE_N)begin
      host_result<=word(request[33:2]-SEED_BASE);seed_reads<=seed_reads+1;
     end else $fatal(1,"unexpected host read %0d",request[33:2]);
@@ -40,7 +40,7 @@ module tb_init_coverage_transport;
   .cmd_valid(cmd_valid),.cmd_ready(cmd_ready),.cmd_width(16'd640),.cmd_height(16'd480),
   .point_rd_en(point_rd_en),.point_rd_view_id(),.point_rd_index(),
   .point_rd_valid(point_valid),.point_rd_x_fp32(32'h43000000),.point_rd_y_fp32(32'h43000000),
-  .seed_valid(seed_valid),.seed_ready(seed_ready),.seed_id(seed_id),.seed_state(seed_state),.seed_fit_k3(seed_fit_k3),
+  .seed_valid(seed_valid),.seed_ready(seed_ready),.seed_id(seed_id),.seed_state(seed_state),.seed_coverage_ok(seed_coverage_ok),
   .rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.rsp_seed_count(rsp_seed_count),
   .shared_req_ready(7'd0),.shared_rsp_valid(7'd0),.shared_rsp_result(64'd0),.shared_rsp_flags(5'd0));
  task start;input fit;input [7:0] status;begin
@@ -57,10 +57,10 @@ module tb_init_coverage_transport;
  task good;input fit;begin
   start(fit,0);watchdog=0;
   while(!seed_valid&&watchdog<5000)begin @(negedge clk);watchdog=watchdog+1;end
-  if(!seed_valid||seed_id!=2||seed_fit_k3!==fit)$fatal(1,"seed/coverage mismatch");
+  if(!seed_valid||seed_id!=2||seed_coverage_ok!==fit)$fatal(1,"seed/coverage mismatch");
   repeat(8)begin
    @(negedge clk);
-   if(!seed_valid||seed_fit_k3!==fit||rsp_valid)$fatal(1,"seed metadata stall");
+   if(!seed_valid||seed_coverage_ok!==fit||rsp_valid)$fatal(1,"seed metadata stall");
    for(i=0;i<`PAR_STATE_N;i=i+1)if(seed_state[64*i+:64]!==word(i))$fatal(1,"seed shifted at %0d",i);
   end
   seed_ready=1;@(negedge clk);seed_ready=0;finish(0);
@@ -70,7 +70,7 @@ module tb_init_coverage_transport;
   good(1);good(0);good(1);
   if(seed_reads!=3*`PAR_STATE_N||fit_reads!=3)$fatal(1,"wrong host read count");
   start(0,4);finish(4);
-  if(seed_fit_k3!==0||seed_reads!=3*`PAR_STATE_N||fit_reads!=3)$fatal(1,"failed job retained metadata");
+  if(seed_coverage_ok!==0||seed_reads!=3*`PAR_STATE_N||fit_reads!=3)$fatal(1,"failed job retained metadata");
   $display("PASS tb_init_coverage_transport: metadata, full seed, stalls, back-to-back, error reset");$finish;
  end
  initial begin #1000000;$fatal(1,"timeout");end

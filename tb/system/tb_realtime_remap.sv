@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
-module tb_realtime_remap;
+// Native 960-pixel row stride, with a short strip for fast directed regression.
+module tb_realtime_remap #(parameter W=960,H=8);
  reg finished=0;reg bypass=0;
- localparam W=128,H=40,N=W*H,MAP=32'h20000,DST=32'h40000;
+ localparam N=W*H,MAP=32'h20000,DST=32'h40000;
  reg clk=0;always #4 clk=~clk;
  reg rst_n=0,cmd=0;wire ready,rsp;wire [7:0] status;wire [31:0] cycles;
  reg [31:0] source=32'h10000;

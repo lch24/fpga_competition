@@ -1,4 +1,3 @@
-
 # 现在的指令控制怎么运行
 
 本文是当前代码的阅读指南。先读入口和执行流程，再按需查看编码。整体数据流见[系统架构](SYSTEM_ARCHITECTURE.md)，标定阶段分工见[标定设计](CALIBRATION_ENGINE_ARCHITECTURE.md)。路径均相对仓库根目录。
@@ -62,13 +61,13 @@ flowchart TD
 6. 程序执行 `END`，执行器拉高 `rsp_valid` 并保持状态码，等待接收。适配器随后读工作 RAM 中的算法状态和 seed，经过 `SEED/RESPONSE` 发布数据与阶段响应。
 7. `calib_top` 消费初值，进入 LM，之后再启动结果检查。阶段切换复用同一套执行器与工作 RAM。
 
-当前共享 ROM 有效长度为 **3704 条**，物理深度 4096。入口由 [calibration_program_defs.vh](../rtl/include/calibration_program_defs.vh) 自动生成：
+当前共享 ROM 有效长度为 **4033 条**，物理深度 4096。入口由 [calibration_program_defs.vh](../rtl/include/calibration_program_defs.vh) 自动生成：
 
 | 程序     | 当前基地址 | 有效指令数 |
 | -------- | ---------: | ---------: |
-| LM       |          0 |        713 |
-| 结果检查 |        713 |       1343 |
-| 初值     |       2056 |       1648 |
+| LM       |          0 |       1137 |
+| 结果检查 |       1137 |       1160 |
+| 初值     |       2297 |       1736 |
 
 **ROM 排列顺序不等于运行顺序。** 初值先运行，却位于 ROM 后部。启动时载入指定 PC，所以无需先执行前面的 LM。添加指令后基地址可能变化，应使用宏，不能把这些数字抄进 RTL。
 
@@ -131,6 +130,7 @@ HOST 暂停期间，执行器不争用 RAM，适配器可通过 `host_*` 访问�
 | 想改什么               | 维护源                                                                                                   | 生成物/执行位置                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | 标定指令编码、合法操作 | [isa.json](../data/programs/calibration/isa.json)、`assemble.py`，并同步 RTL 译码/执行语义              | `calib_engine_defs.vh`、`calib_engine_decode.vh`、`calib_sequencer.v` |
+| 公共生成接口与 RAM 符号 | `program.py`、`workspace.py`（位于 `scripts/calibration/engine`） | 三阶段共用的指令接口与地址定义 |
 | 初值步骤               | [build_init.py](../scripts/calibration/engine/build_init.py)，引用 `pose.asm`、`rotation_inverse.asm` | `init_program_*.vh`                                                       |
 | LM 步骤                | [build_lm.py](../scripts/calibration/engine/build_lm.py)，引用 `solve.asm`                              | `lm_program_*.vh`、`lm_constants.vh`                                    |
 | 检查步骤               | [build_validate.py](../scripts/calibration/engine/build_validate.py)                                      | `validate_program_*.vh`                                                   |
@@ -172,6 +172,6 @@ python scripts/compute/microcode/build_feature.py
 | 程序结束但外层没响应 | 执行器`rsp_status`、算法 RAM 状态、适配器读回与输出背压                               |
 | 精修似乎直接完成     | `ts_start_p`、`busy/done`，是否误把上次保留的 done 当成本次结果                     |
 
-执行器状态码和算法状态是两层：执行器正常结束不自动证明标定有效，适配器还需读取算法结果。板级目前没有将 PC/指令计数引出到外部引脚；共享模式 `calib_execution_port` 的调试输出接零，仿真调试要进入真实共享执行器层次观察，不能盯着适配器的零输出。
+执行器状态码和算法状态是两层：执行器正常结束不自动证明标定有效，适配器还需读取算法结果。板级通过串口 `--once progress` 报告共享 PC 和指令计数；共享模式 `calib_execution_port` 的调试输出接零，仿真调试要进入真实共享执行器层次观察，不能盯着适配器的零输出。
 
 按修改范围运行对应检查，不必每次跑整板：标定程序用 `scripts/calibration/engine/check_init.py`、`check_lm.py`、`check_validate.py`；数学后端用 `scripts/compute/run_fp_operator.ps1`；精修用 `scripts/compute/check_feature_program.py`。只改本文或入口注释，不需要重新跑数值综合。

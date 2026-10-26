@@ -6,7 +6,7 @@
 
 整体流程见[系统架构](../../docs/SYSTEM_ARCHITECTURE.md)，其他模块入口见[RTL 导航](../README.md)。
 
-当前板级采用按键流程，`MANUAL_CONTROL=1`：三键拍照/选图，一键标定，一键校正所选图。`key_n[4:0]` 和 `led[7:0]` 的引脚已写入 FDC，原来的独立初始化 LED 端口改为内部信号。拍照状态、DDR 分区和接口交接见[板上操作](../../docs/BOARD_OPERATION.md)。
+当前板级采用按键流程，`MANUAL_CONTROL=1`：三键拍照/选图，一键标定，一键建表并启动/停止校正视频。`key_n[4:0]` 和 `led[7:0]` 的引脚已写入 FDC，原来的独立初始化 LED 端口改为内部信号。拍照状态、DDR 分区和接口交接见[板上操作](../../docs/BOARD_OPERATION.md)。
 
 
 串口使用 TX C24 / RX B24、115200 8N1 和独立的 27 MHz 时钟。板级开启 `vision_ddr_top.DEBUG_ENABLE`，调试复位独立于工作模块复位。接口及电脑脚本见[板上操作](../../docs/BOARD_OPERATION.md#串口调试)。

@@ -1,8 +1,8 @@
 `timescale 1ns/1ps
 // Direct-mapped source cache, separate even/odd row banks. 64 pixels per line,
 // 4-beat line fill. Tags and pixels use synchronous BRAM; validity alone resets.
-// Both neighbor rows looked up together. Common-case II=2; horizontal 16-pixel
-// beat crossings require one additional lookup. Misses stall, never read stale
+// Both neighbor rows looked up together. Common-case II=3; horizontal 16-pixel
+// beat crossings require another pipelined lookup. Misses stall, never read stale
 // source data. All tags invalidated between frames even when a base is reused.
 module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  input wire clk,rst_n,start,input wire [31:0] src_base,
@@ -13,8 +13,8 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  input wire rvalid,input wire [255:0] rdata,input wire rlast,input wire [3:0] rid
 );
  localparam LINES=1<<INDEX_BITS;
- localparam IDLE=0,CHECK=1,CROSS_READ=2,CROSS_CHECK=3,REQUEST=4,FILL=5,RETRY=6;
- reg [2:0] state;reg second,fill_odd;
+ localparam IDLE=0,CHECK=1,CROSS_READ=2,CROSS_CHECK=3,REQUEST=4,FILL=5,RETRY=6,LOOKUP_WAIT=7,CROSS_WAIT=8,FILL_ADDRESS=9;
+ reg [3:0] state;reg second,fill_odd;
  reg [31:0] base,a0,a1;reg [63:0] desc;reg [15:0] p0,p1,p2,p3;
  reg [LINES-1:0] ve,vo;
  (* syn_ramstyle="block_ram" *) reg [22:0] te[0:LINES-1],to_[0:LINES-1];
@@ -38,8 +38,11 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  wire [31:0] even_address=y[0]?r1:r0,odd_address=y[0]?r0:r1;
  wire need_even=y[0]?(second?cross1:row1):(second?cross0:row0);
  wire need_odd=y[0]?(second?cross0:row0):(second?cross1:row1);
- wire hit_e=!need_even||(vqe&&tqe==even_address[29:7]);
- wire hit_o=!need_odd||(vqo&&tqo==odd_address[29:7]);
+ // Compare the exact registered addresses used by this lookup. Recomputing
+ // from second/a0/a1 puts the beat increment back on the miss-control path.
+ reg [31:0] lookup_even,lookup_odd;reg lookup_pending;
+ wire hit_e=!need_even||(vqe&&tqe==lookup_even[29:7]);
+ wire hit_o=!need_odd||(vqo&&tqo==lookup_odd[29:7]);
  wire [255:0] q0=y[0]?qo:qe,q1=y[0]?qe:qo;
  assign in_ready=state==IDLE;
  wire accept=in_valid&&in_ready;
@@ -50,12 +53,17 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  wire [31:0] new1=base+(signed_y+1)*(WIDTH*2)+((signed_x+(!descriptor[62]))<<1);
  wire [31:0] le=accept?(iy[0]?new1:new0):even_address;
  wire [31:0] lo=accept?(iy[0]?new0:new1):odd_address;
+ // Break descriptor -> row multiply/add -> bank select -> 64:1 validity mux.
+ // Address calculation and RAM/validity lookup now occupy separate clocks.
+ always @(posedge clk or negedge rst_n)
+  if(!rst_n)lookup_pending<=0;else if(start)lookup_pending<=0;else lookup_pending<=lookup;
+ always @(posedge clk)if(lookup)begin lookup_even<=le;lookup_odd<=lo;end
  wire [INDEX_BITS+1:0] wa={fill_address[INDEX_BITS+6:7],fill_beat};
  always @(posedge clk)begin
-  if(lookup)begin
-   vqe<=ve[le[INDEX_BITS+6:7]];vqo<=vo[lo[INDEX_BITS+6:7]];
-   tqe<=te[le[INDEX_BITS+6:7]];tqo<=to_[lo[INDEX_BITS+6:7]];
-   qe<=de[le[INDEX_BITS+6:5]];qo<=do_[lo[INDEX_BITS+6:5]];
+  if(lookup_pending)begin
+   vqe<=ve[lookup_even[INDEX_BITS+6:7]];vqo<=vo[lookup_odd[INDEX_BITS+6:7]];
+   tqe<=te[lookup_even[INDEX_BITS+6:7]];tqo<=to_[lookup_odd[INDEX_BITS+6:7]];
+   qe<=de[lookup_even[INDEX_BITS+6:5]];qo<=do_[lookup_odd[INDEX_BITS+6:5]];
  end
   if(state==FILL&&rvalid)begin
    if(fill_odd)do_[wa]<=rdata;else de[wa]<=rdata;
@@ -83,20 +91,25 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
    // p0..p3 enable path (the worst 125 MHz setup path).
    p0<=v00;p1<=v10;p2<=v01;p3<=v11;
    case(state)
-   IDLE:if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;state<=CHECK;end
+   IDLE:if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;state<=LOOKUP_WAIT;end
+   LOOKUP_WAIT:state<=CHECK;
+   CROSS_WAIT:state<=CROSS_CHECK;
    CHECK,CROSS_CHECK:begin
-    if(!hit_e||!hit_o)begin fill_odd<=hit_e;fill_address<=hit_e?odd_address:even_address;state<=REQUEST;end
+    if(!hit_e||!hit_o)begin fill_odd<=hit_e;state<=FILL_ADDRESS;end
     else if(crossing&&!second)begin second<=1;state<=CROSS_READ;end
     else if(out_ready)state<=IDLE;
    end
-   CROSS_READ:state<=CROSS_CHECK;
+   CROSS_READ:state<=CROSS_WAIT;
+   // One cycle per miss: the hit comparison only selects the bank. Form the
+   // held DDR request address on the next cycle, then assert ARVALID.
+   FILL_ADDRESS:begin fill_address<=fill_odd?lookup_odd:lookup_even;state<=REQUEST;end
    REQUEST:if(arready)begin fill_beat<=0;state<=FILL;end
    FILL:if(rvalid)begin
     fill_beat<=fill_beat+1'b1;
     if(rid!=0||rlast!=(fill_beat==3))error<=1;
     if(rlast)begin if(fill_odd)vo[fill_address[INDEX_BITS+6:7]]<=1;else ve[fill_address[INDEX_BITS+6:7]]<=1;state<=RETRY;end
    end
-   RETRY:state<=second?CROSS_CHECK:CHECK;
+   RETRY:state<=second?CROSS_WAIT:LOOKUP_WAIT;
    default:state<=IDLE;
   endcase
   end

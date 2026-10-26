@@ -1,8 +1,11 @@
-param([string]$IcarusBin=$env:IVERILOG_BIN,[string]$ModelSimBin=$env:MODELSIM_BIN)
+param([string]$IcarusBin=$env:IVERILOG_BIN,[string]$ModelSimBin=$env:MODELSIM_BIN,[string[]]$OnlyTest=@())
+# powershell -File passes comma-separated command-line values as one string.
+$OnlyTest=@($OnlyTest | ForEach-Object {$_ -split ','} | ForEach-Object {$_.Trim()} | Where-Object {$_})
 # Directed RTL checks for the realtime video path. Runs on Icarus Verilog when
 # available, otherwise on ModelSim. Each test elaborates in its own directory so
 # that one test's `work` library never leaks into the next.
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot '../common/tools.ps1')
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $build=Join-Path $root 'build/realtime'
 New-Item -ItemType Directory -Force $build | Out-Null
@@ -20,6 +23,12 @@ $model=$false
 if(!$IcarusBin){$model=$true}
 
 $tests=@{
+ tb_async_fifo=@('rtl/common/async_fifo.v')
+ tb_async_bram_fifo=@('rtl/common/async_bram_fifo.v')
+ tb_hdmi_bridge=@('rtl/video/stream/hdmi_pixel_bridge.v','rtl/video/stream/rgb565_format.v','rtl/common/async_bram_fifo.v')
+ tb_video_scale=@('rtl/video/stream/video_scale_4_3.v')
+ tb_camera_crop=@('rtl/video/stream/rgb565_format.v','rtl/video/dma/video_capture_hmic.v','rtl/common/async_fifo.v','rtl/common/async_bram_fifo.v')
+ tb_board_video=@('rtl/video/dma/board_display_hmic.v','rtl/video/stream/video_scale_4_3.v','rtl/video/stream/hdmi_pixel_bridge.v','rtl/video/stream/rgb565_format.v','rtl/common/async_bram_fifo.v','rtl/common/reset_sync.v')
  tb_realtime_remap=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
  tb_realtime_fullframe=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
  tb_video_capture=@('rtl/video/dma/video_capture_hmic.v','rtl/common/async_fifo.v','rtl/common/async_bram_fifo.v')
@@ -34,7 +43,9 @@ $tests=@{
 }
 
 $passed=@();$failed=@()
+foreach($name in $OnlyTest){if(!$tests.ContainsKey($name)){throw "Unknown test $name"}}
 foreach($test in ($tests.Keys | Sort-Object)){
+ if($OnlyTest.Count -and $test -notin $OnlyTest){continue}
  $benches=@(Get-ChildItem (Join-Path $root 'tb') -Recurse -Filter ($test+'.sv'))
  if($benches.Count -ne 1){throw "Missing/duplicate testbench $test"}
  $srcs=@($tests[$test]|ForEach-Object{Join-Path $root $_})
@@ -46,10 +57,23 @@ foreach($test in ($tests.Keys | Sort-Object)){
    & (Join-Path $ModelSimBin 'vlib.exe') work 2>&1 | Out-File 'vlib.log'
    & (Join-Path $ModelSimBin 'vlog.exe') ('+incdir+'+(Join-Path $root 'rtl/include')) @srcs $benches[0].FullName 2>&1 | Out-File 'vlog.log'
    if($LASTEXITCODE -ne 0){Write-Host "COMPILE FAILED: $test";Get-Content 'vlog.log'|Write-Host;$failed+=$test;continue}
-   & (Join-Path $ModelSimBin 'vsim.exe') -c -novopt -l vsim.log -do 'run -all; quit' $test 2>&1 | Out-Null
+   # ModelSim 10.1c sometimes omits HDL $display/$finish text from its transcript.
+   # These benches expose completion explicitly; checking it also rejects a
+   # fatal break/timeout instead of accepting a simulator exit as success.
+   $completionCheck=$test -in @('tb_async_bram_fifo','tb_hdmi_bridge','tb_vision_clock_bridge')
+   $commands=@('onerror {quit -code 1 -f}','onfinish stop','onbreak {resume}','run -all')
+   if($completionCheck){
+    $commands+='if {[examine -radix unsigned /'+$test+'/finished] ne "1"} {quit -code 1 -f}'
+    $commands+='echo "PASS completion checked '+$test+'"'
+   }
+   $commands+='quit -code 0 -f'
+   [IO.File]::WriteAllLines((Join-Path $dir 'run.do'),$commands,[Text.Encoding]::ASCII)
+   Invoke-Simulator (Join-Path $ModelSimBin 'vsim.exe') -c -novopt -l vsim.log -do 'do run.do' $test | Out-Null
+   $simCode=$LASTEXITCODE
    $log=Get-Content 'vsim.log' -Raw
   }finally{Pop-Location}
-  $ok=($log -match '(?m)^#?\s*PASS') -and ($log -notmatch '(?m)^#?\s*\*\*\s*(Fatal|Error)') -and ($log -match 'Errors: 0')
+  # ModelSim 10.1c does not print an "Errors: 0" footer on $finish.
+  $ok=($simCode -eq 0) -and ($log -match '(?m)^#?\s*PASS') -and ($log -notmatch '(?m)^#?\s*\*\*\s*(Fatal|Error)') -and (($log -match '\$finish') -or ($completionCheck -and $log -match 'PASS completion checked'))
  }else{
   $output=Join-Path $build ($test+'.vvp')
   Push-Location $root

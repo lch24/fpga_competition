@@ -19,11 +19,17 @@ module async_fifo #(parameter WIDTH=16,ADDR_BITS=8)(
  always @*begin read_binary[ADDR_BITS]=rg2[ADDR_BITS];for(bi=ADDR_BITS-1;bi>=0;bi=bi-1)read_binary[bi]=read_binary[bi+1]^rg2[bi];end
  assign wlevel=wb-read_binary;
  assign wready=!full;assign rvalid=rg!=wg2;assign rdata=mem[rb[ADDR_BITS-1:0]];
+ // Storage is not reset. Keep reset/enable control out of the large RAM WE
+ // tree; only pointers decide which entries are visible to the reader. A
+ // write while reset is asserted is harmless: neither pointer advances and
+ // the next accepted write overwrites that slot before it can become valid.
+ always @(posedge wclk)
+  if(wvalid&&wready)mem[wb[ADDR_BITS-1:0]]<=wdata;
  always @(posedge wclk or negedge wrst_n)begin
   if(!wrst_n)begin wb<=0;wg<=0;rg1<=0;rg2<=0;end
   else begin
    rg1<=rg;rg2<=rg1;
-   if(wvalid&&wready)begin mem[wb[ADDR_BITS-1:0]]<=wdata;wb<=wn;wg<=wgn;end
+   if(wvalid&&wready)begin wb<=wn;wg<=wgn;end
   end
  end
  always @(posedge rclk or negedge rrst_n)begin

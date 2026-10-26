@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
-module tb_realtime_remap;
+module tb_realtime_remap #(parameter ENABLE_ADVANCED=0);
  reg finished=0;reg bypass=0;
+ reg affine=0,gamma_enable=0;reg [191:0] matrix={32'd0,32'd65536,32'd0,32'd0,32'd0,32'd65536};
  localparam W=128,H=40,N=W*H,MAP=32'h20000,DST=32'h40000;
  reg clk=0;always #4 clk=~clk;
  reg rst_n=0,cmd=0;wire ready,rsp;wire [7:0] status;wire [31:0] cycles;
@@ -8,7 +9,8 @@ module tb_realtime_remap;
  wire [1:0] av,aq,rv;wire [55:0] aa;wire [7:0] al;
  wire wv,wq,wr,wd;wire [27:0] wa;wire [3:0] wl;wire [255:0] data;
  wire rl;wire [255:0] rd;reg inject_error=0;wire [3:0] rid=inject_error?4'd1:4'd0;
- realtime_remap #(.WIDTH(W),.HEIGHT(H),.CACHE_INDEX_BITS(3)) dut(
+ realtime_remap #(.WIDTH(W),.HEIGHT(H),.CACHE_INDEX_BITS(3),.ENABLE_ADVANCED(ENABLE_ADVANCED)) dut(
+  .cmd_affine(affine),.cmd_gamma(gamma_enable),.cmd_gamma_mode(3'd3),.cmd_matrix(matrix),.gamma_curve(),
   .cmd_bypass(bypass),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(source),.dst_base(DST),.map_base(MAP),
   .rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.last_cycles(cycles),
   .arvalid(av),.arready(aq),.araddr(aa),.arlen(al),.rvalid(rv),.rdata(rd),.rlast(rl),.rid(rid),
@@ -85,7 +87,7 @@ module tb_realtime_remap;
   sample=x<0||x>=W||y<0||y>=H?0:memory[source/2+y*W+x];
  endfunction
  task frame(input integer number);
-  integer i,x,y,k;reg [15:0] fx,fy;reg [3:0] mask;reg [63:0] desc;
+  integer i,x,y,k,n;reg [15:0] fx,fy;reg [3:0] mask;reg [63:0] desc;reg [7:0] gc[0:2];real val;
   begin
    source=number%2?32'h14000:32'h10000;
    for(i=0;i<N;i=i+1)memory[source/2+i]=16'((i*37+number*1337)^((i/W)*271));
@@ -94,16 +96,24 @@ module tb_realtime_remap;
     if(number==1)begin x=(i*29)%(W+1)-1;y=(i*13)%(H+1)-1;end
     if(number==2)begin x=x-1;y=y-1;end
     fx=16'(i*113);fy=16'(i*711+number);
+    if(affine)begin
+     if(number==7)begin x=x-1;fx=32768;fy=16384;end
+     else begin x=i/W;y=W-1-i%W;fx=0;fy=0;end
+    end
     mask[0]=x>=0&&x<W&&y>=0&&y<H;mask[1]=x+1>=0&&x+1<W&&y>=0&&y<H;
     mask[2]=x>=0&&x<W&&y+1>=0&&y+1<H;mask[3]=x+1>=0&&x+1<W&&y+1>=0&&y+1<H;
     desc={mask,14'(y),14'(x),fy,fx};
     for(k=0;k<4;k=k+1)memory[MAP/2+i*4+k]=desc[k*16+:16];
     expected[i]=reference(sample(x,y),sample(x+1,y),sample(x,y+1),sample(x+1,y+1),fx,fy);
     expected_neighbors[i]={sample(x+1,y+1),sample(x,y+1),sample(x+1,y),sample(x,y)};
-    if(bypass)begin
+    if(bypass&&!affine)begin
      expected[i]=sample(i%W,i/W);
      expected_neighbors[i]={48'b0,expected[i]};
      for(k=0;k<4;k=k+1)memory[MAP/2+i*4+k]=16'hffff; // Poison: preview cannot depend on the map.
+    end
+    if(gamma_enable)begin
+     for(k=0;k<3;k=k+1)begin val=255.0*((chan(expected[i],k)/255.0)**0.5);n=$rtoi($floor(val+0.5));gc[k]=n;end
+     expected[i]={gc[2][7:3],gc[1][7:2],gc[0][7:3]};
     end
     memory[DST/2+i]=16'hdead;
    end
@@ -122,6 +132,12 @@ module tb_realtime_remap;
   bypass=1;frame(4);frame(5); // All pixels including right/bottom edge must copy exactly.
   inject_error=1;frame(6);inject_error=0;bypass=0;frame(0);
   inject_error=1;frame(3);
+  if(ENABLE_ADVANCED)begin
+   inject_error=0;bypass=1;affine=1;
+   matrix={32'd16384,32'd65536,32'd0,32'hffff8000,32'd0,32'd65536};frame(7);
+   matrix={32'((W-1)*65536),32'd0,32'hffff0000,32'd0,32'd65536,32'd0};gamma_enable=1;frame(8);
+   affine=0;frame(9);gamma_enable=0;frame(10);
+  end
   finished=1;
   $display("PASS realtime_remap numerical borders, cache conflicts/frame invalidation, native arbitration/stalls/error drain");$finish;
  end

@@ -46,6 +46,7 @@ __pycache__/
 
 # Reproducible test outputs and simulator work libraries
 /build/
+/OV5640_Advanced_100H/
 **/build_*/
 *.wlf
 # PDS runtime ROM mirrors; authoritative files live in data/rom.

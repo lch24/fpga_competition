@@ -1,5 +1,9 @@
 # FPGA 相机标定与去畸变
 
+本分支为 `advance`：[提高部分 1（上位机动态旋转/仿射）和 3（自适应 Gamma）](docs/ADVANCED_DYNAMIC_GAMMA.md)。基于 `41bc59d` 独立开发，尚未合入 main 的红点预览功能，也尚未综合或上板验收。运行 `python scripts/build/prepare_advanced_project.py`，再打开生成的 `OV5640_Advanced_100H/Advanced_DynamicGamma.pds`。
+
+提高部分 1、3 的隔离开发入口见[动态仿射与自适应 Gamma](docs/ADVANCED_DYNAMIC_GAMMA.md)：默认不启用，不替换当前上板工程；独立提高版尚待资源、时序与实板验收。
+
 本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
 
 ## 从输入到输出

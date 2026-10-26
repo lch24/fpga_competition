@@ -3,6 +3,7 @@ module calibrated_view_top#(
 	parameter FIXED_BILINEAR = 1, parameter FIXED_ACCUM=1,
     parameter REALTIME_VIDEO = 1,
     parameter ENABLE_DISTORT_DEMO = 1,
+    parameter ENABLE_ADVANCED = 0,
     parameter CAMERA_SELECT = 2,
     parameter KEY_DEBOUNCE_CYCLES = 2500000,
     parameter [63:0] SQUARE_SIZE_FP64 = 64'h3ff0000000000000,
@@ -72,6 +73,8 @@ wire debug_por_n,debug_core_rst_n,debug_algorithm_rst_n;
 wire [15:0] debug_argument;wire [511:0] debug_algorithm_data;
 wire [15:0] debug_core_argument;
 wire [255:0] debug_core_data;
+wire advanced_write_valid;wire [7:0] advanced_write_op;wire [15:0] advanced_write_data;
+wire [31:0] advanced_errors;wire [191:0] advanced_snapshot;
 localparam WIDTH=1280,HEIGHT=720;
 localparam [31:0] RAW_BASE=0,DST_BASE=32'h01000000;
 localparam TH_1S=33000000;
@@ -513,14 +516,55 @@ board_display_hmic #(.DYNAMIC_BASE(1),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.RAW_BASE(RA
  .axi_araddr(disp_araddr),.axi_arlen(disp_arlen),.axi_aruser_id(disp_arid),.axi_arvalid(disp_arvalid),.axi_arready(native_arready[1]),
  .axi_rdata(rdata_q),.axi_rvalid(native_rvalid[1]),.axi_rlast(rlast_q),.axi_rid(rid_q));
 generate if(REALTIME_VIDEO)begin : g_realtime
-realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) remap(
- .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(rt_cmd_valid),.cmd_ready(rt_cmd_ready),.src_base(rt_src),.dst_base(rt_dst),.map_base(rt_map),.cmd_bypass(rt_bypass),
- .rsp_valid(rt_rsp_valid),.rsp_ready(rt_rsp_ready),.rsp_status(rt_status),.last_cycles(last_remap_cycles),
+wire proc_valid,proc_ready,proc_rsp,proc_rsp_ready,proc_bypass,proc_affine,proc_gamma;
+wire [31:0] proc_src,proc_dst,proc_map,pass_cycles;wire [7:0] proc_status;
+wire [2:0] proc_gamma_mode,gamma_curve;wire [191:0] proc_matrix;
+if(ENABLE_ADVANCED)begin : g_advanced
+ // Scratch byte range 01800000..019FFFFF; disjoint from all live/demo/map slots.
+ if(ENABLE_DISTORT_DEMO||WIDTH*HEIGHT*2>2097152)begin : g_bad_profile
+  ADVANCED_REQUIRES_DEMO_OFF_AND_FRAME_LE_2M invalid_profile();
+ end
+ wire sys_cfg_rst_n,core_cfg_rst_n,cfg_valid,cfg_ready,cfg_busy;
+ wire [207:0] cfg_payload;wire [15:0] active_flags;
+ wire [31:0] applied_count,first_cycles,second_cycles;
+ // Both mailbox ends reset together, even when functional DDR logic resets.
+ reset_sync csr(.clk(sys_clk),.arst_n(debug_por_n&&core_rst_n),.rst_n(sys_cfg_rst_n));
+ reset_sync ccr(.clk(core_clk),.arst_n(debug_por_n&&core_rst_n),.rst_n(core_cfg_rst_n));
+ advanced_config_bridge config_mailbox(.clk(sys_clk),.rst_n(sys_cfg_rst_n),
+  .write_valid(advanced_write_valid),.write_op(advanced_write_op),.write_data(advanced_write_data),
+  .busy(cfg_busy),.errors(advanced_errors),.core_clk(core_clk),.core_rst_n(core_cfg_rst_n),
+  .cfg_valid(cfg_valid),.cfg_ready(cfg_ready),.cfg_payload(cfg_payload));
+ advanced_frame_scheduler scheduler(.clk(core_clk),.rst_n(core_rst_n),
+  .cfg_valid(cfg_valid),.cfg_ready(cfg_ready),.cfg_payload(cfg_payload),
+  .in_valid(rt_cmd_valid),.in_ready(rt_cmd_ready),.in_src(rt_src),.in_dst(rt_dst),.in_map(rt_map),.in_bypass(rt_bypass),
+  .out_rsp_valid(rt_rsp_valid),.out_rsp_ready(rt_rsp_ready),.out_status(rt_status),
+  .cmd_valid(proc_valid),.cmd_ready(proc_ready),.cmd_src(proc_src),.cmd_dst(proc_dst),.cmd_map(proc_map),
+  .cmd_bypass(proc_bypass),.cmd_affine(proc_affine),.cmd_gamma(proc_gamma),.cmd_gamma_mode(proc_gamma_mode),.cmd_matrix(proc_matrix),
+  .rsp_valid(proc_rsp),.rsp_ready(proc_rsp_ready),.rsp_status(proc_status),.pass_cycles(pass_cycles),
+  .applied_count(applied_count),.last_cycles(last_remap_cycles),.first_cycles(first_cycles),.second_cycles(second_cycles),.active_flags(active_flags));
+ // Snapshot words after the preserved normal state/events: applied, total,
+ // first, second, sys-domain errors (inserted by board_debug), flags/status.
+ assign advanced_snapshot={{8'hA1,5'b0,gamma_curve,active_flags},32'b0,second_cycles,first_cycles,last_remap_cycles,applied_count};
+end else begin : g_baseline
+ assign proc_valid=rt_cmd_valid;assign rt_cmd_ready=proc_ready;
+ assign rt_rsp_valid=proc_rsp;assign proc_rsp_ready=rt_rsp_ready;assign rt_status=proc_status;
+ assign proc_src=rt_src;assign proc_dst=rt_dst;assign proc_map=rt_map;assign proc_bypass=rt_bypass;
+ assign proc_affine=0;assign proc_gamma=0;assign proc_gamma_mode=0;assign proc_matrix=0;
+ assign last_remap_cycles=pass_cycles;assign advanced_errors=0;assign advanced_snapshot=0;
+end
+realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.ENABLE_ADVANCED(ENABLE_ADVANCED)) remap(
+ .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(proc_valid),.cmd_ready(proc_ready),.src_base(proc_src),.dst_base(proc_dst),.map_base(proc_map),.cmd_bypass(proc_bypass),
+ .cmd_affine(proc_affine),.cmd_gamma(proc_gamma),.cmd_gamma_mode(proc_gamma_mode),.cmd_matrix(proc_matrix),.gamma_curve(gamma_curve),
+ .rsp_valid(proc_rsp),.rsp_ready(proc_rsp_ready),.rsp_status(proc_status),.last_cycles(pass_cycles),
  .arvalid(rt_arvalid),.arready(native_arready[3:2]),.araddr(rt_araddr),.arlen(rt_arlen),
  .rvalid(native_rvalid[3:2]),.rdata(rdata_q),.rlast(rlast_q),.rid(rid_q),
  .awvalid(rt_awvalid),.awready(native_awready[2]),.awaddr(rt_awaddr),.awlen(rt_awlen),.wdata(rt_wdata),
  .wready(native_wready[2]),.wdone(native_wdone[2]),.wid(axi_wusero_id));
 end else begin : g_no_realtime
+if(ENABLE_ADVANCED)begin : g_bad_profile
+ ADVANCED_REQUIRES_REALTIME_VIDEO invalid_profile();
+end
+assign advanced_errors=0;assign advanced_snapshot=0;
 assign rt_cmd_ready=1;assign rt_rsp_valid=0;assign rt_status=0;assign last_remap_cycles=0;
 assign rt_arvalid=0;assign rt_araddr=0;assign rt_arlen=0;assign rt_awvalid=0;assign rt_awaddr=0;assign rt_awlen=0;assign rt_wdata=0;
 end endgenerate
@@ -570,7 +614,8 @@ assign led={status!=0||display_error||(display_enable&&underflow_sync[1]),
 reset_sync dcr(.clk(core_clk),.arst_n(debug_por_n),.rst_n(debug_core_rst_n));
 reset_sync dar(.clk(algorithm_clk),.arst_n(debug_por_n),.rst_n(debug_algorithm_rst_n));
 wire [255:0] normal_core_snapshot;
-assign debug_core_data=ENABLE_DISTORT_DEMO && debug_core_argument==16'hfffc ? {demo_snapshot[255:64],normal_core_snapshot[63:0]} : normal_core_snapshot;
+assign debug_core_data=ENABLE_ADVANCED && debug_core_argument==16'hfffb ? {advanced_snapshot,normal_core_snapshot[63:0]} :
+ ENABLE_DISTORT_DEMO && debug_core_argument==16'hfffc ? {demo_snapshot[255:64],normal_core_snapshot[63:0]} : normal_core_snapshot;
 core_debug #(.VIDEO_ENABLE(REALTIME_VIDEO),.EVENT_MASK(32'hfbfffffe)) core_recorder(.clk(core_clk),.rst_n(debug_core_rst_n),.functional_reset_n(core_rst_n),
  .state_word({demo_map_ready,demo_pending,distort_mode,map_ready,video_active,ui_display_corrected,start_remap,ready_sync[1],status,phase,selected,captured,calibrated,corrected,ui_busy,
               display_enable,display_owner,capture_owner,display_idle}),
@@ -579,7 +624,8 @@ core_debug #(.VIDEO_ENABLE(REALTIME_VIDEO),.EVENT_MASK(32'hfbfffffe)) core_recor
  .write_accept(axi_awvalid&&axi_awready),.write_return(axi_wusero_last),
  .read_addr({4'b0,axi_araddr}),.write_addr({4'b0,axi_awaddr}),.snapshot(normal_core_snapshot),.argument(debug_core_argument),
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames),.skipped_frames(skipped_frames),.last_remap_cycles(ENABLE_DISTORT_DEMO?demo_snapshot[191:160]:last_remap_cycles));
-board_debug #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) diagnostics(.clk(sys_clk),.rx(uart_rx),.tx(uart_tx),.debug_rst_n(debug_por_n),
+board_debug #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.ENABLE_ADVANCED(ENABLE_ADVANCED)) diagnostics(.clk(sys_clk),.rx(uart_rx),.tx(uart_tx),.debug_rst_n(debug_por_n),
+ .advanced_write_valid(advanced_write_valid),.advanced_write_op(advanced_write_op),.advanced_write_data(advanced_write_data),.advanced_errors(advanced_errors),
  .camera_clk(cam_clk),.camera_vsync(cam_vs),.core_clk(core_clk),.algorithm_clk(algorithm_clk),.core_data(debug_core_data),
  .algorithm_data(debug_algorithm_data),.algorithm_argument(debug_argument),.core_argument(debug_core_argument),
  .health({algorithm_rst_n,core_rst_n,init_over_tx,cmos_init_done,ddr_init_done,algorithm_locked,locked}));

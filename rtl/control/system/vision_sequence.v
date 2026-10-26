@@ -5,7 +5,7 @@
 // External callers supply ordered frame descriptors, never job/view/index IDs.
 // Manual board mode returns after calibration and retains parameters here.
 // A later start_remap corrects remap_base; default mode chains all stages.
-module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0)(
+module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0,ENABLE_CORNER_REVIEW=0)(
  input wire clk,rst_n,layout_ok,
  input wire start_valid,output wire start_ready,input wire [63:0] square_size_fp64,
  input wire start_remap,input wire [31:0] remap_base,
@@ -27,6 +27,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
  output wire corner_last,
  output wire view_rsp_valid,input wire view_rsp_ready,output reg [7:0] view_status,
  output wire cal_cmd_valid,input wire cal_cmd_ready,
+ output wire review_wait,input wire review_continue,
  output wire mb_begin_valid,input wire mb_begin_ready,
  input wire mb_valid,output wire mb_ready,input wire [7:0] mb_status,
  input wire [31:0] mb_id,input wire [15:0] mb_width,mb_height,input wire [287:0] mb_params,
@@ -36,7 +37,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
 );
  localparam IDLE=0,COLLECT=1,FRAME=2,GRAY_CMD=3,GRAY_WAIT=4,DET_START=5,
  DET_ARM=6,DET_WAIT=7,VIEW_RSP=8,RELEASE=9,CAL_CMD=10,CAL_WAIT=11,
- BUILD_CMD=12,BUILD_WAIT=13,REMAP_CMD=14,REMAP_WAIT=15,RESPONSE=16;
+ BUILD_CMD=12,BUILD_WAIT=13,REMAP_CMD=14,REMAP_WAIT=15,RESPONSE=16,REVIEW_WAIT=17;
  reg params_valid; reg demo_build;
  reg [5:0] state;reg held,release_to_frame;reg [8:0] point_count;
  assign start_ready=state==IDLE;assign busy=state!=IDLE;
@@ -63,6 +64,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
  assign mb_begin_valid=state==COLLECT&&collect_ready;
  assign view_rsp_valid=state==VIEW_RSP&&!mb_valid;
  assign cal_cmd_valid=state==CAL_CMD;
+ assign review_wait=state==REVIEW_WAIT;
  assign mb_ready=state==CAL_WAIT;
  assign remap_cmd_valid=state==BUILD_CMD||state==REMAP_CMD;
  assign remap_opcode=state==BUILD_CMD?(ENABLE_DISTORT_DEMO&&demo_build?2'd3:2'd1):2'd2;
@@ -114,7 +116,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
      if(mb_valid)state<=CAL_WAIT;
      else if(view_rsp_ready)begin
       if(view_status!=0)state<=CAL_WAIT;
-      else if(view_id==`PAR_VIEWS-1)state<=CAL_CMD;
+      else if(view_id==`PAR_VIEWS-1)state<=ENABLE_CORNER_REVIEW?REVIEW_WAIT:CAL_CMD;
       else begin release_to_frame<=1;state<=RELEASE;end
      end
     end
@@ -122,6 +124,7 @@ module vision_sequence #(parameter WIDTH=1280,HEIGHT=720,MANUAL_CONTROL=0,BUILD_
      held<=0;
      if(release_to_frame)begin view_id<=view_id+1'b1;state<=FRAME;end else state<=RESPONSE;
     end
+    REVIEW_WAIT:if(mb_valid)state<=CAL_WAIT;else if(review_continue)state<=CAL_CMD;
     CAL_CMD:if(mb_valid)state<=CAL_WAIT;else if(cal_cmd_ready)state<=CAL_WAIT;
     CAL_WAIT:if(mb_valid)begin
      if(mb_status!=0||mb_id!=job||mb_width!=WIDTH||mb_height!=HEIGHT)begin

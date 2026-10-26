@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "calib_defs.vh"
 // Real sequence controller, protocol models for numerical workers.
-module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0);
+module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0,ENABLE_CORNER_REVIEW=0);
  reg clk=0,rst_n=0,finished=0,start_valid=0,start_remap=0;
  reg [31:0] remap_base=0,frame_base=0;
  reg frame_valid=0,frame_release_ready=0,rsp_ready=0,gray_rsp_valid=0;
@@ -13,6 +13,7 @@ module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0);
  wire [31:0] job,src_base;wire [287:0] params;wire algorithm_rst_n;
  always #12.5 clk=~clk;
  reg task_active=0;
+ reg review_continue=0;wire review_wait;
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)task_active<=0;
   else if(start_valid&&start_ready)task_active<=1;
@@ -20,7 +21,8 @@ module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0);
  end
  always @(negedge clk)if(rst_n&&algorithm_rst_n!==task_active)
   $fatal(1,"worker reset must span the complete task, including response stalls");
- vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1),.BUILD_ONLY(BUILD_ONLY),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) dut(
+ vision_sequence #(.WIDTH(64),.HEIGHT(32),.MANUAL_CONTROL(1),.BUILD_ONLY(BUILD_ONLY),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW)) dut(
+ .review_wait(review_wait),.review_continue(review_continue),
  .clk(clk),.rst_n(rst_n),.layout_ok(1'b1),.start_valid(start_valid),.start_ready(start_ready),
  .start_remap(start_remap),.remap_base(remap_base),.square_size_fp64(64'h3ff0000000000000),
  .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(32'd128),.frame_capacity(32'd4096),
@@ -60,6 +62,10 @@ module tb_vision_manual #(parameter BUILD_ONLY=0,ENABLE_DISTORT_DEMO=0);
     det_valid=0;det_done=1;
     wait(view_rsp_valid);if(view_status!=0||view_id!=v)$fatal(1,"view commit");
     if(v<`PAR_VIEWS-1)release_frame();
+   end
+   if(ENABLE_CORNER_REVIEW)begin
+    wait(review_wait);repeat(50)begin tick();if(cal_cmd_valid||det_process||gray_cmd_valid||!algorithm_rst_n)$fatal(1,"review did not pause calculation / preserve workers");end
+    review_continue=1;tick();review_continue=0;
    end
    wait(mb_ready);tick();mb_status=code;mb_valid=1;tick();mb_valid=0;
    release_frame();response(code);

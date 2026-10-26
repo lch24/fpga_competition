@@ -14,11 +14,11 @@ import struct
 import time
 
 UI = ['idle', 'drain_display', 'capture_command', 'capture', 'start_algorithm',
-      'offer_frame', 'wait_frame_release', 'wait_result', 'live_video', 'drain_video', 'demo_mode_change', 'demo_photo_processing', 'camera_preview']
+      'offer_frame', 'wait_frame_release', 'wait_result', 'live_video', 'drain_video', 'demo_mode_change', 'demo_photo_processing', 'camera_preview', 'corner_review_loading', 'corner_review', 'resume_calibration']
 ALGORITHM = ['idle', 'collect', 'wait_frame', 'gray_command', 'gray_wait',
              'detect_start', 'detect_arm', 'detect_wait', 'view_response',
              'release_frame', 'calibration_command', 'calibration_wait',
-             'map_command', 'map_wait', 'remap_command', 'remap_wait', 'response']
+             'map_command', 'map_wait', 'remap_command', 'remap_wait', 'response', 'corner_review']
 PARAMS = ['fx', 'fy', 'cx', 'cy', 'k1', 'k2', 'k3', 'p1', 'p2']
 # Board top fixes the geometry; the status packet carries no image size.
 IMAGE_WIDTH, IMAGE_HEIGHT = 1280, 720
@@ -383,13 +383,13 @@ def main():
         if args.corners:
             state = monitor.query(0x53)
             if (not state['query_page_valid'] or state['algorithm_stale'] or state['core_stale'] or not state['algorithm_seen']
-                    or not state['core_seen'] or state['busy']):
+                    or not state['core_seen'] or (state['busy'] and state['algorithm_phase'] != 'corner_review')):
                 raise RuntimeError('Export corners only with a fresh, idle algorithm snapshot')
             points = []
             for index in range(state['corner_count']):
                 point = monitor.query(0x43, index)
                 if (not point['query_page_valid'] or point['algorithm_stale'] or point['core_stale']
-                        or point['busy'] or not point.get('corner_valid', False)
+                        or (point['busy'] and point['algorithm_phase'] != 'corner_review') or not point.get('corner_valid', False)
                         or point['calibration_job'] != state['calibration_job']):
                     raise RuntimeError('Calibration changed or snapshot expired during export')
                 points.append({'index': index, 'xy': point['corner_xy']})

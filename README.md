@@ -1,5 +1,7 @@
 # FPGA 相机标定与去畸变
 
+main 已包含[两次 KEY3、红点查看角点和计算前 k3 覆盖检查](docs/CORNER_REVIEW.md)，包括第三张照片 lease 等待卡死的修复。**使用红点版须先运行 `python scripts/build/prepare_corner_review.py`，再打开生成的 `OV5640_DualView_100H/CornerReview.pds`**。原 `DualView_OV5640.pds` 的默认配置保留旧单次 KEY3 流程。红点版已实板进入查看阶段；三图人工核对、确认求解及视频的完整验收尚未完成。提高部分单独位于 `advance` 分支。
+
 本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
 
 ## 从输入到输出

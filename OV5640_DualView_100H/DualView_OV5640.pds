@@ -795,6 +795,7 @@
                             <option name="library" type="string" value="work"/>
                         </options>
                     </item>
+                    <item type="FILE" file="../rtl/video/dma/corner_review_dma.v" format="verilog" timespec="2026-10-26T12:00:00" library="work"><options><option name="format" type="string" value="verilog"/><option name="library" type="string" value="work"/></options></item>
                     <item type="FILE" file="../rtl/video/dma/video_frame_writer.v" format="verilog" timespec="2026-10-12T20:47:56" library="work">
                         <options>
                             <option name="format" type="string" value="verilog"/>

@@ -3,6 +3,7 @@ module calibrated_view_top#(
 	parameter FIXED_BILINEAR = 1, parameter FIXED_ACCUM=1,
     parameter REALTIME_VIDEO = 1,
     parameter ENABLE_DISTORT_DEMO = 1,
+    parameter ENABLE_CORNER_REVIEW = 0,
     parameter CAMERA_SELECT = 2,
     parameter KEY_DEBOUNCE_CYCLES = 2500000,
     parameter [63:0] SQUARE_SIZE_FP64 = 64'h3ff0000000000000,
@@ -240,10 +241,52 @@ wire [55:0] rt_araddr;wire [7:0] rt_arlen;wire [1:0] rt_arvalid;
 wire [27:0] rt_awaddr;wire [3:0] rt_awlen;wire rt_awvalid;wire [255:0] rt_wdata;
 wire demo_toggle,distort_mode,demo_pending,demo_map_ready;
 wire rt_bypass;wire [31:0] rt_map;wire [255:0] demo_snapshot;
+wire review_wait_core,review_continue_core,corner_review_ready;
+wire review_wait_algorithm,review_continue_algorithm,review_point_valid,review_point_ready;
+wire [71:0] review_point_data;
+wire mark_valid,mark_ready,mark_rsp_valid,mark_rsp_ready;wire [7:0] mark_status;
+wire mark_busy,mark_awvalid;wire [27:0] mark_awaddr;wire [3:0] mark_awlen;
+wire [255:0] mark_wdata;wire [31:0] mark_wstrb;
+wire engine_awvalid;wire [27:0] engine_awaddr;wire [3:0] engine_awlen;wire [255:0] engine_wdata;
+wire [31:0] rt_wstrb;
+generate if(ENABLE_CORNER_REVIEW)begin : g_corner_review
+ if(ENABLE_DISTORT_DEMO||!REALTIME_VIDEO)begin : g_bad_profile
+  CORNER_REVIEW_REQUIRES_NORMAL_REALTIME_PROFILE invalid_profile();
+ end
+ wire fifo_valid;wire [71:0] fifo_data;wire points_complete;
+ reg [1:0] wait_sync,continue_sync /* synthesis PAP_ASYNC_REG=1 */;
+ always @(posedge core_clk or negedge core_rst_n)
+  if(!core_rst_n)wait_sync<=0;else wait_sync<={wait_sync[0],review_wait_algorithm};
+ always @(posedge algorithm_clk or negedge algorithm_rst_n)
+  if(!algorithm_rst_n)continue_sync<=0;else continue_sync<={continue_sync[0],review_continue_core};
+ assign review_wait_core=wait_sync[1]&&points_complete;
+ assign review_continue_algorithm=continue_sync[1];
+ async_fifo #(.WIDTH(72),.ADDR_BITS(3)) points_cdc(
+  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(review_point_valid),.wready(review_point_ready),.wdata(review_point_data),
+  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(fifo_valid),.rready(1'b1),.rdata(fifo_data));
+ corner_review_dma #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) marks(.clk(core_clk),.rst_n(core_rst_n),
+  .point_valid(fifo_valid),.point(fifo_data),.points_complete(points_complete),
+  .cmd_valid(mark_valid),.cmd_ready(mark_ready),.view(selected),.dst_base(DST_BASE),
+  .rsp_valid(mark_rsp_valid),.rsp_ready(mark_rsp_ready),.status(mark_status),.busy(mark_busy),
+  .awvalid(mark_awvalid),.awready(native_awready[2]&&mark_busy),.awaddr(mark_awaddr),.awlen(mark_awlen),
+  .wdata(mark_wdata),.wstrb(mark_wstrb),.wready(native_wready[2]&&mark_busy),.wdone(native_wdone[2]&&mark_busy),.wid(axi_wusero_id));
+end else begin : g_no_corner_review
+ assign review_wait_core=0;assign review_continue_algorithm=0;assign review_point_ready=1;
+ assign mark_ready=1;assign mark_rsp_valid=0;assign mark_status=0;
+ assign mark_busy=0;assign mark_awvalid=0;assign mark_awaddr=0;assign mark_awlen=0;assign mark_wdata=0;assign mark_wstrb=0;
+end endgenerate
+// The copier has returned its final physical completion BEFORE MARK starts.
+// Share its native WRITE slot; no fourth DDR customer and no extra arbiter.
+assign rt_awvalid=mark_busy?mark_awvalid:engine_awvalid;
+assign rt_awaddr=mark_busy?mark_awaddr:engine_awaddr;
+assign rt_awlen=mark_busy?mark_awlen:engine_awlen;
+assign rt_wdata=mark_busy?mark_wdata:engine_wdata;
+assign rt_wstrb=mark_busy?mark_wstrb:32'hffffffff;
 board_buttons #(.DEBOUNCE_CYCLES(KEY_DEBOUNCE_CYCLES),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) buttons(
  .clk(core_clk),.rst_n(core_rst_n),.key_n(key_n),.pressed(pressed),.toggle_mode(demo_toggle));
 generate if(REALTIME_VIDEO)begin : g_video_flow
 if(ENABLE_DISTORT_DEMO)begin : g_demo
+assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;
 distort_demo_flow flow(
  .preview_enable(1'b1),
  .toggle_mode(demo_toggle),.remap_cycles(last_remap_cycles),.distort_mode(distort_mode),
@@ -263,7 +306,9 @@ distort_demo_flow flow(
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames));
 end else begin : g_normal
 assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_map=32'h02000000;assign demo_snapshot=0;
-video_board_flow flow(
+video_board_flow #(.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW)) flow(
+ .review_wait(review_wait_core),.review_continue(review_continue_core),.review_ready(corner_review_ready),
+ .mark_valid(mark_valid),.mark_ready(mark_ready),.mark_rsp_valid(mark_rsp_valid),.mark_rsp_ready(mark_rsp_ready),.mark_status(mark_status),
  .preview_enable(1'b1),.preview_active(),
  .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),.display_frame_start(display_frame_start),
  .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
@@ -280,6 +325,7 @@ video_board_flow flow(
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames));
 end
 end else begin : g_photo_flow
+assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;
 assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_map=32'h02000000;assign demo_snapshot=0;
 assign ui_display_corrected=display_enable&&display_base==DST_BASE;
 assign video_active=0;assign map_ready=0;assign captured_frames=0;assign corrected_frames=0;assign displayed_frames=0;assign failed_frames=0;
@@ -428,7 +474,9 @@ vision_clock_bridge algorithm_cdc(.core_clk(core_clk),.core_rst_n(core_rst_n),
  .b_tag(b_tag),
  .a_b_error(a_b_error),
  .b_error(b_error));
-vision_ddr_top #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.DEBUG_ENABLE(1),.MANUAL_CONTROL(1),.PACKED_MAP(REALTIME_VIDEO),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
+vision_ddr_top #(.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.DEBUG_ENABLE(1),.MANUAL_CONTROL(1),.PACKED_MAP(REALTIME_VIDEO),.FIXED_ACCUM(FIXED_ACCUM),.FIXED_BILINEAR(FIXED_BILINEAR),.CANDIDATE_BASE(CANDIDATE_BASE),.WIDTH(WIDTH),.HEIGHT(HEIGHT),.DST_BASE(DST_BASE)) algorithm(
+ .review_wait(review_wait_algorithm),.review_continue(review_continue_algorithm),
+ .review_point_valid(review_point_valid),.review_point_ready(review_point_ready),.review_point(review_point_data),
  .clk(algorithm_clk),.rst_n(algorithm_rst_n),.start_valid(a_start_valid),.start_ready(a_start_ready),.square_size_fp64(SQUARE_SIZE_FP64),.start_remap(a_start_remap),.remap_base(a_start_base),
  .frame_valid(a_frame_valid),.frame_ready(a_frame_ready),.frame_base(a_frame_base),.frame_stride(32'd2560),.frame_capacity(32'd1843200),.frame_status(a_frame_status),
  .frame_release_valid(a_release_valid),.frame_release_ready(a_release_ready),
@@ -518,18 +566,18 @@ realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT)) remap(
  .rsp_valid(rt_rsp_valid),.rsp_ready(rt_rsp_ready),.rsp_status(rt_status),.last_cycles(last_remap_cycles),
  .arvalid(rt_arvalid),.arready(native_arready[3:2]),.araddr(rt_araddr),.arlen(rt_arlen),
  .rvalid(native_rvalid[3:2]),.rdata(rdata_q),.rlast(rlast_q),.rid(rid_q),
- .awvalid(rt_awvalid),.awready(native_awready[2]),.awaddr(rt_awaddr),.awlen(rt_awlen),.wdata(rt_wdata),
- .wready(native_wready[2]),.wdone(native_wdone[2]),.wid(axi_wusero_id));
+ .awvalid(engine_awvalid),.awready(native_awready[2]&&!mark_busy),.awaddr(engine_awaddr),.awlen(engine_awlen),.wdata(engine_wdata),
+ .wready(native_wready[2]&&!mark_busy),.wdone(native_wdone[2]&&!mark_busy),.wid(axi_wusero_id));
 end else begin : g_no_realtime
 assign rt_cmd_ready=1;assign rt_rsp_valid=0;assign rt_status=0;assign last_remap_cycles=0;
-assign rt_arvalid=0;assign rt_araddr=0;assign rt_arlen=0;assign rt_awvalid=0;assign rt_awaddr=0;assign rt_awlen=0;assign rt_wdata=0;
+assign rt_arvalid=0;assign rt_araddr=0;assign rt_arlen=0;assign engine_awvalid=0;assign engine_awaddr=0;assign engine_awlen=0;assign engine_wdata=0;
 end endgenerate
 assign axi_aruser_id=0;assign axi_awuser_id=0;assign axi_aruser_ap=0;assign axi_awuser_ap=0;
 video_hmic_arbiter native_memory(.clk(core_clk),.rst_n(core_rst_n),
  .c_arvalid({rt_arvalid,disp_arvalid,alg_arvalid}),.c_arready(native_arready),.c_araddr({rt_araddr,disp_araddr,alg_araddr}),.c_arlen({rt_arlen,disp_arlen,alg_arlen}),
  .c_rvalid(native_rvalid),.c_rdata(),.c_rlast(),.c_rid(),
  .c_awvalid({rt_awvalid,alg_awvalid,cap_awvalid}),.c_awready(native_awready),.c_awaddr({rt_awaddr,alg_awaddr,cap_awaddr}),.c_awlen({rt_awlen,alg_awlen,cap_awlen}),
- .c_wdata({rt_wdata,alg_wdata,cap_wdata}),.c_wstrb({32'hffffffff,alg_wstrb,cap_wstrb}),.c_wready(native_wready),.c_wdone(native_wdone),.c_wid(),
+ .c_wdata({rt_wdata,alg_wdata,cap_wdata}),.c_wstrb({rt_wstrb,alg_wstrb,cap_wstrb}),.c_wready(native_wready),.c_wdone(native_wdone),.c_wid(),
  .araddr(axi_araddr),.arlen(axi_arlen),.arvalid(axi_arvalid),.arready(axi_arready),
  .rdata(rdata_q),.rvalid(rvalid_q),.rlast(rlast_q),.rid(rid_q),
  .awaddr(axi_awaddr),.awlen(axi_awlen),.awvalid(axi_awvalid),.awready(axi_awready),
@@ -563,7 +611,7 @@ end else begin : g_normal_led
  assign demo_heartbeat=heart_beat_led;
 end endgenerate
 assign led={status!=0||display_error||(display_enable&&underflow_sync[1]),
- corrected,calibrated,ui_busy,captured,demo_heartbeat};
+ (corrected||corner_review_ready),calibrated,ui_busy,captured,demo_heartbeat};
 
 
 // Debug continues before DDR initialization and across functional resets.

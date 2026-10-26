@@ -11,7 +11,8 @@
 module video_board_flow #(
  parameter RAW_BASE=32'h0,SLOT_BYTES=32'h00200000,DST_BASE=32'h01000000,
  parameter LIVE_BASE=32'h00800000,
- parameter REVIEW_CYCLES=250000000 // 2 seconds at the board's 125 MHz clock
+ parameter REVIEW_CYCLES=250000000, // 2 seconds at the board's 125 MHz clock
+ parameter ENABLE_CORNER_REVIEW=0
 )(
  input wire preview_enable,output wire preview_active,
  input wire clk,rst_n,camera_ready,input wire [4:0] pressed,input wire display_idle,display_frame_start,
@@ -29,10 +30,18 @@ module video_board_flow #(
  output wire remap_valid,input wire remap_ready,output wire [31:0] remap_src,remap_dst,
  input wire remap_rsp_valid,output wire remap_rsp_ready,input wire [7:0] remap_status,
  output reg [31:0] captured_frames,corrected_frames,displayed_frames,failed_frames
+ ,input wire review_wait,output wire review_continue,review_ready,
+ output wire mark_valid,input wire mark_ready,mark_rsp_valid,output wire mark_rsp_ready,input wire [7:0] mark_status
 );
  localparam IDLE=0,DRAIN=1,COMMAND=2,CAPTURE=3,START=4,OFFER=5,LEASE=6,RESULT=7,VIDEO=8,STOP=9;
  localparam SELECT=0,PHOTO=1,CALIBRATE=2,MAP=3,PREVIEW=4;
- reg [3:0] state;reg [2:0] action;reg [1:0] target,view_index;
+ localparam REV_DRAIN=10,REV_COPY=11,REV_COPY_WAIT=12,REV_MARK=13,REV_MARK_WAIT=14,REVIEW=15,RESUME=16;
+ reg [4:0] state;reg [2:0] action;reg [1:0] target,view_index;
+ reg resume_review;
+ wire review_context=ENABLE_CORNER_REVIEW&&(state>=REV_DRAIN);
+ assign review_ready=state==REVIEW&&status==0;
+ assign review_continue=state==RESUME;
+ assign mark_valid=state==REV_MARK;assign mark_rsp_ready=state==REV_MARK_WAIT;
  reg preview;
  localparam REVIEW_BITS=REVIEW_CYCLES<2?1:$clog2(REVIEW_CYCLES+1);
  reg [REVIEW_BITS-1:0] review_left;
@@ -59,14 +68,14 @@ module video_board_flow #(
  wire [1:0] failures={1'b0,cap_rsp_valid&&cap_status!=0}+{1'b0,remap_rsp_valid&&remap_rsp_ready&&remap_status!=0};
  wire [1:0] completed_slot=cap_rsp_base==LIVE_BASE?0:cap_rsp_base==LIVE_BASE+SLOT_BYTES?1:2;
  assign preview_active=state==VIDEO&&preview;
- assign phase=preview_active?4'd12:state;
- assign waiting=state==IDLE||preview_active;assign busy=state!=IDLE&&!preview_active;
+ assign phase=preview_active?4'd12:review_context?(state==REVIEW?4'd14:state==RESUME?4'd15:4'd13):state[3:0];
+ assign waiting=state==IDLE||preview_active||state==REVIEW;assign busy=state!=IDLE&&!preview_active&&state!=REVIEW;
  assign video_active=state==VIDEO&&!preview;
  assign display_corrected=state==VIDEO&&has_display&&displayed_corrected;
- assign display_enable=state==IDLE?showing:state==VIDEO&&(has_display||(|dst_ready));
- assign display_owner=display_enable||state==DRAIN||state==STOP;
+ assign display_enable=(state==REVIEW&&status==0)|| (state==IDLE?showing:state==VIDEO&&(has_display||(|dst_ready)));
+ assign display_owner=display_enable||state==DRAIN||state==STOP||review_context;
  // Candidate base is presented BEFORE the display's frame-start/latch edge.
- assign display_base=live?DST_BASE+(|dst_ready?next_display:display_slot)*SLOT_BYTES:RAW_BASE+selected*SLOT_BYTES;
+ assign display_base=review_context?DST_BASE:live?DST_BASE+(|dst_ready?next_display:display_slot)*SLOT_BYTES:RAW_BASE+selected*SLOT_BYTES;
  assign start_valid=state==START;assign start_base=RAW_BASE+selected*SLOT_BYTES;
  assign frame_valid=state==OFFER;assign frame_status=0;assign frame_base=RAW_BASE+view_index*SLOT_BYTES;
  assign frame_release_ready=state==LEASE||state==RESULT;
@@ -75,8 +84,10 @@ module video_board_flow #(
  assign cap_rsp_ready=live||state==CAPTURE;
  assign capture_owner=live||state==COMMAND||state==CAPTURE;
  assign rsp_ready=state==OFFER||state==RESULT;
- assign remap_valid=remap_pending;assign remap_src=LIVE_BASE+source_slot*SLOT_BYTES;
- assign remap_dst=DST_BASE+destination_slot*SLOT_BYTES;assign remap_rsp_ready=remap_running;
+ assign remap_valid=state==REV_COPY||remap_pending;
+ assign remap_src=review_context?RAW_BASE+selected*SLOT_BYTES:LIVE_BASE+source_slot*SLOT_BYTES;
+ assign remap_dst=review_context?DST_BASE:DST_BASE+destination_slot*SLOT_BYTES;
+ assign remap_rsp_ready=state==REV_COPY_WAIT||remap_running;
  // Counters are telemetry, one cycle behind the ownership events. Register
  // event predicates before the 32-bit counter enables; key/mode decode no
  // longer fans out through every bit of a counter on the same cycle.
@@ -99,7 +110,7 @@ module video_board_flow #(
  end
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin
-   preview<=0;review_left<=0;review_started<=0;show_before<=0;remap_bypass<=0;state<=IDLE;action<=SELECT;target<=0;view_index<=0;selected<=0;showing<=0;
+   resume_review<=0;preview<=0;review_left<=0;review_started<=0;show_before<=0;remap_bypass<=0;state<=IDLE;action<=SELECT;target<=0;view_index<=0;selected<=0;showing<=0;
    captured<=0;calibrated<=0;corrected<=0;map_ready<=0;start_remap<=0;status<=0;
    raw_used<=0;raw_ready<=0;capture_pending<=0;remap_pending<=0;remap_running<=0;
    queue_read<=0;queue_write<=0;queue_count<=0;
@@ -147,8 +158,36 @@ module video_board_flow #(
     end
     START:if(start_ready)state<=start_remap?RESULT:OFFER;
     OFFER:if(frame_ready)state<=LEASE;
-    LEASE:if(frame_release_valid)begin if(view_index==2)state<=RESULT;else begin view_index<=view_index+1'b1;state<=OFFER;end end
-    RESULT:state<=RESULT;
+    LEASE:begin
+     // The sequence retains the third photo lease until calibration finishes.
+     // REVIEW_WAIT therefore precedes its final release token. Enter review
+     // here, keeping the lease intact; RESUME returns to RESULT, where the
+     // existing release/result channels finish the same calibration job.
+     if(ENABLE_CORNER_REVIEW&&view_index==2&&review_wait)begin
+      selected<=0;target<=0;resume_review<=0;remap_bypass<=1;state<=REV_DRAIN;
+     end else if(frame_release_valid)begin
+      if(view_index==2)state<=RESULT;else begin view_index<=view_index+1'b1;state<=OFFER;end
+     end
+    end
+    RESULT:if(ENABLE_CORNER_REVIEW&&review_wait)begin
+     selected<=0;target<=0;resume_review<=0;remap_bypass<=1;state<=REV_DRAIN;
+    end
+    REV_DRAIN:if(display_idle)begin
+     selected<=target;
+     state<=resume_review?RESUME:REV_COPY;
+    end
+    REV_COPY:if(remap_ready)state<=REV_COPY_WAIT;
+    REV_COPY_WAIT:if(remap_rsp_valid)begin
+     status<=remap_status;
+     state<=remap_status==0?REV_MARK:REVIEW;
+    end
+    REV_MARK:if(mark_ready)state<=REV_MARK_WAIT;
+    REV_MARK_WAIT:if(mark_rsp_valid)begin status<=mark_status;state<=REVIEW;end
+    REVIEW:begin
+     if(photo_press)begin target<=requested;resume_review<=0;remap_bypass<=1;state<=REV_DRAIN;end
+     else if(pressed[3]&&status==0)begin resume_review<=1;state<=REV_DRAIN;end
+    end
+    RESUME:if(!review_wait)state<=RESULT;
     VIDEO:begin
      if(!preview&&pressed[0]&&!pressed[4])show_before<=!show_before;
      if(stop_live)begin

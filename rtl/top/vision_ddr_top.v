@@ -6,6 +6,7 @@
 // Result memory remains owned by caller until rsp_ready; next start may overwrite.
 module vision_ddr_top #(
  parameter WIDTH=1280,HEIGHT=720,DEPTH=2,MANUAL_CONTROL=0,DEBUG_ENABLE=0,PACKED_MAP=0,ENABLE_DISTORT_DEMO=0,
+ parameter ENABLE_CORNER_REVIEW=0,
  parameter GRAY_BASE=32'h03000000,DST_BASE=32'h01000000,
  parameter FIXED_BILINEAR=1, parameter FIXED_ACCUM=1,
  parameter CANDIDATE_BASE=32'h03200000,
@@ -20,6 +21,8 @@ module vision_ddr_top #(
  output wire busy,output wire [31:0] debug_job,output wire [7:0] debug_view,output wire [5:0] debug_phase,
  output wire [287:0] result_params,output reg [63:0] result_rms,
  input wire debug_rst_n,input wire [15:0] debug_argument,output wire [511:0] debug_snapshot,
+ output wire review_wait,input wire review_continue,
+ output wire review_point_valid,input wire review_point_ready,output wire [71:0] review_point,
  output wire rd_valid,
  input wire rd_ready,
  output wire [31:0] rd_addr,
@@ -123,7 +126,15 @@ module vision_ddr_top #(
  wire [2:0] c_b_ready;
  wire [15:0] c_b_tag;
  wire c_b_error;
- vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL),.BUILD_ONLY(PACKED_MAP),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) sequence_ctrl(
+ wire store_corner_ready;
+ generate if(ENABLE_CORNER_REVIEW&&(`PAR_VIEWS!=3||`PAR_POINTS!=40))begin : g_bad_review_grid
+  CORNER_REVIEW_REQUIRES_THREE_5_BY_8_VIEWS invalid_grid();
+ end endgenerate
+ assign cr=store_corner_ready&&(!ENABLE_CORNER_REVIEW||review_point_ready);
+ assign review_point_valid=ENABLE_CORNER_REVIEW&&cv&&store_corner_ready;
+ assign review_point={debug_view[1:0],index[5:0],dy,dx};
+ vision_sequence #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.MANUAL_CONTROL(MANUAL_CONTROL),.BUILD_ONLY(PACKED_MAP),.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW)) sequence_ctrl(
+  .review_wait(review_wait),.review_continue(review_continue),
   .clk(clk),.rst_n(rst_n),.layout_ok(layout_ok),.start_remap(start_remap),.remap_base(remap_base),.start_valid(start_valid),.start_ready(start_ready),.square_size_fp64(square_size_fp64),
   .frame_valid(frame_valid),.frame_ready(frame_ready),.frame_base(frame_base),.frame_stride(frame_stride),.frame_capacity(frame_capacity),
   .frame_status(frame_status),.frame_config_ok(frame_ok),.frame_release_valid(frame_release_valid),.frame_release_ready(frame_release_ready),
@@ -213,7 +224,7 @@ module vision_ddr_top #(
   .math_req_a(feature_req_a),.math_req_b(feature_req_b),.math_active(feature_active),
   .math_rsp_valid(feature_rsp_valid),.math_rsp_ready(feature_rsp_ready),.math_result(feature_result),.math_flags(feature_flags),
   .clk(clk),.rst_n(ar),.collect_valid(collect_v),.collect_ready(collect_r),.collect_job_id(debug_job),
-  .corner_valid(cv),.corner_ready(cr),.corner_job_id(debug_job),.corner_view_id(debug_view),.corner_point_index(index),.corner_x_fp32(dx),.corner_y_fp32(dy),.corner_last(last),
+  .corner_valid(cv&&(!ENABLE_CORNER_REVIEW||review_point_ready)),.corner_ready(store_corner_ready),.corner_job_id(debug_job),.corner_view_id(debug_view),.corner_point_index(index),.corner_x_fp32(dx),.corner_y_fp32(dy),.corner_last(last),
   .view_rsp_valid(vr),.view_rsp_ready(va),.view_rsp_job_id(debug_job),.view_rsp_view_id(debug_view),.view_rsp_status(view_status),
   .cmd_valid(ccv),.cmd_ready(ccr),.cmd_job_id(debug_job),.cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_square_size_fp64(square),
   .camera_valid(pv),.camera_ready(pr),.camera_calib_id(pid),.camera_width(pw),.camera_height(ph),.camera_usable(usable),.camera_params(pp),

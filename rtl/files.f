@@ -120,6 +120,7 @@ rtl/top/vision_ddr_top.v
 rtl/video/dma/board_capture_hmic.v
 rtl/video/dma/board_display_hmic.v
 rtl/video/dma/capture_dma.v
+rtl/video/dma/corner_review_dma.v
 rtl/video/dma/display_dma.v
 rtl/video/dma/video_capture_hmic.v
 rtl/video/dma/video_frame_writer.v

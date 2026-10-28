@@ -54,6 +54,8 @@ rtl/control/frame/descriptor_check.v
 rtl/control/frame/frame_manager.v
 rtl/control/frame/undistort_top.v
 rtl/control/system/board_buttons.v
+rtl/control/system/advanced_config_bridge.v
+rtl/control/system/advanced_frame_scheduler.v
 rtl/control/system/board_flow.v
 rtl/control/system/video_board_flow.v
 rtl/control/system/vision_sequence.v
@@ -88,6 +90,7 @@ rtl/image/kernels/tensor_core.v
 rtl/image/kernels/tensor_solve.v
 rtl/image/kernels/tensor_window_sum.v
 rtl/image/kernels/video_bilinear_pipe.v
+rtl/image/kernels/video_adaptive_gamma.v
 rtl/image/kernels/window3x3.v
 rtl/image/remap/map_build_ctrl.v
 rtl/image/remap/map_coord_core.v
@@ -98,6 +101,7 @@ rtl/image/remap/output_writer.v
 rtl/image/remap/realtime_remap.v
 rtl/image/remap/sample_coord.v
 rtl/image/remap/video_map_prefetch.v
+rtl/image/remap/video_affine_coords.v
 rtl/image/remap/video_neighbor_cache.v
 rtl/io/uart/debug_uart.v
 rtl/memory/ddr/ddr_service.v

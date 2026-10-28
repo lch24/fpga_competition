@@ -8,7 +8,7 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  input wire clk,rst_n,start,input wire [31:0] src_base,
  input wire in_valid,output wire in_ready,input wire [63:0] descriptor,input wire map_error,
  output wire out_valid,input wire out_ready,output wire [63:0] pixels,
- output wire [15:0] dx,dy,output reg error,
+ output wire [15:0] dx,dy,output reg error,output wire out_in_bounds,
  output wire arvalid,input wire arready,output wire [27:0] araddr,output wire [3:0] arlen,
  input wire rvalid,input wire [255:0] rdata,input wire rlast,input wire [3:0] rid
 );
@@ -27,6 +27,7 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  reg vqe,vqo;
  reg [31:0] fill_address;reg [1:0] fill_beat;
  wire [3:0] mask=map_error||error?4'b0:desc[63:60];
+ assign out_in_bounds=|mask;
  wire [13:0] x=desc[45:32],y=desc[59:46];
  wire row0=|mask[1:0],row1=|mask[3:2];
  wire cross0=mask[0]&&mask[1]&&x[3:0]==15;

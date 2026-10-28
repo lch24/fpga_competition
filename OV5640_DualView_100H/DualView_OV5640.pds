@@ -759,6 +759,10 @@
                             <option name="library" type="string" value="work"/>
                         </options>
                     </item>
+                    <item type="FILE" file="../rtl/control/system/advanced_config_bridge.v" format="verilog" timespec="2026-10-26T12:00:00" library="work"><options><option name="format" type="string" value="verilog"/><option name="library" type="string" value="work"/></options></item>
+                    <item type="FILE" file="../rtl/control/system/advanced_frame_scheduler.v" format="verilog" timespec="2026-10-26T12:00:00" library="work"><options><option name="format" type="string" value="verilog"/><option name="library" type="string" value="work"/></options></item>
+                    <item type="FILE" file="../rtl/image/kernels/video_adaptive_gamma.v" format="verilog" timespec="2026-10-26T12:00:00" library="work"><options><option name="format" type="string" value="verilog"/><option name="library" type="string" value="work"/></options></item>
+                    <item type="FILE" file="../rtl/image/remap/video_affine_coords.v" format="verilog" timespec="2026-10-26T12:00:00" library="work"><options><option name="format" type="string" value="verilog"/><option name="library" type="string" value="work"/></options></item>
                     <item type="FILE" file="../rtl/image/kernels/video_bilinear_pipe.v" format="verilog" timespec="2026-10-19T16:14:13" library="work">
                         <options>
                             <option name="format" type="string" value="verilog"/>

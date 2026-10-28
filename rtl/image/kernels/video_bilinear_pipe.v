@@ -3,13 +3,19 @@
 // complementary-weight products. Six 9x17 horizontal, three 25x17 vertical
 // multiplications (wide products may use multiple APMs). Five elastic stages.
 // Only valid resets: datapath CE registers allow DSP register packing. II=1.
-module video_bilinear_pipe(
+module video_bilinear_pipe #(parameter WITH_BOUNDS=0)(
  input wire clk,rst_n,in_valid,output wire in_ready,
  input wire [63:0] pixels,input wire [15:0] dx,dy,
- output wire out_valid,input wire out_ready,output wire [15:0] pixel
+ output wire out_valid,input wire out_ready,output wire [15:0] pixel,
+ input wire in_bounds,output wire out_in_bounds
 );
  reg [4:0] valid;wire advance=!valid[4]||out_ready;
  assign in_ready=advance;assign out_valid=valid[4];
+ generate if(WITH_BOUNDS)begin : g_bounds
+  reg [4:0] bounds;
+  always @(posedge clk)if(advance)bounds<={bounds[3:0],in_bounds};
+  assign out_in_bounds=bounds[4];
+ end else begin assign out_in_bounds=1'b1;end endgenerate
  function [7:0] channel;
   input [15:0] p;input integer c;
   begin case(c)0:channel={p[4:0],p[4:2]};1:channel={p[10:5],p[10:9]};default:channel={p[15:11],p[15:13]};endcase end

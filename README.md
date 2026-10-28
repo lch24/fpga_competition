@@ -2,6 +2,8 @@
 
 本分支为 `demo`：在 main 的[两次 KEY3、红点查看角点和计算前 k3 覆盖检查](docs/CORNER_REVIEW.md)基础上，合入 advance 的[提高部分 1（上位机动态旋转/仿射）和 3（自适应 Gamma）](docs/ADVANCED_DYNAMIC_GAMMA.md)。三个特性默认都关闭；演示版 profile 需要 `REALTIME_VIDEO=1, ENABLE_CORNER_REVIEW=1, ENABLE_ADVANCED=1, ENABLE_DISTORT_DEMO=0`，运行 `python scripts/build/prepare_demo_project.py` 后打开生成的 `OV5640_Demo_100H/Demo_CornerReview_Advanced.pds`。红点版与人工畸变演示仍互斥。
 
+启用仿射/Gamma 后，**相机预览和实时视频的 before/after 都会应用这两项**；红点查看的复制帧保持原始（否则标记点会与图像错位），2 秒拍照回看是 DDR 直显，也不经过重映射。
+
 本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
 
 ## 从输入到输出

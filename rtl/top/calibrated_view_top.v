@@ -244,7 +244,7 @@ wire [55:0] rt_araddr;wire [7:0] rt_arlen;wire [1:0] rt_arvalid;
 wire [27:0] rt_awaddr;wire [3:0] rt_awlen;wire rt_awvalid;wire [255:0] rt_wdata;
 wire demo_toggle,distort_mode,demo_pending,demo_map_ready;
 wire rt_bypass;wire [31:0] rt_map;wire [255:0] demo_snapshot;
-wire review_wait_core,review_continue_core,corner_review_ready;
+wire review_wait_core,review_continue_core,corner_review_ready,flow_review_copy;
 wire review_wait_algorithm,review_continue_algorithm,review_point_valid,review_point_ready;
 wire [71:0] review_point_data;
 wire mark_valid,mark_ready,mark_rsp_valid,mark_rsp_ready;wire [7:0] mark_status;
@@ -289,7 +289,7 @@ board_buttons #(.DEBOUNCE_CYCLES(KEY_DEBOUNCE_CYCLES),.ENABLE_DISTORT_DEMO(ENABL
  .clk(core_clk),.rst_n(core_rst_n),.key_n(key_n),.pressed(pressed),.toggle_mode(demo_toggle));
 generate if(REALTIME_VIDEO)begin : g_video_flow
 if(ENABLE_DISTORT_DEMO)begin : g_demo
-assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;
+assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;assign flow_review_copy=0;
 distort_demo_flow flow(
  .preview_enable(1'b1),
  .toggle_mode(demo_toggle),.remap_cycles(last_remap_cycles),.distort_mode(distort_mode),
@@ -312,7 +312,7 @@ assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_ma
 video_board_flow #(.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW)) flow(
  .review_wait(review_wait_core),.review_continue(review_continue_core),.review_ready(corner_review_ready),
  .mark_valid(mark_valid),.mark_ready(mark_ready),.mark_rsp_valid(mark_rsp_valid),.mark_rsp_ready(mark_rsp_ready),.mark_status(mark_status),
- .preview_enable(1'b1),.preview_active(),
+ .preview_enable(1'b1),.preview_active(),.review_copy(flow_review_copy),
  .clk(core_clk),.rst_n(core_rst_n),.camera_ready(ready_sync[1]),.pressed(pressed),.display_idle(display_idle),.display_frame_start(display_frame_start),
  .start_valid(start_valid),.start_ready(start_ready),.start_remap(start_remap),.start_base(start_base),
  .frame_ready(frame_ready),.frame_valid(frame_valid),.frame_status(frame_status),.frame_base(frame_base),
@@ -328,7 +328,7 @@ video_board_flow #(.ENABLE_CORNER_REVIEW(ENABLE_CORNER_REVIEW)) flow(
  .captured_frames(captured_frames),.corrected_frames(corrected_frames),.displayed_frames(displayed_frames),.failed_frames(failed_frames));
 end
 end else begin : g_photo_flow
-assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;
+assign review_continue_core=0;assign corner_review_ready=0;assign mark_valid=0;assign mark_rsp_ready=0;assign flow_review_copy=0;
 assign distort_mode=0;assign demo_pending=0;assign demo_map_ready=0;assign rt_map=32'h02000000;assign demo_snapshot=0;
 assign ui_display_corrected=display_enable&&display_base==DST_BASE;
 assign video_active=0;assign map_ready=0;assign captured_frames=0;assign corrected_frames=0;assign displayed_frames=0;assign failed_frames=0;
@@ -584,7 +584,7 @@ if(ENABLE_ADVANCED)begin : g_advanced
   .cfg_valid(cfg_valid),.cfg_ready(cfg_ready),.cfg_payload(cfg_payload));
  advanced_frame_scheduler scheduler(.clk(core_clk),.rst_n(core_rst_n),
   .cfg_valid(cfg_valid),.cfg_ready(cfg_ready),.cfg_payload(cfg_payload),
-  .in_valid(rt_cmd_valid),.in_ready(rt_cmd_ready),.in_src(rt_src),.in_dst(rt_dst),.in_map(rt_map),.in_bypass(rt_bypass),
+  .in_valid(rt_cmd_valid),.in_ready(rt_cmd_ready),.in_src(rt_src),.in_dst(rt_dst),.in_map(rt_map),.in_bypass(rt_bypass),.in_diagnostic(flow_review_copy),
   .out_rsp_valid(rt_rsp_valid),.out_rsp_ready(rt_rsp_ready),.out_status(rt_status),
   .cmd_valid(proc_valid),.cmd_ready(proc_ready),.cmd_src(proc_src),.cmd_dst(proc_dst),.cmd_map(proc_map),
   .cmd_bypass(proc_bypass),.cmd_affine(proc_affine),.cmd_gamma(proc_gamma),.cmd_gamma_mode(proc_gamma_mode),.cmd_matrix(proc_matrix),

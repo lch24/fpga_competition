@@ -5,11 +5,11 @@ module tb_advanced_control;
  wire busy,cv,cq;wire [31:0] errors;wire [207:0] cp;
  advanced_config_bridge bridge(.clk(clk),.rst_n(rst_n),.write_valid(wv),.write_op(wo),.write_data(wd),.busy(busy),.errors(errors),
   .core_clk(core),.core_rst_n(crst_n),.cfg_valid(cv),.cfg_ready(cq),.cfg_payload(cp));
- reg iv=0,bypass=0,oq=0,pq=0,rv=0;reg [7:0] rs=0;reg [31:0] src=32'h00800000,dst=32'h01000000,pc=123;
+ reg iv=0,bypass=0,diag=0,oq=0,pq=0,rv=0;reg [7:0] rs=0;reg [31:0] src=32'h00800000,dst=32'h01000000,pc=123;
  wire iq,ov,pv,rq,pb,pa,pg;wire [7:0] os;wire [31:0] ps,pd,pm,applied,total,first_cycles,second_cycles;
  wire [2:0] mode;wire [191:0] matrix;wire [15:0] flags;
  advanced_frame_scheduler scheduler(.clk(core),.rst_n(crst_n),.cfg_valid(cv),.cfg_ready(cq),.cfg_payload(cp),
-  .in_valid(iv),.in_ready(iq),.in_src(src),.in_dst(dst),.in_map(32'h02000000),.in_bypass(bypass),
+  .in_valid(iv),.in_ready(iq),.in_src(src),.in_dst(dst),.in_map(32'h02000000),.in_bypass(bypass),.in_diagnostic(diag),
   .out_rsp_valid(ov),.out_rsp_ready(oq),.out_status(os),.cmd_valid(pv),.cmd_ready(pq),.cmd_src(ps),.cmd_dst(pd),.cmd_map(pm),
   .cmd_bypass(pb),.cmd_affine(pa),.cmd_gamma(pg),.cmd_gamma_mode(mode),.cmd_matrix(matrix),
   .rsp_valid(rv),.rsp_ready(rq),.rsp_status(rs),.pass_cycles(pc),.applied_count(applied),.last_cycles(total),
@@ -59,9 +59,12 @@ module tb_advanced_control;
   if(first_cycles!=123||second_cycles!=456||total<2)$fatal(1,"cycle accounting");
   start_frame();wait(pv);if(applied!=2||pa||pb||!pg||mode!=2||pd!=dst)$fatal(1,"single gamma pass config");
   accept_command();respond(5,88);take_response(5);wait(!busy);
-  // Preview must remain an untouched one-pass comparator.
-  bypass=1;start_frame();wait(pv);if(!pb||pa||pg||pd!=dst)$fatal(1,"preview changed");
+  // Preview keeps raw lens geometry but now receives the host gamma.
+  bypass=1;start_frame();wait(pv);if(!pb||pa||!pg||mode!=2||pd!=dst)$fatal(1,"preview gamma");
   accept_command();respond(0,99);take_response(0);
+  // Diagnostic review copies must stay fully raw so marks keep their coordinates.
+  diag=1;start_frame();wait(pv);if(!pb||pa||pg||pd!=dst)$fatal(1,"diagnostic copy changed");
+  accept_command();respond(0,98);take_response(0);diag=0;
   bypass=0;stage(config1,0);wait(cv);start_frame();accept_command();respond(5,17);take_response(5);
   if(second_cycles!=0)$fatal(1,"failed first pass launched second");
   // Joint reset drops a held transaction instead of replaying it.

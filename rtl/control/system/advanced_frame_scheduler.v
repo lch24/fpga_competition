@@ -5,7 +5,7 @@
 module advanced_frame_scheduler #(parameter SCRATCH_BASE=32'h01800000)(
  input wire clk,rst_n,
  input wire cfg_valid,output wire cfg_ready,input wire [207:0] cfg_payload,
- input wire in_valid,output wire in_ready,input wire [31:0] in_src,in_dst,in_map,input wire in_bypass,
+ input wire in_valid,output wire in_ready,input wire [31:0] in_src,in_dst,in_map,input wire in_bypass,in_diagnostic,
  output wire out_rsp_valid,input wire out_rsp_ready,output reg [7:0] out_status,
  output wire cmd_valid,input wire cmd_ready,output reg [31:0] cmd_src,cmd_dst,cmd_map,
  output reg cmd_bypass,cmd_affine,cmd_gamma,output reg [2:0] cmd_gamma_mode,output wire [191:0] cmd_matrix,
@@ -36,11 +36,16 @@ module advanced_frame_scheduler #(parameter SCRATCH_BASE=32'h01800000)(
    case(state)
     IDLE:if(in_valid)begin
      if(cfg_valid)begin active<=cfg_payload;applied_count<=applied_count+1'b1;end
-     two_pass<=selected[192]&&!in_bypass;second<=0;
+     // Diagnostic copies (corner review) must stay raw so marks keep their
+     // original coordinates. Preview and before frames are bypass too, but
+     // they do receive the host affine and gamma.
+     two_pass<=selected[192]&&!in_bypass&&!in_diagnostic;
+     second<=0;
      final_dst<=in_dst;cmd_src<=in_src;cmd_map<=in_map;
-     cmd_dst<=selected[192]&&!in_bypass?SCRATCH_BASE:in_dst;
-     cmd_bypass<=in_bypass;cmd_affine<=0;
-     cmd_gamma<=selected[193]&&!selected[192]&&!in_bypass;
+     cmd_dst<=selected[192]&&!in_bypass&&!in_diagnostic?SCRATCH_BASE:in_dst;
+     cmd_bypass<=in_bypass;
+     cmd_affine<=selected[192]&&!in_diagnostic&&in_bypass;
+     cmd_gamma<=selected[193]&&!in_diagnostic&&(!selected[192]||in_bypass);
      cmd_gamma_mode<=selected[196:194];elapsed<=0;out_status<=0;job_first_cycles<=0;
      state<=SEND;
     end

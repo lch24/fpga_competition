@@ -22,7 +22,7 @@ from pathlib import Path
 from uart_monitor import Framer, command
 
 MODES = {'off': 0, 'auto': 0, 'identity': 1, 'brighten': 2,
-         'brighten-strong': 3, 'darken': 4, 'darken-strong': 5}
+         'brighten-strong': 3, 'darken': 4, 'darken-strong': 5, 'equalize': 6}
 IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 DEFAULT_STATE = Path(__file__).resolve().parents[2]/'data/debug/advanced_control_state.json'
 

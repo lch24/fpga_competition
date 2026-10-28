@@ -99,6 +99,7 @@ class HostStateTests(unittest.TestCase):
         self.assertEqual(config_flags(False, 'identity'), 6)
         self.assertEqual(config_flags(True, 'auto'), 3)
         self.assertEqual(config_flags(True, 'darken-strong'), 1 | 2 | (5 << 2))
+        self.assertEqual(config_flags(False, 'equalize'), 2 | (6 << 2))
 
     def test_state_roundtrip(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -61,10 +61,31 @@ v = a10*x + a11*y + a12
 | 3 | brighten-strong | gamma=0.5 |
 | 4 | darken | gamma=1.3 |
 | 5 | darken-strong | gamma=2 |
+| 6 | equalize | 每帧 64 bin 亮度直方图，生成对比度受限的均衡曲线 |
 
 自动统计增强前的近似亮度 `(R8+2*G8+B8)/4`。完全无效的映射像素不参加统计，避免越界黑边被当成夜景。均值 `<32 / <64 / 64..160 / >160 / >208` 分别推荐强提亮、提亮、恒等、压暗、强压暗。同一推荐连续出现三个有效帧才切换；每帧曲线锁存，不会半帧改变。统计只在启用增强的最终遍进行，不将第一遍重复统计。刚启用时默认恒等，允许数帧适应。
 
 这是全局亮度自适应，不是局部 HDR，也不能恢复已经过曝截断或欠曝丢失的细节。自动效果仍需强光/暗光实际场景验证。
+
+### mode 6：直方图均衡
+
+`equalize` 是独立的第 6 条曲线，不再依赖固定 Gamma 档位：
+
+- 每个启用的最终遍对**有效像素每 4 个采样一次**，累计 64 bin 亮度直方图；黑边不参与。
+- 帧末把直方图累加成 CDF，逐 bin 用 32 周期的串行除法计算 `cdf*255/总数`，再与恒等映射按 **3:1 混合**，限制极端对比度拉伸。
+- 生成的 8 位曲线拆成 R/B 的 32 级和 G 的 64 级查找表；逐像素仍然只查表，不增加乘除、浮点或整帧缓存。
+- 若一帧的亮度分布跨度小于 8 个 bin（接近纯色/平坦画面），本帧不启用均衡，避免把噪声或单一灰度拉爆。
+- 建表在帧边界串行完成：64 个 bin 加 32 个 5 位表项，约 2 k 个 125 MHz 周期（约 16 µs），期间 `in_ready` 拉低；不影响已完成的上一帧显示。
+- 本次 demo 构建实测新增约 231 LUT、2.5 个 DRM，APM 不变；逐像素路径只多一个查表选择，没有新增时序关键路径。
+- 仍属于全局色调映射，不是局部 HDR；强光过曝或夜间欠曝丢失的细节不能恢复。
+
+仿真入口为 `tb/advanced/tb_hist_equalize.sv`（已并入 `scripts/system/run_advanced_checks.ps1`），覆盖建表、暗区拉伸、单调性、平坦保护和禁用帧直通；原 `tb_adaptive_gamma.sv` 继续覆盖五条固定曲线、auto 迟滞和背压。
+
+上位机启用：
+
+```powershell
+python scripts/debug/advanced_control.py --port COM14 --gamma equalize
+```
 
 ## UART 接口与原子更新
 
@@ -103,13 +124,13 @@ A5 5A opcode lo hi (opcode XOR lo XOR hi)
 python scripts/debug/advanced_control.py --angle 10 --gamma auto --dry-run
 ```
 
-将来提高版上板并进入视频后，才执行以下实控指令（本次开发没有执行）：
+提高版进入预览或视频后执行（已在 demo 配置实板验证）：
 
 ```powershell
-python scripts/debug/advanced_control.py --port COM11 --status
-python scripts/debug/advanced_control.py --port COM11 --angle 10 --gamma auto
-python scripts/debug/advanced_control.py --port COM11 --angle -15 --scale 1.1 --gamma auto
-python scripts/debug/advanced_control.py --port COM11 --gamma off
+python scripts/debug/advanced_control.py --port COM14 --status
+python scripts/debug/advanced_control.py --port COM14 --angle 10 --gamma auto
+python scripts/debug/advanced_control.py --port COM14 --angle -15 --scale 1.1 --gamma equalize
+python scripts/debug/advanced_control.py --port COM14 --gamma off
 ```
 
 协议每包都带完整的 26 字节，所以工具把上一次**成功应用**的矩阵和 Gamma 模式记在 `data/debug/advanced_control_state.json`，每条命令只改指定的那一项：

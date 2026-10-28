@@ -11,6 +11,7 @@ $debug=@('rtl/debug/board_debug.v','rtl/debug/debug_snapshot.v','rtl/common/rese
 $tests=[ordered]@{
  tb_affine_coords=@('rtl/image/remap/video_affine_coords.v','tb/advanced/tb_affine_coords.sv')
  tb_adaptive_gamma=@('rtl/image/kernels/video_adaptive_gamma.v','tb/advanced/tb_adaptive_gamma.sv')
+ tb_hist_equalize=@('rtl/image/kernels/video_adaptive_gamma.v','tb/advanced/tb_hist_equalize.sv')
  tb_advanced_control=@('rtl/control/system/advanced_config_bridge.v','rtl/control/system/advanced_frame_scheduler.v','tb/advanced/tb_advanced_control.sv')
  tb_advanced_uart=$debug+@('rtl/control/system/advanced_config_bridge.v','tb/advanced/tb_advanced_uart.sv')
  tb_board_debug=$debug+@('rtl/debug/algorithm_debug.v','tb/debug/tb_board_debug.sv')

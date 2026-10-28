@@ -2,9 +2,12 @@
 import binascii
 import math
 import struct
+import tempfile
 import unittest
+from pathlib import Path
 
-from advanced_control import decode_status, inverse_affine, packets, payload
+from advanced_control import (config_flags, decode_status, inverse_affine, load_state, packets, payload,
+                              resolve, save_state)
 from uart_monitor import Framer
 
 
@@ -56,6 +59,60 @@ class AdvancedProtocolTests(unittest.TestCase):
         self.assertEqual(status['auto_curve'], 2)
         frame[13] = 0
         self.assertIsNone(decode_status(frame))
+
+
+class HostStateTests(unittest.TestCase):
+    def test_independent_controls(self):
+        state = dict(matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0], affine=False, gamma='off')
+        matrix, affine, gamma = resolve(None, 180, None, None, None, False, False, None, False, state)
+        self.assertTrue(affine)
+        self.assertEqual(gamma, 'off')
+        self.assertNotEqual(matrix, state['matrix'])
+        rotated = dict(matrix=matrix, affine=affine, gamma=gamma)
+        kept, affine2, gamma2 = resolve(None, None, None, None, None, False, False, 'auto', False, rotated)
+        self.assertEqual(kept, matrix)
+        self.assertTrue(affine2)
+        self.assertEqual(gamma2, 'auto')
+        off, affine3, gamma3 = resolve(None, None, None, None, None, False, True, None, False,
+                                       dict(matrix=kept, affine=affine2, gamma=gamma2))
+        self.assertFalse(affine3)
+        self.assertEqual(gamma3, 'auto')
+        self.assertEqual(off, matrix)
+
+    def test_explicit_gamma_off_keeps_affine(self):
+        matrix, affine, gamma = resolve(None, None, None, None, None, False, False, 'off', False,
+                                        dict(matrix=[2.0, 0.0, 0.0, 0.0, 2.0, 0.0], affine=True, gamma='darken'))
+        self.assertTrue(affine)
+        self.assertEqual(gamma, 'off')
+        self.assertEqual(matrix, [2.0, 0.0, 0.0, 0.0, 2.0, 0.0])
+
+    def test_reset(self):
+        matrix, affine, gamma = resolve(None, None, None, None, None, False, False, None, True,
+                                        dict(matrix=[2.0, 0.0, 0.0, 0.0, 2.0, 0.0], affine=True, gamma='auto'))
+        self.assertEqual(matrix, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        self.assertFalse(affine)
+        self.assertEqual(gamma, 'off')
+        self.assertEqual(config_flags(affine, gamma), 0)
+
+    def test_flags(self):
+        self.assertEqual(config_flags(True, 'off'), 1)
+        self.assertEqual(config_flags(False, 'identity'), 6)
+        self.assertEqual(config_flags(True, 'auto'), 3)
+        self.assertEqual(config_flags(True, 'darken-strong'), 1 | 2 | (5 << 2))
+
+    def test_state_roundtrip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'state.json'
+            self.assertEqual(load_state(path), dict(matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                                                   affine=False, gamma='off'))
+            save_state(path, [0.0, -1.0, 1.0, 1.0, 0.0, 0.0], True, 'darken')
+            saved = load_state(path)
+            self.assertEqual(saved['gamma'], 'darken')
+            self.assertTrue(saved['affine'])
+            self.assertEqual(saved['matrix'], [0.0, -1.0, 1.0, 1.0, 0.0, 0.0])
+            path.write_text('{"matrix": [1, 0], "affine": 1, "gamma": "loud"}', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                load_state(path)
 
 
 if __name__ == '__main__':

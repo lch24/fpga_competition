@@ -112,6 +112,31 @@ python scripts/debug/advanced_control.py --port COM11 --angle -15 --scale 1.1 --
 python scripts/debug/advanced_control.py --port COM11 --gamma off
 ```
 
+协议每包都带完整的 26 字节，所以工具把上一次**成功应用**的矩阵和 Gamma 模式记在 `data/debug/advanced_control_state.json`，每条命令只改指定的那一项：
+
+| 命令 | 仿射 | Gamma |
+| --- | --- | --- |
+| `--angle/--scale/--tx/--ty/--matrix` | 更新并打开 | 保持不变 |
+| `--gamma brighten/auto/...` | 保持不变 | 更新并打开 |
+| `--gamma off` | 保持不变 | 关闭 |
+| `--affine` | 恒等（或与给定变换一起）并打开 | 保持不变 |
+| `--affine-off` | 关闭 | 保持不变 |
+| `--reset` | 关闭 | 关闭 |
+
+例如先转 180° 再单独调亮度、再分别复原：
+
+```powershell
+python scripts/debug/advanced_control.py --port COM14 --angle 180
+python scripts/debug/advanced_control.py --port COM14 --gamma auto
+python scripts/debug/advanced_control.py --port COM14 --gamma off      # 只关 Gamma，保留 180°
+python scripts/debug/advanced_control.py --port COM14 --affine-off     # 只关仿射
+python scripts/debug/advanced_control.py --port COM14 --reset          # 两者全关
+```
+
+状态文件只在板上 `applied_count` 增加 1 且 flags 与请求一致后才写入。换比特流或板上电后若 `--status` 的 flags 与文件不一致，工具会在 stderr 提示并按合并后的配置下发；此时先 `--reset` 对齐最稳妥。`--dry-run` 只打印合并结果，不打开串口也不写状态文件。
+
+（`--port COM14` 是当前板载 CP210x 的实际端口；旧文档里的 COM11 只是示例。）
+
 角度正值表示显示图像顺时针转动（图像 y 向下）；若补偿相机 roll，应由控制端按实际坐标系选择相反角度。`--tx/--ty` 是输出图像平移像素数，`--scale` 是正的输出缩放比例。工具对中心位置取 `(639.5,359.5)`，自动生成逆矩阵，也支持 `--matrix` 直接六系数。使用实际串口需要 pyserial。
 
 工具先确认 A1/FFFB 状态页，再发送整组数据，并检查 applied_count 与错误计数，不将“串口写完”当作生效。视频/预览停止时没有帧边界，配置会等待；超时后不要盲目重发，应先启动视频或读取状态。只支持一个配置客户端，不能与串口助手同时占用端口。

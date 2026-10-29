@@ -1,0 +1,38 @@
+﻿diff --git a/rtl/image/remap/video_neighbor_cache.v b/rtl/image/remap/video_neighbor_cache.v
+index 55fddd8..2b8ec46 100644
+--- a/rtl/image/remap/video_neighbor_cache.v
++++ b/rtl/image/remap/video_neighbor_cache.v
+@@ -42,7 +42,8 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
+  wire hit_e=!need_even||(vqe&&tqe==even_address[29:7]);
+  wire hit_o=!need_odd||(vqo&&tqo==odd_address[29:7]);
+  wire [255:0] q0=y[0]?qo:qe,q1=y[0]?qe:qo;
+- assign in_ready=state==IDLE;
++ wire needing=(state==IDLE)||((state==CHECK||state==CROSS_CHECK)&&hit_e&&hit_o&&(!crossing||second)&&out_ready);
++ assign in_ready=needing;
+  wire accept=in_valid&&in_ready;
+  wire lookup=accept||state==RETRY||state==CROSS_READ;
+  wire [13:0] ix=descriptor[45:32],iy=descriptor[59:46];
+@@ -77,6 +78,9 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
+   if(!rst_n)begin state<=IDLE;second<=0;fill_odd<=0;base<=0;a0<=0;a1<=0;desc<=0;p0<=0;p1<=0;p2<=0;p3<=0;ve<=0;vo<=0;fill_address<=0;fill_beat<=0;error<=0;end
+   else if(start)begin state<=IDLE;second<=0;base<=src_base;ve<=0;vo<=0;error<=0;end
+   else begin
++   // A hit being consumed can accept the next pixel in the same cycle: the
++   // next lookup is issued now and its data is checked next cycle (II=1).
++   if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;end
+    // Sample both neighbor pixels on every cycle instead of gating them with a
+    // clock enable. The held sample is only read back while second==1, and
+    // second is only set together with the crossing transition, so the enable
+@@ -84,11 +88,11 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
+    // p0..p3 enable path (the worst 125 MHz setup path).
+    p0<=v00;p1<=v10;p2<=v01;p3<=v11;
+    case(state)
+-   IDLE:if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;state<=CHECK;end
++   IDLE:if(accept)state<=CHECK;
+    CHECK,CROSS_CHECK:begin
+     if(!hit_e||!hit_o)begin fill_odd<=hit_e;fill_address<=hit_e?odd_address:even_address;state<=REQUEST;end
+     else if(crossing&&!second)begin second<=1;state<=CROSS_READ;end
+-    else if(out_ready)state<=IDLE;
++    else if(out_ready)state<=accept?CHECK:IDLE;
+    end
+    CROSS_READ:state<=CROSS_CHECK;
+    REQUEST:if(arready)begin fill_beat<=0;state<=FILL;end

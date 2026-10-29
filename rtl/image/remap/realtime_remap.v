@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 // Runtime contains NO floating-point arithmetic. Packed inverse map -> cached
 // neighbors -> elastic RGB565 interpolation -> native burst writer.
-module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6,ENABLE_ADVANCED=0)(
+module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6,ENABLE_ADVANCED=0,
+ parameter GRID_MAP=0,parameter MAP_STEP=4,parameter SRC_WIDTH=WIDTH,parameter SRC_HEIGHT=HEIGHT)(
  input wire clk,rst_n,cmd_valid,output wire cmd_ready,
  input wire [31:0] src_base,dst_base,map_base,
  input wire cmd_bypass, // Identity sampling for before/after display, no map read.
@@ -63,10 +64,17 @@ module realtime_remap #(parameter WIDTH=1280,HEIGHT=720,CACHE_INDEX_BITS=6,ENABL
  end
  wire [15:0] dx,dy,pixel;
  assign cmd_ready=state==IDLE;assign rsp_valid=state==RESPONSE;
- video_map_prefetch #(.PIXELS(WIDTH*HEIGHT)) maps(
-  .clk(clk),.rst_n(rst_n),.start(start&&!bypass&&!affine),.map_base(mapping),.out_valid(map_valid),.out_ready(map_ready),.descriptor(map_descriptor),.error(map_error),
-  .arvalid(arvalid[0]),.arready(arready[0]),.araddr(araddr[0+:28]),.arlen(arlen[0+:4]),
-  .rvalid(rvalid[0]),.rdata(rdata),.rlast(rlast),.rid(rid));
+ generate if(GRID_MAP)begin : g_grid_map
+  video_grid_prefetch #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.STEP(MAP_STEP),.SRC_WIDTH(SRC_WIDTH),.SRC_HEIGHT(SRC_HEIGHT)) maps(
+   .clk(clk),.rst_n(rst_n),.start(start&&!bypass&&!affine),.map_base(mapping),.out_valid(map_valid),.out_ready(map_ready),.descriptor(map_descriptor),.error(map_error),
+   .arvalid(arvalid[0]),.arready(arready[0]),.araddr(araddr[0+:28]),.arlen(arlen[0+:4]),
+   .rvalid(rvalid[0]),.rdata(rdata),.rlast(rlast),.rid(rid));
+ end else begin : g_full_map
+  video_map_prefetch #(.PIXELS(WIDTH*HEIGHT)) maps(
+   .clk(clk),.rst_n(rst_n),.start(start&&!bypass&&!affine),.map_base(mapping),.out_valid(map_valid),.out_ready(map_ready),.descriptor(map_descriptor),.error(map_error),
+   .arvalid(arvalid[0]),.arready(arready[0]),.araddr(araddr[0+:28]),.arlen(arlen[0+:4]),
+   .rvalid(rvalid[0]),.rdata(rdata),.rlast(rlast),.rid(rid));
+ end endgenerate
  wire cache_bounds,pixel_bounds;
  video_neighbor_cache #(.WIDTH(WIDTH),.INDEX_BITS(CACHE_INDEX_BITS)) cache(
   .clk(clk),.rst_n(rst_n),.start(start),.src_base(source),.in_valid(descriptor_valid),.in_ready(cache_ready),.descriptor(descriptor_q),.map_error(descriptor_error),

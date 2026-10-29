@@ -1,6 +1,9 @@
 `timescale 1ns/1ps
 // Direct-mapped source cache, separate even/odd row banks. 64 pixels per line,
-// 4-beat line fill. Tags and pixels use synchronous BRAM; validity alone resets.
+// 4-beat line fill. Tags and pixels use synchronous BRAM. One-bit valid banks
+// are small distributed RAMs, so the hit compare uses a narrow registered
+// select instead of a wide 128:1 LUT mux. Valid bits are cleared at the start
+// of every frame; tags stay in block RAM.
 // Both neighbor rows looked up together. Common-case II=2; horizontal 16-pixel
 // beat crossings require one additional lookup. Misses stall, never read stale
 // source data. All tags invalidated between frames even when a base is reused.
@@ -13,18 +16,15 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  input wire rvalid,input wire [255:0] rdata,input wire rlast,input wire [3:0] rid
 );
  localparam LINES=1<<INDEX_BITS;
- localparam IDLE=0,CHECK=1,CROSS_READ=2,CROSS_CHECK=3,REQUEST=4,FILL=5,RETRY=6;
+ localparam IDLE=0,CHECK=1,CROSS_READ=2,CROSS_CHECK=3,REQUEST=4,FILL=5,RETRY=6,CLEAR=7;
  reg [2:0] state;reg second,fill_odd;
  reg [31:0] base,a0,a1;reg [63:0] desc;reg [15:0] p0,p1,p2,p3;
- reg [LINES-1:0] ve,vo;
+ (* syn_ramstyle="distributed_ram" *) reg ve[0:LINES-1],vo[0:LINES-1];
  (* syn_ramstyle="block_ram" *) reg [22:0] te[0:LINES-1],to_[0:LINES-1];
  (* syn_ramstyle="block_ram" *) reg [255:0] de[0:LINES*4-1],do_[0:LINES*4-1];
  reg [22:0] tqe,tqo;reg [255:0] qe,qo;
- // Line-validity bits are a 64:1 LUT mux off the held address; sample them at the
- // same lookup as the tags so the hit compare runs entirely from registers. With
- // the PHY fan-out stage gone this is the remaining 125 MHz violation: the cache
- // hit cone still feeds the interpolator clock enables (fy0/CE, gopapm/CE_*).
  reg vqe,vqo;
+ reg [INDEX_BITS-1:0] clear_index;
  reg [31:0] fill_address;reg [1:0] fill_beat;
  wire [3:0] mask=map_error||error?4'b0:desc[63:60];
  assign out_in_bounds=|mask;
@@ -58,9 +58,13 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
    tqe<=te[le[INDEX_BITS+6:7]];tqo<=to_[lo[INDEX_BITS+6:7]];
    qe<=de[le[INDEX_BITS+6:5]];qo<=do_[lo[INDEX_BITS+6:5]];
  end
+  if(state==CLEAR)begin ve[clear_index]<=0;vo[clear_index]<=0;end
   if(state==FILL&&rvalid)begin
    if(fill_odd)do_[wa]<=rdata;else de[wa]<=rdata;
-   if(rlast)begin if(fill_odd)to_[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];else te[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end
+   if(rlast)begin
+    if(fill_odd)begin vo[fill_address[INDEX_BITS+6:7]]<=1;to_[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end
+    else begin ve[fill_address[INDEX_BITS+6:7]]<=1;te[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end
+   end
   end
  end
  wire checked=state==CHECK||state==CROSS_CHECK;
@@ -74,8 +78,8 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  // Four 32-byte beats = 128 bytes = 32 HMIC words (clear FIVE word bits).
  assign arvalid=state==REQUEST;assign araddr=fill_address[29:2]&28'hfffffe0;assign arlen=3;
  always @(posedge clk or negedge rst_n)begin
-  if(!rst_n)begin state<=IDLE;second<=0;fill_odd<=0;base<=0;a0<=0;a1<=0;desc<=0;p0<=0;p1<=0;p2<=0;p3<=0;ve<=0;vo<=0;fill_address<=0;fill_beat<=0;error<=0;end
-  else if(start)begin state<=IDLE;second<=0;base<=src_base;ve<=0;vo<=0;error<=0;end
+  if(!rst_n)begin state<=IDLE;second<=0;fill_odd<=0;base<=0;a0<=0;a1<=0;desc<=0;p0<=0;p1<=0;p2<=0;p3<=0;clear_index<=0;fill_address<=0;fill_beat<=0;error<=0;end
+  else if(start)begin state<=CLEAR;second<=0;base<=src_base;clear_index<=0;error<=0;end
   else begin
    // Sample both neighbor pixels on every cycle instead of gating them with a
    // clock enable. The held sample is only read back while second==1, and
@@ -84,6 +88,7 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
    // p0..p3 enable path (the worst 125 MHz setup path).
    p0<=v00;p1<=v10;p2<=v01;p3<=v11;
    case(state)
+   CLEAR:if(clear_index==LINES-1)state<=IDLE;else clear_index<=clear_index+1'b1;
    IDLE:if(accept)begin desc<=descriptor;a0<=new0;a1<=new1;second<=0;state<=CHECK;end
    CHECK,CROSS_CHECK:begin
     if(!hit_e||!hit_o)begin fill_odd<=hit_e;fill_address<=hit_e?odd_address:even_address;state<=REQUEST;end
@@ -95,7 +100,7 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
    FILL:if(rvalid)begin
     fill_beat<=fill_beat+1'b1;
     if(rid!=0||rlast!=(fill_beat==3))error<=1;
-    if(rlast)begin if(fill_odd)vo[fill_address[INDEX_BITS+6:7]]<=1;else ve[fill_address[INDEX_BITS+6:7]]<=1;state<=RETRY;end
+    if(rlast)state<=RETRY;
    end
    RETRY:state<=second?CROSS_CHECK:CHECK;
    default:state<=IDLE;

@@ -600,7 +600,7 @@ end else begin : g_baseline
  assign proc_affine=0;assign proc_gamma=0;assign proc_gamma_mode=0;assign proc_matrix=0;
  assign last_remap_cycles=pass_cycles;assign advanced_errors=0;assign advanced_snapshot=0;
 end
-realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.ENABLE_ADVANCED(ENABLE_ADVANCED)) remap(
+realtime_remap #(.WIDTH(WIDTH),.HEIGHT(HEIGHT),.CACHE_INDEX_BITS(7),.ENABLE_ADVANCED(ENABLE_ADVANCED),.GRID_MAP(1),.MAP_STEP(4)) remap(
  .clk(core_clk),.rst_n(core_rst_n),.cmd_valid(proc_valid),.cmd_ready(proc_ready),.src_base(proc_src),.dst_base(proc_dst),.map_base(proc_map),.cmd_bypass(proc_bypass),
  .cmd_affine(proc_affine),.cmd_gamma(proc_gamma),.cmd_gamma_mode(proc_gamma_mode),.cmd_matrix(proc_matrix),.gamma_curve(gamma_curve),
  .rsp_valid(proc_rsp),.rsp_ready(proc_rsp_ready),.rsp_status(proc_status),.last_cycles(pass_cycles),

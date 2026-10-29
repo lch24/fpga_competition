@@ -6,7 +6,7 @@ if(!$IcarusBin){$IcarusBin=Split-Path (Get-Command iverilog.exe -ErrorAction Sto
 $iv=Join-Path $IcarusBin 'iverilog.exe';$vvp=Join-Path $IcarusBin 'vvp.exe'
 $build=Join-Path $root 'build/advanced'
 New-Item -ItemType Directory -Force $build | Out-Null
-$remap=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/remap/video_affine_coords.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/image/kernels/video_adaptive_gamma.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v','tb/system/tb_realtime_remap.sv')
+$remap=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_grid_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/remap/video_affine_coords.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/image/kernels/video_adaptive_gamma.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v','tb/system/tb_realtime_remap.sv')
 $debug=@('rtl/debug/board_debug.v','rtl/debug/debug_snapshot.v','rtl/common/reset_sync.v','rtl/io/uart/debug_uart.v')
 $tests=[ordered]@{
  tb_affine_coords=@('rtl/image/remap/video_affine_coords.v','tb/advanced/tb_affine_coords.sv')

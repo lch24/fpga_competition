@@ -101,6 +101,7 @@ rtl/image/remap/output_writer.v
 rtl/image/remap/realtime_remap.v
 rtl/image/remap/sample_coord.v
 rtl/image/remap/video_map_prefetch.v
+rtl/image/remap/video_grid_prefetch.v
 rtl/image/remap/video_affine_coords.v
 rtl/image/remap/video_neighbor_cache.v
 rtl/io/uart/debug_uart.v

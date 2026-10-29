@@ -20,8 +20,11 @@ $model=$false
 if(!$IcarusBin){$model=$true}
 
 $tests=@{
- tb_realtime_remap=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
- tb_realtime_fullframe=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
+ tb_realtime_remap=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_grid_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
+ tb_realtime_fullframe=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_grid_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
+ tb_grid_map=@('rtl/compute/geometry/packed_map_builder.v','rtl/image/remap/map_coord_core.v','rtl/compute/float/fp32_service.v','rtl/compute/float/fp_divsqrt.v','rtl/image/remap/sample_coord.v','rtl/image/remap/output_writer.v')
+ tb_grid_prefetch=@('rtl/image/remap/video_grid_prefetch.v')
+ tb_grid_fullframe=@('rtl/image/remap/realtime_remap.v','rtl/image/remap/video_map_prefetch.v','rtl/image/remap/video_grid_prefetch.v','rtl/image/remap/video_neighbor_cache.v','rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v')
  tb_video_capture=@('rtl/video/dma/video_capture_hmic.v','rtl/common/async_fifo.v','rtl/common/async_bram_fifo.v')
  tb_video_flow=@('rtl/control/system/video_board_flow.v')
  tb_vision_clock_bridge=@('rtl/memory/ddr/vision_clock_bridge.v','rtl/common/async_fifo.v','rtl/common/async_bram_fifo.v')

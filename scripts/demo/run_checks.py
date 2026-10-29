@@ -18,7 +18,7 @@ def main():
  'tb_packed_map':math+['rtl/compute/geometry/packed_map_builder.v','rtl/image/remap/sample_coord.v','rtl/image/remap/output_writer.v'],
  'tb_demo_packed_map':math+['rtl/compute/geometry/packed_map_builder.v','rtl/image/remap/sample_coord.v','rtl/image/remap/output_writer.v','tb/system/tb_packed_map.sv'],
  'tb_video_flow':['rtl/control/system/video_board_flow.v'],
- 'tb_realtime_remap':['rtl/image/remap/'+n+'.v' for n in ('realtime_remap','video_map_prefetch','video_neighbor_cache')]+['rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v'],
+ 'tb_realtime_remap':['rtl/image/remap/'+n+'.v' for n in ('realtime_remap','video_map_prefetch','video_grid_prefetch','video_neighbor_cache')]+['rtl/image/kernels/video_bilinear_pipe.v','rtl/video/dma/video_frame_writer.v','rtl/memory/ddr/video_hmic_arbiter.v'],
  'tb_vision_build_only':['rtl/control/system/vision_sequence.v','tb/system/tb_vision_manual.sv'],
  }
  if a.board:

@@ -37,7 +37,7 @@
 | DDR 域 125 MHz | −0.922 ns，79 失败端点 |
 
 - 比特流：2026-10-28 23:46:59，SHA256 `E730FE998185DC55FF20F9CB0D7474B551BEFBEFB18D5D0518750525788ECA55`。
-- 该比特流只保留在本地 `build/task2_attempt/calibrated_view_top_ii1_20261029.sbit`（`build/` 不入库），未替换归档版本。
+- 该 II=1 尝试比特流已删除（仅保留补丁和本记录），未替换归档版本。
 
 ## 实板测量
 
@@ -120,7 +120,7 @@ II=1 把缓存命中吞吐翻倍，仿真成立，但没有跨过 30 fps 门槛�
 
 - II=1 缓存改动未采用；方案 A 4×4 网格 + 128 行源缓存已实板验证 **30.016 fps**，当前任务 2 的 30 fps 版本为 [calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit)，SHA256 `6D0C4185AB2BC7EAEE1C8ECA49B9C670F8A0D165CE833503D04D2F0515F43922`。
 - 当前工作区源码为 valid 1-bit RAM 时序优化版；候选 bitstream [validram_20261029_1637](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit)（SHA256 `6B338CEDE934A62054D0BDB2540964982155FCB685C11F90CA026915B2EDB3CD`，WNS −0.473 ns，网格无失败端点）已构建，待上板确认 30 fps；1520 归档版仍是已实板验证的 30 fps 版本。
-- 22:31 归档 [calibrated_view_top_demo_corner_advanced_equalize_720p_PG2L100H_20261028_2231.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_720p_PG2L100H_20261028_2231.sbit) 保留作任务 1+3 的旧基线（全分辨率地图，单遍 15 fps）；SHA256 `BF89BBDD60839ABF985FFD0E643E8B90221215CCF9D905C3209B7D3DC8155AD9`。
+- 2026-10-28 及更早的 3 个旧 bitstream（1541/1535/2231）已删除；`bitstreams/` 仅保留 1520（已验证 30 fps）和 1637（validram 候选）。
 - 板上当前烧的是 30 fps 网格+128 行版本；重烧/复位后参数丢失，需要重新拍三张、KEY3 标定、KEY4 建表（建表约 0.1 s）。
 
 ## 复现方式（2026-10-29 方案 A）

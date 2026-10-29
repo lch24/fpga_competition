@@ -88,8 +88,10 @@ II=1 把缓存命中吞吐翻倍，仿真成立，但没有跨过 30 fps 门槛�
 | 22:31 归档（全分辨率地图，64 行缓存） | 4.53M | 36.24 ms | 15.0 fps | — | — |
 | 4×4 网格 + 64 行缓存 | 4.49M | 35.90 ms | 14.99 fps | 152/152/152 | 0 / 152 |
 | 4×4 网格 + 128 行缓存 | **3.57M** | **28.57 ms** | **30.016 fps** | **304/304/304** | **0 / 0** |
+| 4×4 网格 + 128 行缓存 + valid 1-bit RAM | **3.34M** | **26.74 ms** | **29.97 fps** | **304/304/304** | **0 / 0** |
 
 - 128 行版本 `last_remap_cycles=3,570,636`（28.565 ms），`display_corrected=true`，`health_bits=255`，无 underflow/display error。
+- valid 1-bit RAM 版本 `last_remap_cycles=3,343,057`（26.744 ms），10.145 秒 304/304/304 帧，29.97 fps，失败/跳帧 0；比 1520 版快 1.82 ms，已成为当前 30 fps 版本。
 - 30 fps 版本已归档：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit)，SHA256 `6D0C4185AB2BC7EAEE1C8ECA49B9C670F8A0D165CE833503D04D2F0515F43922`。
 
 ### 关键结论（修正前面的判断）
@@ -107,21 +109,21 @@ II=1 把缓存命中吞吐翻倍，仿真成立，但没有跨过 30 fps 门槛�
 | 网格 + 128 行 + valid 1-bit RAM | 11,584/11,675 | 4,937/4,975 | 62,835/66,600 | 114/155 | −0.473 ns | +1.013 ns |
 
 - valid 1-bit RAM 版本把 125 MHz WNS 从 −0.833 ns 改善到 **−0.473 ns**，40 MHz 从 +0.280 ns 改善到 **+1.013 ns**；`g_grid_map` 不再出现在失败端点，最差路径回到原有的 `interpolate`/DDR 路径。最终路由资源仍为 100% CLMA/CLMS（余 91/38），所以后续加法仍需先重新布局。
-- 候选 bitstream：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit)，SHA256 `6B338CEDE934A62054D0BDB2540964982155FCB685C11F90CA026915B2EDB3CD`。行为与 1520 已验证版一致，仅每帧多 LINES 个周期清 valid（128 行约 1 µs）；待上板复测 30 fps 后再替换已验证归档。
+- valid 1-bit RAM 版本已实板验证 **29.97 fps / 26.74 ms**（304/304/304，失败/跳帧 0），作为当前 30 fps 版本：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit)，SHA256 `6B338CEDE934A62054D0BDB2540964982155FCB685C11F90CA026915B2EDB3CD`。1520 保留为前一版已验证回退。
 
 ### 仿射 180° 两遍模式评估
 
-- 当前 30 fps 是**单遍校正**（仿射关闭，`flags=0`）。仿射 180° 走两遍：第一遍地图校正 28.57 ms，第二遍仿射+Gamma 至少受 II=2 缓存下限约束（约 1.84M 周期 = 14.7 ms），合计 ≥43.3 ms，即 **≤23 fps**；按现有 TB/旧实板第二遍 12.8–17 ms 估算，实际约 **22 fps**。
-- 30 fps 预算 33.3 ms，第一遍已占 28.57 ms，给第二遍只剩 4.7 ms，低于第二遍的 14.7 ms 下限。因此**两遍仿射不可能达到 30 fps**，除非把仿射融合进地图校正的单遍架构（按仿射坐标求控制点网格）。融合需要非光栅的网格行访问，是架构级改动，且会破坏当前已验证的 30 fps 单遍版本。
-- 若开启 Gamma equalize，第二遍还包含自适应伽马直方图；`tb_advanced_remap` 的 Gamma 帧约 5.36 cpp（39.5 ms），总帧约 68 ms ≈14.7 fps。仿射+Gamma 演示建议保持 Gamma 关闭或使用轻量模式；30 fps 不可达。
-- 建议：任务 2 的 30 fps 以单遍校正版本交付；任务 3 的仿射 180° 演示保持约 22 fps（Gamma 关闭），不强行追 30。若必须 30 fps 仿射，单独做融合版本/单独 bitstream，不在当前版本上改。
+- 实测（1637，Gamma 关闭）：第一遍 **26.7 ms**，第二遍 **20.5 ms**（2.57M 周期），合计 **47.2 ms**；10 秒窗口 152/153/153 帧，**15.06 fps**，失败 0、跳帧 152。第二遍比 II=2 下限 14.7 ms 高，因为仿射读源帧仍有缓存缺失；总时间超过 2 个摄像头帧间隔，采集调度只能每两帧取一帧，所以实测是 15 fps 而不是 21 fps。
+- 30 fps 预算 33.3 ms，第一遍已占 26.7 ms，给第二遍只剩 6.6 ms，远低于 20.5 ms。因此**两遍仿射不可能达到 30 fps**，除非把仿射融合进地图校正的单遍架构（按仿射坐标求控制点网格）。融合需要非光栅的网格行访问，是架构级改动，且会破坏当前已验证的 30 fps 单遍版本。
+- 若开启 Gamma equalize，第二遍还包含自适应伽马直方图；`tb_advanced_remap` 的 Gamma 帧约 5.36 cpp（39.5 ms），总帧约 66 ms，仍受摄像头帧间隔量化在 15 fps 左右。仿射+Gamma 演示建议保持 Gamma 关闭或使用轻量模式；30 fps 不可达。
+- 建议：任务 2 的 30 fps 以单遍校正版本交付；任务 3 的仿射 180° 演示保持约 15 fps（Gamma 关闭），不强行追 30。若必须 30 fps 仿射，单独做融合版本/单独 bitstream，不在当前版本上改。
 
 ## 最终处理（2026-10-29 更新）
 
-- II=1 缓存改动未采用；方案 A 4×4 网格 + 128 行源缓存已实板验证 **30.016 fps**，当前任务 2 的 30 fps 版本为 [calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit)，SHA256 `6D0C4185AB2BC7EAEE1C8ECA49B9C670F8A0D165CE833503D04D2F0515F43922`。
-- 当前工作区源码为 valid 1-bit RAM 时序优化版；候选 bitstream [validram_20261029_1637](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit)（SHA256 `6B338CEDE934A62054D0BDB2540964982155FCB685C11F90CA026915B2EDB3CD`，WNS −0.473 ns，网格无失败端点）已构建，待上板确认 30 fps；1520 归档版仍是已实板验证的 30 fps 版本。
-- 2026-10-28 及更早的 3 个旧 bitstream（1541/1535/2231）已删除；`bitstreams/` 仅保留 1520（已验证 30 fps）和 1637（validram 候选）。
-- 板上当前烧的是 30 fps 网格+128 行版本；重烧/复位后参数丢失，需要重新拍三张、KEY3 标定、KEY4 建表（建表约 0.1 s）。
+- II=1 缓存改动未采用；方案 A 4×4 网格 + 128 行源缓存 + valid 1-bit RAM 已实板验证 **29.97 fps / 26.74 ms**，当前任务 2 的 30 fps 版本为 [calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_720p_PG2L100H_20261029_1637.sbit)，SHA256 `6B338CEDE934A62054D0BDB2540964982155FCB685C11F90CA026915B2EDB3CD`。
+- 1520 是前一版已验证 30 fps（28.57 ms），保留作回退：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit](../bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_720p_PG2L100H_20261029_1520.sbit)，SHA256 `6D0C4185AB2BC7EAEE1C8ECA49B9C670F8A0D165CE833503D04D2F0515F43922`。
+- 2026-10-28 及更早的 3 个旧 bitstream（1541/1535/2231）已删除；`bitstreams/` 仅保留 1520（前版已验证 30 fps）和 1637（当前已验证 30 fps / 26.74 ms）。
+- 板上当前烧的是 1637 valid 1-bit RAM 版本（29.97 fps）；重烧/复位后参数丢失，需要重新拍三张、KEY3 标定、KEY4 建表（建表约 0.1 s）。
 
 ## 复现方式（2026-10-29 方案 A）
 

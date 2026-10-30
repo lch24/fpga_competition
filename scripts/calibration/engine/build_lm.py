@@ -18,7 +18,8 @@ NAMES = '''n nr ns maxiter maxtries desc current trial baseline plus minus colum
  fp_points fp_total init_raw init_px init_py init_bx init_by init_seed
  check_reason check_warnings candidate_valid
  coverage_left coverage_right coverage_top coverage_bottom
- coverage_xlo coverage_xhi coverage_ylo coverage_yhi fit_k3'''.split()
+ coverage_xlo coverage_xhi coverage_ylo coverage_yhi fit_k3
+ nfull n_stage_min phase'''.split()
 M = {name: i for i, name in enumerate(NAMES)}
 M.update({f'q{i}':128+i for i in range(34)})
 M.update({f'rot{i}':256+i for i in range(32)})
@@ -36,7 +37,7 @@ CONSTANTS = dict(zero=0x0000000000000000, one=0x3ff0000000000000,
  normal_min=0x3f847ae147ae147b,normal_weak=0x3fc5c28f5c28f5c3,
  jacobian_min=0x3f1a36e2eb1c432d, sqrt_two=0x3ff6a09e667f3bcd,
  eigen_tiny=0x39b4484bfeebc2a0,eigen_tolerance=0x3d06849b86a12b9b,
- eigen_separation=0x3ddb7cdfd9d7bdbb)
+ eigen_separation=0x3ddb7cdfd9d7bdbb,stage_cost=0x4090e00000000000)
 C = {name: 192+i for i, name in enumerate(CONSTANTS)}
 
 class Program:
@@ -94,11 +95,24 @@ def program():
     e('# Generated LM assembly. All mutable scalars live in workspace RAM.',
       'MOVI A7,0','GUARD numeric_stop')
     for name in ('accepted','outer','attempt','converged','status'): p.seti(name,0)
+    p.icopy('nfull','n')
+    p.addi('n_stage_min','ns',-1)
     p.fcopy('cost','infinity'); p.fcopy('damping','initial_lambda')
     p.copy('trial','current','ns'); p.service('baseline'); p.check_service('numeric_stop')
     p.fcopy('cost','svc_cost')
+    # Default: one phase with the requested column count. A stage 2/3 request
+    # (requested count >= state width - 1, i.e. distortion columns included)
+    # whose pinhole initial fit is still far from the measured corners runs two
+    # warm-up phases first: 22 columns (intrinsics + poses), 23 (+k1), then the
+    # requested count. A good initial fit (near-pinhole lens) or a stage 0/1
+    # request skips the warm-ups, because they only add iterations.
+    p.seti('phase',2); p.icopy('n','nfull')
+    p.ib('nfull',3,'n_stage_min','phase_ready')
+    p.fb('cost',3,'stage_cost','phase_ready')
+    p.addi('n','ns',-5); p.seti('phase',0)
+    L('phase_ready')
     L('outer_loop'); e('GUARD numeric_stop')
-    p.fb('cost',3,'cost_stop','converged'); p.ib('outer',6,'maxiter','numeric_stop')
+    p.fb('cost',3,'cost_stop','phase_done'); p.ib('outer',6,'maxiter','numeric_stop')
     p.addi('outer','outer',1); p.seti('k',0)
     L('column_loop')
     p.desc('k',('i','first','last','ja'))
@@ -151,7 +165,7 @@ def program():
     L('gradient_max_ready'); p.ibin('rowbase','IADD','rowbase','n'); p.addi('a','a',1)
     p.ib('a',3,'n','normal_row')
     p.unary('threshold','FSQRT','cost'); p.fbin('threshold','FADD','one','threshold')
-    p.fbin('tmp','FMUL','gradient_stop','threshold'); p.fb('gmax',3,'tmp','converged')
+    p.fbin('tmp','FMUL','gradient_stop','threshold'); p.fb('gmax',3,'tmp','phase_done')
     p.seti('attempt',0)
     L('try_step'); e('GUARD retry')
     p.il(0,'normal'); p.il(1,'augmented'); p.il(2,'gradient'); p.il(3,'n'); p.il(4,'n')
@@ -181,13 +195,28 @@ def program():
     # 1e-6 of the current cost are polishing, not progress. The old 1e-11 test
     # cost several extra iterations on clean data and up to six on noisy data.
     L('lambda_floor_ready'); p.fbin('tmp','FMUL','reduction_stop','cost')
-    p.fb('stepnorm',3,'step_stop','converged'); p.fb('reduction',3,'tmp','converged'); e('BR outer_loop')
+    p.fb('stepnorm',3,'step_stop','phase_done'); p.fb('reduction',3,'tmp','phase_done'); e('BR outer_loop')
     L('retry'); e('MOVI A7,0','GUARD numeric_stop')
     p.fbin('damping','FMUL','damping','lambda_up'); p.addi('attempt','attempt',1)
     p.ib('attempt',3,'maxtries','try_step')
-    p.fbin('tmp','FMUL','relaxed_gradient','threshold'); p.fb('gmax',3,'tmp','converged'); e('BR done')
+    p.fbin('tmp','FMUL','relaxed_gradient','threshold'); p.fb('gmax',3,'tmp','phase_done'); e('BR done')
     L('numeric_stop'); e('MOVI A7,0','BR done')
     L('bad_config'); p.seti('status',1); e('BR done')
+    # One phase converged. Warm-up phases advance to the next column set from
+    # the current state; only the last phase publishes convergence.
+    L('phase_done')
+    p.ib('phase',6,2,'converged')
+    p.addi('phase','phase',1)
+    p.ib('phase',1,1,'advance_one')
+    p.icopy('n','nfull'); e('BR advance_commit')
+    L('advance_one'); p.addi('n','ns',-4)
+    L('advance_commit')
+    p.fcopy('damping','initial_lambda'); p.seti('outer',0)
+    p.copy('trial','current','ns')
+    e('GUARD numeric_stop')
+    p.service('baseline'); p.check_service('numeric_stop')
+    p.fcopy('cost','svc_cost')
+    e('BR outer_loop')
     L('converged'); p.seti('converged',1)
     L('done'); e('END 0')
     solve=(ROOT/'data/programs/calibration/solve.asm').read_text(encoding='utf-8')

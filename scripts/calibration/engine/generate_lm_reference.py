@@ -13,7 +13,7 @@ import struct
 from pathlib import Path
 
 from generate_lm_fisheye import (POINTS, STATE_N, VIEWS, WIDTH, HEIGHT, bits, optimize,
-                                 pack_points, pack_state, predict, residual)
+                                 optimize_sequence, pack_points, pack_state, predict, residual)
 
 ROOT = Path(__file__).resolve().parents[3]
 TRUTH = [math.log(800.0), math.log(820.0), .5, .5, .02, -.005, .001, -.002, 0.0]
@@ -46,7 +46,12 @@ def build():
         initial = TRUTH[:]
         for position, index in enumerate(active):
             initial[index] += (position % 5 - 2) * 1e-5
-        result, accepted, converged = optimize(initial, observed, active, stage_ranges(active))
+        # Stage 2/3 requests run the documented warm-up sequence in RTL.
+        if stage >= 2:
+            result, accepted, converged = optimize_sequence(
+                initial, observed, [stage_active(0), stage_active(1), active])
+        else:
+            result, accepted, converged = optimize(initial, observed, active, stage_ranges(active))
         _, cost = residual(result, observed)
         deviation = max(abs(result[i] - TRUTH[i]) / (1.0 + abs(TRUTH[i])) for i in range(STATE_N))
         assert converged and accepted >= 1, (stage, converged, accepted)

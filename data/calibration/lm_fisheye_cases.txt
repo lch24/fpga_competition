@@ -1,1 +1,1 @@
-fisheye stage=2 accepted=21 cost=1.2830949206418053e-08 cost_without_k3=647.58518074233336 max_relative_error_vs_truth=2.01e-07 observed_radius=0.747
+fisheye stage=2 accepted=33 cost=1.2830949021932189e-08 cost_without_k3=647.58518074232109 max_relative_error_vs_truth=2.01e-07 observed_radius=0.747

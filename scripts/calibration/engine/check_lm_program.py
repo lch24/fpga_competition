@@ -16,7 +16,7 @@ def layout(views,points):
     for name,size in sizes:result[name]=at;at+=size
     return result,1<<(at-1).bit_length()
 
-def run_case(rom,views=3,points=40,mode='normal'):
+def run_case(rom,views=3,points=40,mode='normal',initial_scale=0.01):
     n=9+6*views;ns=n;nr=2*views*points;l,words=layout(views,points)
     dist=n-(4+6*views);pose_base=4+dist;banks=pose_base+6
     calls=0;accepted_costs=[];snapshots=[]
@@ -42,7 +42,7 @@ def run_case(rom,views=3,points=40,mode='normal'):
     m.mem.update({C[k]:v for k,v in CONSTANTS.items()})
     m.mem.update({280:bits(1e-30),281:bits(1e-14),282:0,283:0x7fefffffffffffff})
     for key,val in dict(l,n=n,nr=nr,ns=ns,maxiter=8,maxtries=3).items():m.mem[M[key]]=val
-    initial=[0.01*(i+1) for i in range(ns)];initial[8]=0
+    initial=[initial_scale*(i+1) for i in range(ns)];initial[8]=0
     for i,x in enumerate(initial):m.mem[l['current']+i]=bits(x)
     for k in range(n):
         state_index=k if k<4 else k+5 if k<4+6*views else k-6*views
@@ -67,3 +67,5 @@ if __name__=='__main__':
     rom,_=build()
     for mode in ('normal','missing','invalid_baseline','invalid_difference','reject'):run_case(rom,mode=mode)
     run_case(rom,views=4,points=42)
+    # Large initial cost selects the staged warm-up path (27 columns >= ns-1).
+    run_case(rom,mode='normal',initial_scale=10.0)

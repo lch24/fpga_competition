@@ -28,10 +28,10 @@ module tb_gray_dma;
    expected=x<7?(299*r+587*g+114*b+500)/1000:8'ha5;
    if(memory.mem[511+y*11+x]!==expected[7:0])$fatal(1,"gray/padding mismatch %d %d",x,y);
   end
-  if(transactions!=21||violations!=0)$fatal(1,"transaction count/protocol");
+  if(transactions!=3||violations!=0)$fatal(1,"transaction count/protocol");
   // Exact overlap rejected without a read. Odd addresses and cross-block pixels
   // above exercise the logical byte boundary independently of physical HMIC.
-  dst_base=31;launch();finish_job(1);if(transactions!=21)$fatal(1,"bad config read");dst_base=511;
+  dst_base=31;launch();finish_job(1);if(transactions!=3)$fatal(1,"bad config read");dst_base=511;
   memory.inj_en=1;memory.inj_addr_min=31;memory.inj_addr_max=32;launch();finish_job(5);
   memory.inj_addr_min=511;memory.inj_addr_max=511;launch();finish_job(5);
   memory.inj_en=0;launch();finish_job(0);

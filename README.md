@@ -6,6 +6,26 @@
 
 本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
 
+## 交接说明（2026-10-30 灰度 DMA 版，**尚未实板复测**）
+
+板子已转交下一位。本版在已实板验证的[按视图裁剪 LM](docs/TASK2_PIPELINE_ATTEMPT.md)之上只改检测的灰度转换，烧录文件和验证记录如下：
+
+- 比特流：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_graydma_720p_PG2L100H_20261030_1941.sbit](bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_graydma_720p_PG2L100H_20261030_1941.sbit)，SHA256 `F68987D3DD51EC7CE478CBE3A5217DD8B9B69B0A262299E2350667AE2ED8EBBF`。
+- PDS：CLMA **11,593/11,675**，CLMS **4,945/4,975（仅余 30，后续加逻辑先看这里）**，LUT 63,431.5/66,600，DRM 114/155；125 MHz WNS **−0.459 ns**，40 MHz **+1.506 ns**。
+- 改动：[rgb565_gray_dma.v](rtl/memory/image/rgb565_gray_dma.v) 从“每像素一次 2 字节读 + 一次 1 字节写并等待完成”改为 64 像素一块的突发读写（每块读 128 B、写 64 B）。灰度公式 `(299r+587g+114b+500)/1000`、RGB 低位补零、字节序和 DDR 布局逐位不变。
+- 已验证：`tb_gray_dma` 通过（奇地址、跨块、填充、配置重叠、读写错误注入、协议违规）；`tb_detection_fixed` 通过，160×120 三视图 120 个角点与基线逐位一致（最大偏差 3.8147e-05 px）；160×120 灰度阶段 **283,477 → 39,317 周期（−86%）**，整段检测 38.65M → 37.29M。720p 每张图的灰度事务数从约 184 万降到 2.88 万，实板收益应明显大于小图。整链 `tb_vision_numeric` 未复跑，因为检测角点已逐位一致。
+
+**明天上板建议顺序**
+
+1. 烧录上面的 sbit；重新上电后旧标定参数会丢，必须重拍三张。
+2. 按[拍摄规范](docs/CALIBRATION_QUALITY.md)重拍：中左、右上（最上一行 `y≈150–175`）、右下；棋盘拿近，格距 45–60 px，三张都完整入画并留 20–40 px 边。
+3. 开串口记录：`python scripts/debug/uart_monitor.py COM14 --log build/debug/graydma_board.log`（端口按实际改）。
+4. 按 KEY3；成功应是 LED5 亮、`status=0`、每视图 40 点、`check_reason=none`，RMS 与照片有关（上一组为 0.7233）。
+5. 按 KEY4 建表并测视频：`python scripts/debug/uart_monitor.py COM14 --video-seconds 10`，预期 29.9–30.0 fps、失败 0、跳帧 0。
+6. 失败时：`status=2` 是检测（点集/覆盖问题，按上面摆法重拍）；`status=4` 且 `check_reason=not_converged` 是几何太弱（补顶部覆盖和倾角）。用 `--once status`、`--once progress` 看诊断，角点用 `--corners build/debug/corners.json` 导出。
+
+**预期（未实测）**：上一版 KEY3→参数发布 11.7 s，其中检测段约 4.8 s、LM/检查 4.28 s。灰度突发化后检测段预计降到约 2.5–3.5 s，KEY3→发布约 9–10.5 s；LM、RMS 和角点结果不应变化。细节见[任务 2 记录](docs/TASK2_PIPELINE_ATTEMPT.md)与[检测设计](docs/DETECTION_ENGINE.md)。
+
 ## 从输入到输出
 
 2026-10-19：增加基于角点边缘覆盖的保守 k3 模型选择，并提供角点编号叠图与软件复算。

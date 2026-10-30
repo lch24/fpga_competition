@@ -15,18 +15,23 @@ module tb_lm_service;
  calib_alu alu(.ce(1'b1),.clk(clk),.rst_n(rst_n),.req_valid(fv),.req_ready(fr),.req_op(fo),.req_a(fa),.req_b(fb),
  .rsp_valid(sv),.rsp_ready(sr),.rsp_result(fd),.rsp_flags(flags),.rsp_less(),.rsp_equal(),.rsp_unordered());
  wire ev,er,dr,rr;wire [`PAR_STATE_W-1:0] es;
+ wire [`PAR_RES_BITS-1:0] efirst,elast;
+ reg [`PAR_RES_BITS-1:0] first_q=0,last_q=0;
  reg busy=0;reg [31:0] count=0;reg [63:0] residual=0,rescost=0;
  reg [7:0] mock_status=0;integer mode=0,calls=0,errors=0,cases=0,cycles=0;
  reg done=0;real x,total;
- wire dv=busy && count<`PAR_RESIDUALS;
- wire rv=busy && count==`PAR_RESIDUALS;
+ wire [31:0] span=last_q-first_q+1;
+ wire [31:0] in_span=elast-efirst+1;
+ wire dv=busy && count<span;
+ wire rv=busy && count==span;
  assign er=!busy;
  always @(posedge clk)begin
   if(!rst_n)begin busy<=0;count<=0;end
   else begin
    if(ev && er)begin
     busy<=1;count<=0;residual<=es[63:0];x=$bitstoreal(es[63:0]);total=0;
-    for(integer k=0;k<`PAR_RESIDUALS;k=k+1)total=total+x*x;
+    first_q<=efirst;last_q<=elast;
+    for(integer k=0;k<in_span;k=k+1)total=total+x*x;
     if(mode==2 && calls>0 && es[63:0]==0)total=1e10;
     rescost<=$realtobits(total);mock_status<=mode==1?8'd5:8'd0;calls=calls+1;
    end
@@ -37,8 +42,8 @@ module tb_lm_service;
  lm_controller #(.FP_SHARED(1),.SHARE_RESIDUAL(1),.ENGINE_SHARED(1)) dut(
  .clk(clk),.rst_n(rst_n),.execution_req(execution_req),.execution_rsp(execution_rsp),
  .cmd_valid(cmd_valid),.cmd_ready(cmd_ready),.cmd_width(16'd640),.cmd_height(16'd480),.cmd_state(input_state),.cmd_stage(2'd2),
- .ext_cmd_valid(ev),.ext_cmd_ready(er),.ext_cmd_state(es),.ext_point_rd_en(1'b0),.ext_point_rd_view_id(0),.ext_point_rd_index(0),
- .ext_data_valid(dv),.ext_data_ready(dr),.ext_data_index(count[`PAR_RES_BITS-1:0]),.ext_data_fp64(residual),.ext_data_last(count==`PAR_RESIDUALS-1),
+ .ext_cmd_valid(ev),.ext_cmd_ready(er),.ext_cmd_state(es),.ext_cmd_first(efirst),.ext_cmd_last(elast),.ext_point_rd_en(1'b0),.ext_point_rd_view_id(0),.ext_point_rd_index(0),
+ .ext_data_valid(dv),.ext_data_ready(dr),.ext_data_index(first_q+count[`PAR_RES_BITS-1:0]),.ext_data_fp64(residual),.ext_data_last(count+1==span),
  .ext_rsp_valid(rv),.ext_rsp_ready(rr),.ext_rsp_status(mock_status),.ext_rsp_cost_fp64(rescost),
  .point_rd_valid(1'b0),.point_rd_x_fp32(0),.point_rd_y_fp32(0),
  .shared_req_ready(9'd0),.shared_rsp_valid(9'd0),.shared_rsp_result(64'd0),.shared_rsp_flags(5'd0),

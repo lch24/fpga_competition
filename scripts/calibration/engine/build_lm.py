@@ -19,7 +19,7 @@ NAMES = '''n nr ns maxiter maxtries desc current trial baseline plus minus colum
  check_reason check_warnings candidate_valid
  coverage_left coverage_right coverage_top coverage_bottom
  coverage_xlo coverage_xhi coverage_ylo coverage_yhi fit_k3
- nfull n_stage_min phase'''.split()
+ nfull n_stage_min phase nlast svc_first svc_last lastm1 len bptr jptr'''.split()
 M = {name: i for i, name in enumerate(NAMES)}
 M.update({f'q{i}':128+i for i in range(34)})
 M.update({f'rot{i}':256+i for i in range(32)})
@@ -83,7 +83,15 @@ class Program:
         self.il(1,'desc'); self.emit('IADD A0,A0,A1')
         for offset,name in enumerate(which):
             self.emit(f'LDI32 A1,A0,{offset}'); self.ist(name,1)
-    def service(self,dest):
+    def service(self,dest,scoped=False):
+        # scoped: emit only the current descriptor's [first,last) residual window.
+        if scoped:
+            self.icopy('svc_first','first')
+            self.addi('lastm1','last',-1)
+            self.icopy('svc_last','lastm1')
+        else:
+            self.seti('svc_first',0)
+            self.icopy('svc_last','nlast')
         self.icopy('svc_dst',dest); self.emit('HOST 0')
     def check_service(self,numeric):
         self.ib('svc_status',1,4,numeric)
@@ -97,6 +105,7 @@ def program():
     for name in ('accepted','outer','attempt','converged','status'): p.seti(name,0)
     p.icopy('nfull','n')
     p.addi('n_stage_min','ns',-1)
+    p.addi('nlast','nr',-1)
     p.fcopy('cost','infinity'); p.fcopy('damping','initial_lambda')
     p.copy('trial','current','ns'); p.service('baseline'); p.check_service('numeric_stop')
     p.fcopy('cost','svc_cost')
@@ -120,12 +129,15 @@ def program():
     p.fbin('tmp','FADD','one','tmp'); p.fbin('h','FMUL','difference_step','tmp')
     p.fbin('perturb','FADD','original','h')
     p.copy('trial','current','ns'); p.write('trial','perturb','i')
-    p.service('plus'); p.check_service('numeric_stop')
-    # Forward difference against the stored baseline residual. One host call
-    # per column instead of two; the step is small enough that the O(h) term
-    # is far below the LM stop thresholds, and pose columns still produce
-    # exact zeros outside their own view.
-    p.il(0,'plus'); p.il(1,'baseline'); p.il(2,'column'); p.il(3,'nr'); p.ld(3,'h'); p.ld(4,'zero')
+    p.service('plus', scoped=True); p.check_service('numeric_stop')
+    # Forward difference against the stored baseline residual, restricted to the
+    # column's owned residual window [first,last). The service returns that
+    # window only, so only the views whose projection actually changes are
+    # evaluated. Values outside the window are never read by J'J or the gradient.
+    p.ibin('len','ISUB','last','first')
+    p.ibin('bptr','IADD','baseline','first')
+    p.ibin('jptr','IADD','ja','first')
+    p.il(0,'plus'); p.il(1,'bptr'); p.il(2,'column'); p.il(3,'len'); p.ld(3,'h'); p.ld(4,'zero')
     L('difference_loop'); e('LD F0,A0,0','LD F1,A1,0','FSUB F0,F0,F1',
       'FDIV F0,F0,F3','ST F0,A2,0','FMUL F1,F0,F0','FADD F4,F4,F1',
       'ADDI A0,A0,1','ADDI A1,A1,1','ADDI A2,A2,1','DBNZ A3,difference_loop',
@@ -133,11 +145,9 @@ def program():
     p.ld(1,'scale_floor'); e('FCMP F4,F1','BR.6 norm_ready','FMOV F4,F1')
     L('norm_ready'); p.ld(0,'one'); e('FDIV F3,F0,F4'); p.st('scale',3)
     p.write('scales','scale','k')
-    p.il(0,'column'); p.il(1,'ja'); p.il(2,'nr'); p.il(3,'first'); p.il(4,'last'); e('MOVI A5,0')
-    L('scale_loop'); e('LD F0,A0,0','FMUL F0,F0,F3','ICMP A5,A3','BR.3 outside_column',
-      'ICMP A5,A4','BR.6 outside_column','ST F0,A1,0','BR scale_next')
-    L('outside_column'); p.ld(1,'zero'); e('FCMP F0,F1','BR.2 bad_config')
-    L('scale_next'); e('ADDI A0,A0,1','ADDI A1,A1,1','ADDI A5,A5,1','DBNZ A2,scale_loop')
+    p.il(0,'column'); p.il(1,'jptr'); p.il(2,'len')
+    L('scale_loop'); e('LD F0,A0,0','FMUL F0,F0,F3','ST F0,A1,0',
+      'ADDI A0,A0,1','ADDI A1,A1,1','DBNZ A2,scale_loop')
     p.addi('k','k',1); p.ib('k',3,'n','column_loop')
 
     # Lower triangle, each dot accumulated in increasing residual order.

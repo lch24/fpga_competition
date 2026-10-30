@@ -55,6 +55,11 @@ module residual_engine #(parameter FP_SHARED=0) (
     input wire [15:0] cmd_width, // 图像宽度，>=2
     input wire [15:0] cmd_height, // 图像高度，>=2
     input wire [`PAR_STATE_W-1:0] cmd_state, // PAR_STATE_N 项 FP64 状态快照，命令握手时锁存
+    // 残差窗口：[cmd_first, cmd_last] 为本命令要输出的全局残差下标范围。
+    // 视图边界对齐（first/last 是 2*PAR_POINTS 的整数倍），用于只重投影
+    // 受某列扰动影响的视图；默认 0..PAR_RESIDUALS-1 输出全部残差。
+    input wire [`PAR_RES_BITS-1:0] cmd_first,
+    input wire [`PAR_RES_BITS-1:0] cmd_last,
     output wire point_rd_en, // 固定1拍角点读使能，无ready，发起前预留接收空间
     output wire [`PAR_VIEW_BITS-1:0] point_rd_view_id, // 0..PAR_VIEWS-1
     output wire [`PAR_POINT_BITS-1:0] point_rd_index, // 图内角点0..PAR_POINTS-1
@@ -139,11 +144,12 @@ assign shared_rsp_ready[0 +: 1] = 0;
     reg [`PAR_VIEW_BITS-1:0] view_id;
     reg [`PAR_POINT_BITS-1:0] point_id;
     reg component;
+    reg [`PAR_RES_BITS-1:0] first_q,last_q;
     assign rsp_cost_fp64=(rsp_status==0)?v[`PAR_STATE_N+22]:64'h7ff0000000000000;
     assign point_rd_view_id=view_id;
     assign point_rd_index=point_id;
     assign data_index=(view_id*`PAR_POINTS+point_id)*2+component;
-    assign data_last=(data_index==(`PAR_RESIDUALS-1));
+    assign data_last=(data_index==last_q);
     assign data_fp64=component?v[`PAR_STATE_N+16]:v[`PAR_STATE_N+15];
     reg [31:0] observed_x,observed_y;
     reg [575:0] saved_r;
@@ -193,7 +199,7 @@ assign shared_rsp_ready[0 +: 1] = 0;
                     poses<=cmd_state[`PAR_STATE_W-1:576];
                     v[`PAR_STATE_N+23]<=uint16_fp(cmd_width);
                     v[`PAR_STATE_N+24]<=uint16_fp(cmd_height);
-                    v[`PAR_STATE_N+22]<=ZERO;view_id<=0;point_id<=0;component<=0;pc<=0;if(cmd_width<2 || cmd_height<2) fail(`PAR_BAD_CONFIG);
+                    v[`PAR_STATE_N+22]<=ZERO;view_id<=0;point_id<=0;component<=0;first_q<=cmd_first;last_q<=cmd_last;pc<=0;if(cmd_width<2 || cmd_height<2) fail(`PAR_BAD_CONFIG);
                     for(j=0;j<`PAR_STATE_N;j=j+1)if(!finite(cmd_state[64*j+:64]))fail(`PAR_CALIB_INVALID);
                 end
                 FP_REQ: if(fp_ready) pc<=FP_WAIT;
@@ -225,8 +231,13 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 3: begin calculate(MUL, v[2], v[`PAR_STATE_N+23], `PAR_STATE_N+2, 4); end
                 // 4: 主点从相对坐标还原
                 4: begin calculate(MUL, v[3], v[`PAR_STATE_N+24], `PAR_STATE_N+3, 5); end
-                // 5: 每视图解码一次 tz
-                5: begin calculate(EXP, pose[383:320], ZERO, `PAR_STATE_N+4, 6); end
+                // 5: 每视图解码一次 tz；窗口之前的视图整流跳过（不读角点、
+                // 不做投影），窗口从视图边界开始。
+                5: begin
+                    if(view_id*2*`PAR_POINTS<first_q)begin
+                        view_id<=view_id+1'b1;poses<=poses>>384;pc<=5;
+                    end else calculate(EXP, pose[383:320], ZERO, `PAR_STATE_N+4, 6);
+                end
                 // 6: 每视图计算一次 R
                 6: begin if(rot_ready) pc<=7; end
                 7: begin if(rot_valid) begin if(rot_status!=0) fail(rot_status);else begin saved_r<=rot_r;pc<=8;end end end
@@ -248,8 +259,9 @@ assign shared_rsp_ready[0 +: 1] = 0;
                 18: begin calculate(ADD, v[`PAR_STATE_N+17], v[`PAR_STATE_N+18], `PAR_STATE_N+17, 19); end
                 // 19: cost += du²+dv²；保持 C++ 分组
                 19: begin calculate(ADD, v[`PAR_STATE_N+22], v[`PAR_STATE_N+17], `PAR_STATE_N+22, 20); end
-                // 20: 先输出 du 再输出 dv，只有握手后推进索引
-                20: begin if(data_ready) begin if(!component) component<=1;else begin component<=0;if(point_id==(`PAR_POINTS-1)) begin point_id<=0;if(view_id==(`PAR_VIEWS-1)) pc<=RESPONSE;else begin view_id<=view_id+1'b1;poses<=poses>>384;pc<=5;end end else begin point_id<=point_id+1'b1;pc<=8;end end end end
+                // 20: 先输出 du 再输出 dv，只有握手后推进索引；本视图末尾一旦
+                // 覆盖到 last_q 就结束，不再解码后续视图。
+                20: begin if(data_ready) begin if(!component) component<=1;else begin component<=0;if(point_id==(`PAR_POINTS-1)) begin point_id<=0;if((view_id+1'b1)*2*`PAR_POINTS>last_q) pc<=RESPONSE;else begin view_id<=view_id+1'b1;poses<=poses>>384;pc<=5;end end else begin point_id<=point_id+1'b1;pc<=8;end end end end
                 default: fail(`PAR_CALIB_INVALID);
             endcase
         end

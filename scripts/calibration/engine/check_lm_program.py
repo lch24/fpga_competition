@@ -29,10 +29,11 @@ def run_case(rom,views=3,points=40,mode='normal',initial_scale=0.01):
         if mode=='invalid_baseline' and calls==1:status=4
         if mode=='invalid_difference' and calls==2:status=4
         total=0
-        for row in range(nr):
+        first=m.read(M['svc_first']);last=m.read(M['svc_last'])
+        for row in range(first,last+1):
             v=row//(2*points);axis=row%(2*points)%banks
             index=axis if axis<pose_base else 9+6*v+axis-pose_base
-            r=state[index];total+=r*r;m.write(dst+row,bits(r))
+            r=state[index];total+=r*r;m.write(dst+(row-first),bits(r))
         # Fail only trial evaluations, after the baseline and n column probes.
         if mode=='reject' and calls>1+n:total=1e200
         m.write(M['svc_status'],status);m.write(M['svc_cost'],bits(total))

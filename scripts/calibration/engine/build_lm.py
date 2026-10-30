@@ -28,7 +28,7 @@ CONSTANTS = dict(zero=0x0000000000000000, one=0x3ff0000000000000,
  difference_step=0x3eb0c6f7a0b5ed8d, scale_floor=0x3d719799812dea11,
  cost_stop=0x3c9cd2b297d889bc, gradient_stop=0x3e45798ee2308c3a,
  lambda_down=0x3fd3333333333333, lambda_up=0x4024000000000000,
- reduction_stop=0x3da5fd7fe1796495, step_stop=0x3e112e0be826d695,
+ reduction_stop=0x3eb0c6f7a0b5ed8d, step_stop=0x3e112e0be826d695,
  relaxed_gradient=0x3ee4f8b588e368f1, infinity=0x7ff0000000000000,
  half=0x3fe0000000000000,three=0x4008000000000000,six=0x4018000000000000,
  twenty_four=0x4038000000000000,thirty_two=0x4040000000000000,
@@ -107,11 +107,11 @@ def program():
     p.fbin('perturb','FADD','original','h')
     p.copy('trial','current','ns'); p.write('trial','perturb','i')
     p.service('plus'); p.check_service('numeric_stop')
-    p.fbin('twice','FMUL','two','h')
-    # Deliberately preserve old (p+h)-2h rounding, not p-h.
-    p.fbin('perturb','FSUB','perturb','twice'); p.write('trial','perturb','i')
-    p.service('minus'); p.check_service('numeric_stop')
-    p.il(0,'plus'); p.il(1,'minus'); p.il(2,'column'); p.il(3,'nr'); p.ld(3,'twice'); p.ld(4,'zero')
+    # Forward difference against the stored baseline residual. One host call
+    # per column instead of two; the step is small enough that the O(h) term
+    # is far below the LM stop thresholds, and pose columns still produce
+    # exact zeros outside their own view.
+    p.il(0,'plus'); p.il(1,'baseline'); p.il(2,'column'); p.il(3,'nr'); p.ld(3,'h'); p.ld(4,'zero')
     L('difference_loop'); e('LD F0,A0,0','LD F1,A1,0','FSUB F0,F0,F1',
       'FDIV F0,F0,F3','ST F0,A2,0','FMUL F1,F0,F0','FADD F4,F4,F1',
       'ADDI A0,A0,1','ADDI A1,A1,1','ADDI A2,A2,1','DBNZ A3,difference_loop',
@@ -177,7 +177,10 @@ def program():
     p.fcopy('cost','newcost'); p.addi('accepted','accepted',1)
     p.fbin('damping','FMUL','damping','lambda_down'); p.copy('baseline','minus','nr')
     p.fb('damping',6,'scale_floor','lambda_floor_ready'); p.fcopy('damping','scale_floor')
-    L('lambda_floor_ready'); p.fbin('tmp','FADD','one','cost'); p.fbin('tmp','FMUL','reduction_stop','tmp')
+    # Relative reduction test: further steps that lower the cost by less than
+    # 1e-6 of the current cost are polishing, not progress. The old 1e-11 test
+    # cost several extra iterations on clean data and up to six on noisy data.
+    L('lambda_floor_ready'); p.fbin('tmp','FMUL','reduction_stop','cost')
     p.fb('stepnorm',3,'step_stop','converged'); p.fb('reduction',3,'tmp','converged'); e('BR outer_loop')
     L('retry'); e('MOVI A7,0','GUARD numeric_stop')
     p.fbin('damping','FMUL','damping','lambda_up'); p.addi('attempt','attempt',1)

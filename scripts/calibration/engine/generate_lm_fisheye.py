@@ -29,7 +29,7 @@ DIFFERENCE_STEP = _f64(0x3eb0c6f7a0b5ed8d)
 SCALE_FLOOR = _f64(0x3d719799812dea11)
 COST_STOP = _f64(0x3c9cd2b297d889bc)
 GRADIENT_STOP = _f64(0x3e45798ee2308c3a)
-REDUCTION_STOP = _f64(0x3da5fd7fe1796495)
+REDUCTION_STOP = _f64(0x3eb0c6f7a0b5ed8d)
 STEP_STOP = _f64(0x3e112e0be826d695)
 RELAXED_GRADIENT = _f64(0x3ee4f8b588e368f1)
 
@@ -124,20 +124,18 @@ def solve_normal(a, b):
     return x
 
 
-def jacobian_columns(state, observed, active, ranges):
-    """Scaled finite-difference columns; raises when a column is not range local."""
+def jacobian_columns(state, observed, active, ranges, base):
+    """Scaled forward-difference columns; raises when a column is not range local."""
     columns, scales = [], []
     for position, index in enumerate(active):
         first, last = ranges[position]
         step = DIFFERENCE_STEP * (1.0 + abs(state[index]))
-        plus, minus = state[:], state[:]
+        plus = state[:]
         plus[index] += step
-        minus[index] = plus[index] - 2.0 * step
         rp, _ = residual(plus, observed)
-        rm, _ = residual(minus, observed)
         values = [0.0] * len(rp)
         for r in range(first, last):
-            values[r] = (rp[r] - rm[r]) / (2.0 * step)
+            values[r] = (rp[r] - base[r]) / step
         for r in list(range(0, first)) + list(range(last, len(rp))):
             if values[r] != 0.0:
                 raise ValueError(f'column {index} is not range local')
@@ -155,11 +153,11 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
              max_tries=16, relaxed_gradient=RELAXED_GRADIENT):
     """Damped Gauss-Newton in scaled columns; result state and accepted steps.
 
-    The policy follows the documented LM program: central differences with a
-    relative step, columns normalised to unit norm (floored), Marquardt damping
-    on the unit diagonal, fixed accept/reject schedule and the documented
-    termination tests. The arithmetic and the whole projection model are new
-    code, which is what makes agreement with the RTL informative.
+    The policy follows the documented LM program: forward differences with a
+    relative step against the stored baseline, columns normalised to unit norm
+    (floored), Marquardt damping on the unit diagonal, fixed accept/reject
+    schedule and the documented termination tests. The arithmetic and the whole
+    projection model are new code, which is what makes agreement informative.
     """
     state = state[:]
     residual_vector, cost = residual(state, observed)
@@ -171,7 +169,7 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
     for _ in range(iterations):
         if cost < tolerance:
             break
-        jacobian, scales = jacobian_columns(state, observed, active, ranges)
+        jacobian, scales = jacobian_columns(state, observed, active, ranges, residual_vector)
         n = len(active)
         normal = [[sum(jacobian[i][r] * jacobian[j][r] for r in range(len(residual_vector)))
                    for j in range(n)] for i in range(n)]
@@ -203,7 +201,7 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
                 damping = max(damping * 0.3, SCALE_FLOOR)
                 accepted += 1
                 stepnorm = max(abs(step[j]) / (1.0 + abs(state[active[j]] - step[j])) for j in range(n))
-                if stepnorm < step_stop or reduction < reduction_stop * (1.0 + cost):
+                if stepnorm < step_stop or reduction < reduction_stop * cost:
                     return state, accepted, True
                 break
             attempt += 1

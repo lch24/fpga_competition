@@ -33,10 +33,10 @@ def run_case(rom,views=3,points=40,mode='normal'):
             v=row//(2*points);axis=row%(2*points)%banks
             index=axis if axis<pose_base else 9+6*v+axis-pose_base
             r=state[index];total+=r*r;m.write(dst+row,bits(r))
-        # Fail only trial evaluations, after initial and 2*n perturbations.
-        if mode=='reject' and calls>1+2*n:total=1e200
+        # Fail only trial evaluations, after the baseline and n column probes.
+        if mode=='reject' and calls>1+n:total=1e200
         m.write(M['svc_status'],status);m.write(M['svc_cost'],bits(total))
-        if dst==l['minus'] and calls>1+2*n:snapshots.append(state)
+        if dst==l['minus'] and calls>1+n:snapshots.append(state)
     m=Machine(rom,words,words,service,instruction_limit=5000000)
     m.mem.update({i:0 for i in range(288)})
     m.mem.update({C[k]:v for k,v in CONSTANTS.items()})

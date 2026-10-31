@@ -1,0 +1,109 @@
+{
+  "width": 1280,
+  "height": 720,
+  "columns": 8,
+  "rows": 5,
+  "coordinate_status": "INVALID_CROP_TRANSFORM_UNKNOWN",
+  "valid_for_parameter_comparison": 0,
+  "coordinate_note": "User confirmed on 2026-10-31 that all six PNGs are partial screen captures. The full-frame resize assumption was disproved. The historical png_to_sensor values below are INVALID; do not reuse them for calibration. Native PNG corners remain usable. Actual crop offsets and display scale, original full frames, or original FPGA corner coordinates are needed.",
+  "groups": [
+    {
+      "name": "1111",
+      "reference_report": "../../../CALIBRATION_RESULT_20261031_1111.md",
+      "reference_sha256": "84a62d4029f0b8e9df5aab60870019fe87a4bac2dba276ca374a8d46bedb7f59",
+      "fpga_params": [
+        353.1002197265625,
+        349.63201904296875,
+        661.0228271484375,
+        307.3373107910156,
+        -0.1756422370672226,
+        0.02420436404645443,
+        0.0,
+        0.00034990670974366367,
+        -0.0013686427846550941
+      ],
+      "fpga_reported_rms": 0.43813992742247365,
+      "views": [
+        {
+          "image": "../../../algorithom/ftest1.png",
+          "sha256": "c664c54a5ff7d92f4ebb355bcee9a284d65e65a49e5c4e553e5959814f3897ff",
+          "png_to_sensor": [
+            1.6368286445012787,
+            1.4428857715430863,
+            0.31841432225063937,
+            0.22144288577154314
+          ]
+        },
+        {
+          "image": "../../../algorithom/ftest2.png",
+          "sha256": "a4eb91fcab0f248872c7fd168c36fcb84d9a9a1a10ae4b4246521e62a97af87a",
+          "png_to_sensor": [
+            1.9814241486068112,
+            1.4906832298136645,
+            0.4907120743034056,
+            0.24534161490683226
+          ]
+        },
+        {
+          "image": "../../../algorithom/ftest3.png",
+          "sha256": "64c4f0812412882c1d69fe4c869913b3308b98c90a53b2c0e8d3c64bed98b227",
+          "png_to_sensor": [
+            1.8181818181818181,
+            1.518987341772152,
+            0.40909090909090906,
+            0.259493670886076
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1123",
+      "reference_report": "../../../CALIBRATION_RESULT_20261031_1123_TIMING.md",
+      "reference_sha256": "476b5179417e97da1cce9e607051be291e6fb962983092b529905b5fe0c01da2",
+      "fpga_params": [
+        331.3145751953125,
+        330.2507629394531,
+        657.1396484375,
+        307.2994384765625,
+        -0.1606319546699524,
+        0.02046795003116131,
+        0.0,
+        -0.0008039539679884911,
+        -0.0005657912697643042
+      ],
+      "fpga_reported_rms": 0.49432465173239193,
+      "views": [
+        {
+          "image": "../../../algorithom/ftest4.png",
+          "sha256": "c1ff5e13595c1ad6541b5ecf018313e112294289212cd32128ba39740ec6a23b",
+          "png_to_sensor": [
+            1.511216056670602,
+            1.4007782101167314,
+            0.25560802833530105,
+            0.2003891050583657
+          ]
+        },
+        {
+          "image": "../../../algorithom/ftest5.png",
+          "sha256": "2f8e920d3fecd4c1cbcf9c95609a32a81440be3b9237e22eaaca5e23b5f2147b",
+          "png_to_sensor": [
+            1.990668740279938,
+            1.44,
+            0.49533437013996895,
+            0.21999999999999997
+          ]
+        },
+        {
+          "image": "../../../algorithom/ftest6.png",
+          "sha256": "213a43418534c7ccd362e79f04eaf18c822fc16aef3bb4009967fb5205455625",
+          "png_to_sensor": [
+            1.8028169014084507,
+            1.5157894736842106,
+            0.4014084507042254,
+            0.2578947368421053
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -4,6 +4,7 @@
 // only 321x49 control points (Q16.16) and the reader interpolates them.
 // Expected pixels use the exact same integer bilinear weights as the RTL.
 module tb_grid_fullframe #(parameter CACHE_BITS=6);
+ reg finished=0;
  localparam W=1280,HSRC=720,HST=192,N=W*HST;
  localparam ROW0=264;
  localparam STEP=4,GW=W/STEP,GH=HST/STEP,NCOL=GW+1,NROW=GH+1,STRIDE=384;
@@ -167,7 +168,7 @@ module tb_grid_fullframe #(parameter CACHE_BITS=6);
    ROW0,ROW0+HST-1,NCOL,NROW,NROW*STRIDE*8,N,cycles,cpp);
   if(cpp>4.52)$display("RESULT OVER BUDGET: %0.3f > 4.52 cycles/pixel",cpp);
   else $display("RESULT WITHIN BUDGET: %0.3f <= 4.52 cycles/pixel",cpp);
-  $display("PASS grid map full-frame fisheye warp throughput and pixels");$finish;
+  finished=1;$display("PASS grid map full-frame fisheye warp throughput and pixels");$finish;
  end
  initial begin #200000000;$fatal(1,"timeout state=%0d cache=%0d writer=%0d index=%0d",dut.state,dut.cache.state,dut.writer.state,neighbor_index);end
 endmodule

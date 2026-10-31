@@ -168,19 +168,19 @@ module video_grid_prefetch #(parameter WIDTH=1280,HEIGHT=720,STEP=4,
  // ---------------- raster / buffer sequencing ----------------
  wire [255:0] qsel_low=(buf_low==0)?qr0:(buf_low==1)?qr1:qr2;
  wire [255:0] qsel_high=(buf_high==0)?qr0:(buf_high==1)?qr1:qr2;
- // The window update has its own always block so its 512-bit clock enable is
- // driven by a flop, not by the a_ready/stage_a_fire combinational cone.
- always @(posedge clk or negedge rst_n)begin
-  if(!rst_n)begin win_low<=0;win_high<=0;end
-  else if(start)begin win_low<=0;win_high<=0;end
-  else if(win_load)begin win_low<={qsel_low,q0_low};win_high<={qsel_high,q0_high};end
+ // G1/G2 overwrite both words before P_RUN can emit a coordinate. Reset and
+ // frame start only invalidate control; clearing these data registers would
+ // unnecessarily put start on 1536 data enables. No extra pipeline cycle.
+ always @(posedge clk)begin
+  if(pstate==P_G1)begin q0_low<=qsel_low;q0_high<=qsel_high;end
+  if(win_load)begin win_low<={qsel_low,q0_low};win_high<={qsel_high,q0_high};end
   else if(win_shift)begin win_low<=win_low>>64;win_high<=win_high>>64;end
  end
  always @(posedge clk or negedge rst_n)begin
   if(!rst_n)begin pstate<=P_IDLE;px<=0;py<=0;band<=0;buf_low<=0;buf_high<=1;buf_third<=2;
-   buf_in_use<=0;q0_low<=0;q0_high<=0;win_load<=0;win_shift<=0;read_en<=0;ra<=0;error<=0;run<=0;end
+   buf_in_use<=0;win_load<=0;win_shift<=0;read_en<=0;ra<=0;error<=0;run<=0;end
   else if(start)begin pstate<=P_WAIT;px<=0;py<=0;band<=0;buf_low<=0;buf_high<=1;buf_third<=2;
-   buf_in_use<=0;q0_low<=0;q0_high<=0;win_load<=0;win_shift<=0;read_en<=0;ra<=0;error<=0;run<=1;end
+   buf_in_use<=0;win_load<=0;win_shift<=0;read_en<=0;ra<=0;error<=0;run<=1;end
   else begin
    if(ld_error)error<=1;
    win_load<=0;win_shift<=0;
@@ -192,7 +192,7 @@ module video_grid_prefetch #(parameter WIDTH=1280,HEIGHT=720,STEP=4,
     // for that synchronous read and advances the address for the second word;
     // G1 captures word0 and lets word1 arrive; G2 loads the 512-bit window.
     P_G0:begin ra<=ra+1'b1;pstate<=P_G1;end
-    P_G1:begin q0_low<=qsel_low;q0_high<=qsel_high;win_load<=1;pstate<=P_G2;end
+    P_G1:begin win_load<=1;pstate<=P_G2;end
     P_G2:begin read_en<=0;pstate<=P_RUN;end
     P_BAND:if(buf_ready[buf_high]&&buf_row[buf_high]==band+1&&buf_ready[buf_low]&&buf_row[buf_low]==band)begin
      read_en<=1;ra<=0;pstate<=P_G0;

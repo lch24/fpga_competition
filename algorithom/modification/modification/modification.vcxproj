@@ -70,6 +70,26 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OpenCvRoot Condition="'$(OpenCvRoot)'=='' and '$(VCPKG_ROOT)'!=''">$(VCPKG_ROOT)\installed\x64-windows</OpenCvRoot>
+    <OpenCvRoot Condition="'$(OpenCvRoot)'==''">$(VSInstallDir)vcpkg\installed\x64-windows</OpenCvRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(OpenCvRoot)\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(OpenCvRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>opencv_core4.lib;opencv_imgproc4.lib;opencv_imgcodecs4.lib;opencv_calib3d4.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64' and '$(Configuration)'=='Debug'">
+    <Link>
+      <AdditionalLibraryDirectories>$(OpenCvRoot)\debug\lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>opencv_core4d.lib;opencv_imgproc4d.lib;opencv_imgcodecs4d.lib;opencv_calib3d4d.lib</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -111,7 +131,6 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>E:\vs\vcpkg\installed\x64-windows\include\opencv4</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -141,6 +160,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="compare.cpp" />
+    <ClInclude Include="compare.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

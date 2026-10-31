@@ -58,6 +58,11 @@ module hmic_ddr_adapter #(parameter ADDR_WIDTH=28) (
     assign axi_arvalid=state==RADDR;
     assign axi_awvalid=state==WADDR;
     assign axi_wdata=write_block; assign axi_wstrb=write_mask;
+    // Sample while waiting, including the cycle that accepts the return.
+    // Only the FSM needs rvalid; keep that arbiter signal off 256 data CEs.
+    // RBYTE cannot consume this register until a valid beat has been sampled.
+    always @(posedge clk)
+        if(state==RWAIT) read_block<=axi_rdata;
     // Split at physical 32-byte boundaries. Valid lanes are one (Demo convention).
     always @* begin
         next_block=0; next_mask=0; c=0;
@@ -70,7 +75,7 @@ module hmic_ddr_adapter #(parameter ADDR_WIDTH=28) (
     end
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
-            state<=IDLE; addr<=0; remaining<=0; read_block<=0; write_block<=0;
+            state<=IDLE; addr<=0; remaining<=0; write_block<=0;
             write_mask<=0; word_data<=0; word_keep<=0; byte_index<=0;
             word_count<=0; part_count<=0; last_word<=0; write_turn<=0;
             r_data<=0; r_keep<=0; r_tag<=0; r_last<=0; r_error<=0;
@@ -90,7 +95,6 @@ module hmic_ddr_adapter #(parameter ADDR_WIDTH=28) (
             end
             RADDR: if(axi_arready) state<=RWAIT;
             RWAIT: if(axi_rvalid) begin
-                read_block<=axi_rdata;
                 if(!axi_rlast||axi_rid!=0) r_error<=1;
                 state<=RBYTE;
             end
@@ -132,7 +136,11 @@ module hmic_ddr_adapter #(parameter ADDR_WIDTH=28) (
             end
             WFINISH: begin
                 addr<=addr+part_count; remaining<=remaining-part_count;
-                if(byte_index+part_count<word_count) begin byte_index<=byte_index+part_count; state<=WPACK; end
+                // Only WPACK needs this index. WIN/IDLE initialize it for the
+                // next word/transaction, so do not gate its update with the
+                // add-and-compare result on the register clock enable.
+                byte_index<=byte_index+part_count;
+                if(byte_index+part_count<word_count) state<=WPACK;
                 else state<=last_word?BOUT:WIN;
             end
             BOUT: if(b_ready) state<=IDLE;

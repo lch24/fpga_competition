@@ -1,296 +1,60 @@
+﻿#include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include "compare.h"
+
+#include <filesystem>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
-#include <opencv2/opencv.hpp>
 
-int main()
-{
-    // =========================================================
-    // 1. 读取图片
-    // =========================================================
+namespace fs = std::filesystem;
 
-    std::string path =
-        "E:/fpga/algorithom/exsample1.png";
-
-    cv::Mat image = cv::imread(path);
-
-    if (image.empty())
-    {
-        std::cerr << "Image load failed!"
-            << std::endl;
-        return -1;
-    }
-
-    std::cout << "Image size: "
-        << image.cols
-        << " x "
-        << image.rows
-        << std::endl;
-
-
-    // =========================================================
-    // 2. 灰度化
-    // =========================================================
-
-    cv::Mat gray;
-
-    cv::cvtColor(
-        image,
-        gray,
-        cv::COLOR_BGR2GRAY
-    );
-
-
-    // =========================================================
-    // 3. 棋盘格参数
-    //
-    // 你的棋盘：
-    // 8 × 6 个内角点
-    // =========================================================
-
-    cv::Size patternSize(8, 6);
-
-
-    // =========================================================
-    // 4. 检测棋盘角点
-    // =========================================================
-
-    std::vector<cv::Point2f> imagePoints;
-
-    bool found =
-        cv::findChessboardCornersSB(
-            gray,
-            patternSize,
-            imagePoints
-        );
-
-    std::cout << "Chessboard found: "
-        << (found ? "true" : "false")
-        << std::endl;
-
-    std::cout << "Corner count: "
-        << imagePoints.size()
-        << std::endl;
-
-
-    if (!found)
-    {
-        std::cerr
-            << "Chessboard corners not found!"
-            << std::endl;
-
-        cv::imshow("image", image);
-
-        cv::waitKey(0);
-
-        return -1;
-    }
-
-
-    // =========================================================
-    // 5. 亚像素角点优化
-    // =========================================================
-
-    cv::TermCriteria criteria(
-        cv::TermCriteria::EPS |
-        cv::TermCriteria::MAX_ITER,
-        30,
-        0.001
-    );
-
-    cv::cornerSubPix(
-        gray,
-        imagePoints,
-        cv::Size(5, 5),
-        cv::Size(-1, -1),
-        criteria
-    );
-
-
-    // =========================================================
-    // 6. 显示检测到的角点
-    // =========================================================
-
-    cv::Mat cornerImage =
-        image.clone();
-
-    cv::drawChessboardCorners(
-        cornerImage,
-        patternSize,
-        imagePoints,
-        true
-    );
-
-    cv::imshow(
-        "Chessboard Corners",
-        cornerImage
-    );
-
-    cv::waitKey(500);
-
-
-    // =========================================================
-    // 7. 构造棋盘格的三维世界坐标
-    //
-    // 假设每个格子大小 = 1
-    //
-    // Z 全部为 0，因为棋盘是一个平面
-    // =========================================================
-
-    std::vector<cv::Point3f> objectPoints;
-
-    for (int row = 0;
-        row < patternSize.height;
-        row++)
-    {
-        for (int col = 0;
-            col < patternSize.width;
-            col++)
-        {
-            objectPoints.emplace_back(
-                static_cast<float>(col),
-                static_cast<float>(row),
-                0.0f
-            );
+// SB already returns subpixel positions; do not run a second estimator over them.
+int main(int argc, char** argv) {
+    try {
+        if (argc == 2 && std::string(argv[1]) == "--self-test")
+            return checkCalibrationMath();
+        if (argc == 4 && std::string(argv[1]) == "--compare")
+            return compareExperiments(argv[2], argv[3]);
+        if (argc != 3) {
+            std::cerr << "Usage: modification IMAGE_DIRECTORY NEW_OUTPUT_DIRECTORY\n"
+                      << "   or: modification --compare MANIFEST.json NEW_OUTPUT_DIRECTORY\n";
+            return 2;
         }
+        const fs::path input = argv[1], output = argv[2];
+        if (fs::exists(output)) throw std::runtime_error("Output directory already exists");
+        fs::create_directories(output);
+        cv::FileStorage result((output / "detection.json").string(),
+            cv::FileStorage::WRITE | cv::FileStorage::FORMAT_JSON);
+        result << "opencv_version" << CV_VERSION << "columns" << 8 << "rows" << 5;
+        result << "views" << "[";
+        bool allFound = true;
+        for (int i = 1; i <= 6; ++i) {
+            const std::string name = "ftest" + std::to_string(i) + ".png";
+            cv::Mat image = cv::imread((input / name).string()), gray;
+            if (image.empty()) throw std::runtime_error("Cannot read " + name);
+            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+            std::vector<cv::Point2f> corners;
+            const int64 start = cv::getTickCount();
+            const bool found = cv::findChessboardCornersSB(gray, {8, 5}, corners,
+                cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_EXHAUSTIVE | cv::CALIB_CB_ACCURACY);
+            const double seconds = static_cast<double>(cv::getTickCount() - start) / cv::getTickFrequency();
+            std::cout << name << " " << image.cols << "x" << image.rows
+                      << " found=" << found << " corners=" << corners.size()
+                      << " seconds=" << seconds << std::endl;
+            result << "{" << "image" << name << "width" << image.cols << "height" << image.rows
+                   << "found" << int(found) << "seconds" << seconds << "corners" << corners << "}";
+            cv::drawChessboardCorners(image, {8, 5}, corners, found);
+            if (!cv::imwrite((output / ("corners_" + name)).string(), image))
+                throw std::runtime_error("Cannot write corner overlay");
+            allFound = allFound && found && corners.size() == 40;
+        }
+        result << "]";
+        return allFound ? 0 : 1;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << std::endl;
+        return 1;
     }
-
-
-    std::cout << "3D point count: "
-        << objectPoints.size()
-        << std::endl;
-
-
-    // =========================================================
-    // 8. calibrateCamera() 要求：
-    //
-    // vector<vector<Point3f>>
-    // vector<vector<Point2f>>
-    //
-    // 所以即使只有一张图片，也要再套一层 vector
-    // =========================================================
-
-    std::vector<std::vector<cv::Point3f>>
-        allObjectPoints;
-
-    std::vector<std::vector<cv::Point2f>>
-        allImagePoints;
-
-    allObjectPoints.push_back(
-        objectPoints
-    );
-
-    allImagePoints.push_back(
-        imagePoints
-    );
-
-
-    // =========================================================
-    // 9. 相机内参、畸变参数
-    // =========================================================
-
-    cv::Mat cameraMatrix;
-    cv::Mat distCoeffs;
-
-    std::vector<cv::Mat> rvecs;
-    std::vector<cv::Mat> tvecs;
-
-
-    // =========================================================
-    // 10. 相机标定
-    // =========================================================
-
-    double rms =
-        cv::calibrateCamera(
-            allObjectPoints,
-            allImagePoints,
-            gray.size(),
-            cameraMatrix,
-            distCoeffs,
-            rvecs,
-            tvecs
-        );
-
-
-    // =========================================================
-    // 11. 输出标定结果
-    // =========================================================
-
-    std::cout << std::endl;
-    std::cout << "============================"
-        << std::endl;
-
-    std::cout << "RMS = "
-        << rms
-        << std::endl;
-
-    std::cout << std::endl;
-
-    std::cout << "Camera Matrix:"
-        << std::endl;
-
-    std::cout << cameraMatrix
-        << std::endl;
-
-    std::cout << std::endl;
-
-    std::cout << "Distortion Coefficients:"
-        << std::endl;
-
-    std::cout << distCoeffs
-        << std::endl;
-
-
-    // =========================================================
-    // 12. 输出旋转和平移
-    // =========================================================
-
-    std::cout << std::endl;
-
-    std::cout << "Rotation Vector:"
-        << std::endl;
-
-    std::cout << rvecs[0]
-        << std::endl;
-
-    std::cout << std::endl;
-
-    std::cout << "Translation Vector:"
-        << std::endl;
-
-    std::cout << tvecs[0]
-        << std::endl;
-
-
-    // =========================================================
-    // 13. 去畸变
-    // =========================================================
-
-    cv::Mat undistorted;
-
-    cv::undistort(
-        image,
-        undistorted,
-        cameraMatrix,
-        distCoeffs
-    );
-
-
-    // =========================================================
-    // 14. 显示原图和去畸变图
-    // =========================================================
-
-    cv::imshow(
-        "Original",
-        image
-    );
-
-    cv::imshow(
-        "Undistorted",
-        undistorted
-    );
-
-    cv::waitKey(0);
-
-    return 0;
 }
-

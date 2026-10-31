@@ -13,8 +13,20 @@ module hdmi_pixel_bridge #(parameter FIFO_BITS=10)(
  wire start=de&&frame_gate&&valid&&token[17];
  wire show=de&&valid&&(start||(running&&!token[17]));
  wire consume=show||(!running&&valid&&!token[17]);
+ // One elastic input slot isolates the display-enable/stream-control cone
+ // from the large FIFO's RAM write enable. It can drain and refill together
+ // (II=1); reset discards the slot together with the rest of the frame.
+ wire fifo_ready;
+ reg input_pending;
+ reg [17:0] input_token;
+ assign in_ready=!input_pending||fifo_ready;
+ always @(posedge clk or negedge rst_n)
+  if(!rst_n)input_pending<=0;
+  else if(in_ready)input_pending<=in_valid;
+ always @(posedge clk)
+  if(in_ready&&in_valid)input_token<={in_first,in_last,in_pixel};
  async_fifo #(.WIDTH(18),.ADDR_BITS(FIFO_BITS)) fifo(
-  .wclk(clk),.wrst_n(rst_n),.wvalid(in_valid),.wready(in_ready),.wdata({in_first,in_last,in_pixel}),
+  .wclk(clk),.wrst_n(rst_n),.wvalid(input_pending),.wready(fifo_ready),.wdata(input_token),
   .rclk(pclk),.rrst_n(prst_n),.rvalid(valid),.rready(consume),.rdata(token));
  rgb565_to_rgb888 format(.pixel(show?token[15:0]:16'd0),.r(r),.g(g),.b(b));
  always @(posedge pclk or negedge prst_n)begin

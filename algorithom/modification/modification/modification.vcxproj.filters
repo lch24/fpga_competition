@@ -18,5 +18,11 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="compare.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClInclude Include="compare.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

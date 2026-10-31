@@ -1,9 +1,10 @@
 `timescale 1ns/1ps
 // Direct-mapped source cache, separate even/odd row banks. 64 pixels per line,
-// 4-beat line fill. Tags and pixels use synchronous BRAM. One-bit valid banks
-// are small distributed RAMs, so the hit compare uses a narrow registered
-// select instead of a wide 128:1 LUT mux. Valid bits are cleared at the start
-// of every frame; tags stay in block RAM.
+// 4-beat line fill. Tags and pixels use synchronous BRAM. Valid bits use
+// single-write-port distributed RAM banks of at most 64 entries. Bank outputs
+// and the bank select are registered together, keeping a full 128:1 selector
+// off the address calculation path without adding a lookup cycle.
+// Valid bits are cleared at every frame start; tags stay in block RAM.
 // Both neighbor rows looked up together. Common-case II=2; horizontal 16-pixel
 // beat crossings require one additional lookup. Misses stall, never read stale
 // source data. All tags invalidated between frames even when a base is reused.
@@ -19,11 +20,10 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  localparam IDLE=0,CHECK=1,CROSS_READ=2,CROSS_CHECK=3,REQUEST=4,FILL=5,RETRY=6,CLEAR=7;
  reg [2:0] state;reg second,fill_odd;
  reg [31:0] base,a0,a1;reg [63:0] desc;reg [15:0] p0,p1,p2,p3;
- (* syn_ramstyle="distributed_ram" *) reg ve[0:LINES-1],vo[0:LINES-1];
  (* syn_ramstyle="block_ram" *) reg [22:0] te[0:LINES-1],to_[0:LINES-1];
  (* syn_ramstyle="block_ram" *) reg [255:0] de[0:LINES*4-1],do_[0:LINES*4-1];
  reg [22:0] tqe,tqo;reg [255:0] qe,qo;
- reg vqe,vqo;
+ wire vqe,vqo;
  reg [INDEX_BITS-1:0] clear_index;
  reg [31:0] fill_address;reg [1:0] fill_beat;
  wire [3:0] mask=map_error||error?4'b0:desc[63:60];
@@ -52,18 +52,47 @@ module video_neighbor_cache #(parameter WIDTH=1280,INDEX_BITS=6)(
  wire [31:0] le=accept?(iy[0]?new1:new0):even_address;
  wire [31:0] lo=accept?(iy[0]?new0:new1):odd_address;
  wire [INDEX_BITS+1:0] wa={fill_address[INDEX_BITS+6:7],fill_beat};
+ // CLEAR and FILL share a single address/data write port. Two separate
+ // procedural writes prevented RAM inference and built a large flop mux.
+ localparam VALID_ADDR_BITS=(INDEX_BITS>6)?6:INDEX_BITS;
+ localparam VALID_BANKS=1<<(INDEX_BITS-VALID_ADDR_BITS);
+ localparam VALID_SEL_BITS=(INDEX_BITS>6)?INDEX_BITS-6:1;
+ wire clearing=state==CLEAR;
+ wire commit_line=(state==FILL)&&rvalid&&rlast;
+ wire [INDEX_BITS-1:0] vi=clearing?clear_index:fill_address[INDEX_BITS+6:7];
+ wire [INDEX_BITS-1:0] rei=le[INDEX_BITS+6:7],roi=lo[INDEX_BITS+6:7];
+ reg [VALID_SEL_BITS-1:0] select_even,select_odd;
+ wire [VALID_BANKS-1:0] valid_even,valid_odd;
+ always @(posedge clk)if(lookup)begin
+  select_even<=rei>>VALID_ADDR_BITS;select_odd<=roi>>VALID_ADDR_BITS;
+ end
+ assign vqe=valid_even[select_even];assign vqo=valid_odd[select_odd];
+ genvar bank;
+ generate for(bank=0;bank<VALID_BANKS;bank=bank+1)begin : g_valid
+  (* syn_ramstyle="distributed_ram" *) reg ve[0:(1<<VALID_ADDR_BITS)-1];
+  (* syn_ramstyle="distributed_ram" *) reg vo[0:(1<<VALID_ADDR_BITS)-1];
+  reg even_q,odd_q;
+  wire selected=(vi>>VALID_ADDR_BITS)==bank;
+  always @(posedge clk)begin
+   if(lookup)begin
+    even_q<=ve[rei[VALID_ADDR_BITS-1:0]];
+    odd_q<=vo[roi[VALID_ADDR_BITS-1:0]];
+   end
+   if(selected&&(clearing||(commit_line&&!fill_odd)))ve[vi[VALID_ADDR_BITS-1:0]]<=!clearing;
+   if(selected&&(clearing||(commit_line&&fill_odd)))vo[vi[VALID_ADDR_BITS-1:0]]<=!clearing;
+  end
+  assign valid_even[bank]=even_q;assign valid_odd[bank]=odd_q;
+ end endgenerate
  always @(posedge clk)begin
   if(lookup)begin
-   vqe<=ve[le[INDEX_BITS+6:7]];vqo<=vo[lo[INDEX_BITS+6:7]];
    tqe<=te[le[INDEX_BITS+6:7]];tqo<=to_[lo[INDEX_BITS+6:7]];
    qe<=de[le[INDEX_BITS+6:5]];qo<=do_[lo[INDEX_BITS+6:5]];
  end
-  if(state==CLEAR)begin ve[clear_index]<=0;vo[clear_index]<=0;end
   if(state==FILL&&rvalid)begin
    if(fill_odd)do_[wa]<=rdata;else de[wa]<=rdata;
    if(rlast)begin
-    if(fill_odd)begin vo[fill_address[INDEX_BITS+6:7]]<=1;to_[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end
-    else begin ve[fill_address[INDEX_BITS+6:7]]<=1;te[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];end
+    if(fill_odd)to_[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];
+    else te[fill_address[INDEX_BITS+6:7]]<=fill_address[29:7];
    end
   end
  end

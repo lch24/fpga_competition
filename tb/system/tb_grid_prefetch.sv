@@ -3,6 +3,7 @@
 // The map is a linear warp with fractional Q16.16 coordinates, so the exact
 // expected descriptor can be computed with the same integer bilinear weights.
 module tb_grid_prefetch;
+ reg finished=0;
  localparam W=64,H=40,N=W*H,STRIDE=64,NCOL=17,NROW=11,MAP=32'h00020000;
  localparam BASE_WORD=MAP>>2;
  reg clk=0;always #5 clk=~clk;
@@ -83,11 +84,18 @@ module tb_grid_prefetch;
   frame_run;
   if(ar_count!=NROW)$fatal(1,"row requests=%0d expected %0d",ar_count,NROW);
   if(r_count!=NROW*16)$fatal(1,"reads=%0d expected %0d",r_count,NROW*16);
+  // A different map at the same base must replace all previous window data.
+  for(r=0;r<NROW;r=r+1)for(c=0;c<NCOL;c=c+1)begin
+   cp_x[r*NCOL+c]=cp_x[r*NCOL+c]+16384;
+   cp_y[r*NCOL+c]=cp_y[r*NCOL+c]-32768;
+   mem[BASE_WORD+(r*STRIDE+c)*2]=cp_x[r*NCOL+c][31:0];
+   mem[BASE_WORD+(r*STRIDE+c)*2+1]=cp_y[r*NCOL+c][31:0];
+  end
   frame_run; // second frame must reload every row buffer
   if(ar_count!=NROW)$fatal(1,"second frame rows=%0d",ar_count);
   if(r_count!=NROW*16)$fatal(1,"second frame reads=%0d",r_count);
   $display("PASS grid prefetch 64x40 descriptors, row rotation, stalls and restart");
-  $finish;
+  finished=1;$finish;
  end
  initial begin #4000000;$fatal(1,"grid prefetch timeout state=%0d count=%0d",dut.pstate,count);end
 endmodule

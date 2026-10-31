@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb_realtime_remap #(parameter ENABLE_ADVANCED=0);
+module tb_realtime_remap #(parameter ENABLE_ADVANCED=0,CACHE_BITS=3);
  reg finished=0;reg bypass=0;
  reg affine=0,gamma_enable=0;reg [191:0] matrix={32'd0,32'd65536,32'd0,32'd0,32'd0,32'd65536};
  localparam W=128,H=40,N=W*H,MAP=32'h20000,DST=32'h40000;
@@ -9,7 +9,7 @@ module tb_realtime_remap #(parameter ENABLE_ADVANCED=0);
  wire [1:0] av,aq,rv;wire [55:0] aa;wire [7:0] al;
  wire wv,wq,wr,wd;wire [27:0] wa;wire [3:0] wl;wire [255:0] data;
  wire rl;wire [255:0] rd;reg inject_error=0;wire [3:0] rid=inject_error?4'd1:4'd0;
- realtime_remap #(.WIDTH(W),.HEIGHT(H),.CACHE_INDEX_BITS(3),.ENABLE_ADVANCED(ENABLE_ADVANCED)) dut(
+ realtime_remap #(.WIDTH(W),.HEIGHT(H),.CACHE_INDEX_BITS(CACHE_BITS),.ENABLE_ADVANCED(ENABLE_ADVANCED)) dut(
   .cmd_affine(affine),.cmd_gamma(gamma_enable),.cmd_gamma_mode(3'd3),.cmd_matrix(matrix),.gamma_curve(),
   .cmd_bypass(bypass),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd),.cmd_ready(ready),.src_base(source),.dst_base(DST),.map_base(MAP),
   .rsp_valid(rsp),.rsp_ready(1'b1),.rsp_status(status),.last_cycles(cycles),
@@ -86,6 +86,7 @@ module tb_realtime_remap #(parameter ENABLE_ADVANCED=0);
  function [15:0] sample(input integer x,y);
   sample=x<0||x>=W||y<0||y>=H?0:memory[source/2+y*W+x];
  endfunction
+ integer frame_cycles[0:10];
  task frame(input integer number);
   integer i,x,y,k,n;reg [15:0] fx,fy;reg [3:0] mask;reg [63:0] desc;reg [7:0] gc[0:2];real val;
   begin
@@ -119,6 +120,7 @@ module tb_realtime_remap #(parameter ENABLE_ADVANCED=0);
    end
    @(negedge clk);cmd=1;do @(posedge clk);while(!ready);@(negedge clk);cmd=0;
    wait(rsp);#1;
+   frame_cycles[number]=cycles;
    if(status!==(inject_error?8'd5:8'd0))$fatal(1,"frame %0d status %0d",number,status);
    if(!inject_error)for(i=0;i<N;i=i+1)if(memory[DST/2+i]!==expected[i])
     $fatal(1,"frame %0d pixel %0d got %h expected %h",number,i,memory[DST/2+i],expected[i]);

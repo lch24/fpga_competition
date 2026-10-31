@@ -96,7 +96,9 @@ async_fifo #(.WIDTH(1),.ADDR_BITS(2)) cdc_release(
 async_fifo #(.WIDTH(8),.ADDR_BITS(2)) cdc_result(
  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(a_rsp_valid),.wready(a_rsp_ready),.wdata(a_rsp_status),
  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(rsp_valid),.rready(rsp_ready),.rdata(rsp_status));
-async_fifo #(.WIDTH(80),.ADDR_BITS(2)) cdc_read_cmd(
+// Register only the availability flag: keep the Gray-pointer comparison out
+// of the DDR adapter's arbitration and wide address/count register enables.
+async_fifo #(.WIDTH(80),.ADDR_BITS(2),.REGISTER_READ_VALID(1)) cdc_read_cmd(
  .wclk(algorithm_clk),.wrst_n(algorithm_rst_n),.wvalid(a_rd_valid),.wready(a_rd_ready),.wdata({a_rd_addr,a_rd_len,a_rd_tag}),
  .rclk(core_clk),.rrst_n(core_rst_n),.rvalid(rd_valid),.rready(rd_ready),.rdata({rd_addr,rd_len,rd_tag}));
 // Terminate bundled-data CDC at an algorithm-clock register, before any

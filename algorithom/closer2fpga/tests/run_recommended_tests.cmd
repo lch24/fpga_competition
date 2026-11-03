@@ -5,7 +5,7 @@ call "%VS_ROOT%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 2
 set "SRC=%~dp0..\closer2fpga"
 set "OUT=%~dp0..\..\..\build\cpp_simplification"
-set "REPORT=%~dp0..\..\..\data\reports\calibration_simplification"
+set "REPORT=%OUT%\report"
 set "INPUT=%~dp0..\..\..\data\real\run_1790731382958_0"
 if not "%~1"=="" set "INPUT=%~f1"
 if not "%~2"=="" set "REPORT=%~f2"

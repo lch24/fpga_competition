@@ -78,3 +78,7 @@ python scripts/calibration/engine/check_lm_replay.py
 `memory`、`image`、`remap`、`video` 保存各功能的仿真驱动；`system/integration_tests.json` 定义联合测试清单；`common` 负责工具定位。输入数据生成器放在 `data/generators`，不与运行器混放。
 
 `build/check_rtl_layout.py` 检查源码、include、仿真清单和 PDS；`check_test_layout.py` 检查测试路径。`configure_pds.ps1` 同步工程后重新打开核对。`check_partition_synthesis.py` 在隔离目录测量局部资源，带内存保护。`generate_wiring.js` 和 `generate_camera_wiring.js` 维护算法集成连线。
+
+## 清理生成物
+
+`powershell -File scripts/build/clean_generated.ps1 -WhatIf` 预览可清理文件，去掉 `-WhatIf` 执行。脚本清理仿真输出、测试构建及日志，保护跟踪文件、比特流、PDS 直接引用的生成源和工程实现数据库。串口配置状态保存在忽略的 `data/debug`，不作为测试结果自动删除。

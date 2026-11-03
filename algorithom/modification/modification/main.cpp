@@ -18,9 +18,12 @@ int main(int argc, char** argv) {
             return checkCalibrationMath();
         if (argc == 4 && std::string(argv[1]) == "--compare")
             return compareExperiments(argv[2], argv[3]);
+        if (argc == 4 && std::string(argv[1]) == "--compare-corners")
+            return compareCornerSet(argv[2], argv[3]);
         if (argc != 3) {
             std::cerr << "Usage: modification IMAGE_DIRECTORY NEW_OUTPUT_DIRECTORY\n"
-                      << "   or: modification --compare MANIFEST.json NEW_OUTPUT_DIRECTORY\n";
+                      << "   or: modification --compare MANIFEST.json NEW_OUTPUT_DIRECTORY\n"
+                      << "   or: modification --compare-corners MANIFEST.json NEW_OUTPUT_DIRECTORY\n";
             return 2;
         }
         const fs::path input = argv[1], output = argv[2];

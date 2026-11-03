@@ -269,6 +269,73 @@ int compareExperiments(const fs::path& manifest, const fs::path& output) {
     return 0;
 }
 
+int compareCornerSet(const fs::path& manifest, const fs::path& output) {
+    cv::FileStorage input(manifest.string(), cv::FileStorage::READ);
+    if (!input.isOpened()) throw std::runtime_error("Cannot open corner manifest");
+    if (int(input["valid_for_solver_comparison"]) != 1)
+        throw std::runtime_error("Corner provenance has not been verified");
+    const cv::Size size{int(input["width"]), int(input["height"])};
+    const cv::Size pattern{int(input["columns"]), int(input["rows"])};
+    if (size.width < 1 || size.height < 1 || pattern.width < 2 || pattern.height < 2)
+        throw std::runtime_error("Invalid image or board size");
+    const Camera fpga = readCamera(input["fpga_params"]);
+    if (!cv::checkRange(fpga.k) || !cv::checkRange(fpga.d)
+        || fpga.k.at<double>(0, 0) <= 0 || fpga.k.at<double>(1, 1) <= 0)
+        throw std::runtime_error("Invalid FPGA camera parameters");
+    if (fpga.d.at<double>(4) != 0)
+        throw std::runtime_error("This fixed-k3 comparison requires FPGA k3=0");
+    Board object;
+    for (int row = 0; row < pattern.height; ++row)
+        for (int col = 0; col < pattern.width; ++col)
+            object.emplace_back(static_cast<float>(col), static_cast<float>(row), 0.0f);
+    std::vector<Points> points;
+    for (const auto& view : input["views"]) {
+        if (int(view["view_id"]) != static_cast<int>(points.size()))
+            throw std::runtime_error("Expected consecutive view IDs starting at zero");
+        std::vector<float> coordinates;
+        view["corners"] >> coordinates;
+        if (coordinates.size() != 2 * object.size())
+            throw std::runtime_error("Unexpected corner count");
+        Points measured;
+        for (size_t i = 0; i < coordinates.size(); i += 2) {
+            const float x = coordinates[i], y = coordinates[i + 1];
+            if (!std::isfinite(x) || !std::isfinite(y) || x < 0 || y < 0
+                || x >= size.width || y >= size.height)
+                throw std::runtime_error("Corner outside the original image");
+            measured.emplace_back(x, y);
+        }
+        points.push_back(measured);
+    }
+    if (points.size() < 3) throw std::runtime_error("At least three views are required");
+    if (fs::exists(output)) throw std::runtime_error("Output directory already exists");
+    fs::create_directories(output);
+    const Fit fixed = calibrate(object, points, size, false);
+    const Fit seeded = calibrate(object, points, size, false, &fpga);
+    const Fit full = calibrate(object, points, size, true);
+    cv::FileStorage out((output / "comparison.json").string(),
+        cv::FileStorage::WRITE | cv::FileStorage::FORMAT_JSON);
+    out << "opencv_version" << CV_VERSION << "width" << size.width << "height" << size.height
+        << "columns" << pattern.width << "rows" << pattern.height
+        << "coordinate_status" << std::string(input["coordinate_status"])
+        << "coordinate_note" << std::string(input["coordinate_note"])
+        << "valid_for_solver_comparison" << 1 << "input_corners" << points;
+    out << "fpga" << "{";
+    writeCamera(out, fpga);
+    out << "reported_rms" << double(input["fpga_reported_rms"]) << "}";
+    writeFit(out, "opencv_fixed_k3", fixed);
+    writeFit(out, "opencv_fpga_seed_fixed_k3", seeded);
+    writeFit(out, "opencv_free_k3", full);
+    // Identical measurements and pose fitting for each fixed camera model.
+    evaluateCamera(out, "fpga_on_fpga_corners", fpga, object, points);
+    evaluateCamera(out, "opencv_fixed_on_fpga_corners", fixed.camera, object, points);
+    evaluateCamera(out, "opencv_free_on_fpga_corners", full.camera, object, points);
+    out << "complete" << 1;
+    std::cout << "FPGA corner replay: views=" << points.size()
+              << " fixed RMS=" << fixed.rms << " free RMS=" << full.rms
+              << " FPGA-seed RMS=" << seeded.rms << std::endl;
+    return 0;
+}
+
 int checkCalibrationMath() {
     Board object;
     for (int row = 0; row < 5; ++row) for (int col = 0; col < 8; ++col)

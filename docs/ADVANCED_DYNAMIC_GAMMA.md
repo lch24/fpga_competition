@@ -1,26 +1,16 @@
-# 选题二提高部分 1、3：独立开发版
+# 动态仿射与亮度增强
 
-基于 `main@41bc59d` 独立开发，提交分支为 `advance`（开发时分支名为 `advanced/dynamic-gamma`）。本版没有叠加随后 main 的红点预览功能；两套扩展的联合集成需另行验证。本版只完成代码集成与定向检查，**还没有经过 PDS 综合、布局布线或板上验证**，不能标记为比赛指标全部验收。
+## 工程配置
 
-## 与当前上板工程隔离
-
-当前上板继续使用 `D:\camera_project\fpga_competition` 原目录，不需要替换文件或重新 program。
-
-本次开发位于 `D:\camera_project\fpga_competition_advanced`。未访问串口、JTAG，也未运行 PDS。原工程已有的 PDS 修改和 `output/` 未动。
-
-权威顶层 `rtl/top/calibrated_view_top.v` 新参数 `ENABLE_ADVANCED=0`，默认综合裁剪提高逻辑，原 `ENABLE_DISTORT_DEMO=1` 默认值不变。提高版要求 `REALTIME_VIDEO=1, ENABLE_DISTORT_DEMO=0, ENABLE_ADVANCED=1`，不支持与人工畸变演示模式同时启用。
-
-后续准备提高版工程，在**开发目录**执行：
+顶层 `ENABLE_ADVANCED=1` 启用上位机仿射和亮度增强，要求 `REALTIME_VIDEO=1, ENABLE_DISTORT_DEMO=0`。单独启用本扩展可运行：
 
 ```powershell
 python scripts/build/prepare_advanced_project.py
 ```
 
-独立工程：`OV5640_Advanced_100H/Advanced_DynamicGamma.pds`。
+生成工程为 `OV5640_Advanced_100H/Advanced_DynamicGamma.pds`。若同时需要红点查看，运行 `prepare_demo_project.py`，使用 `OV5640_Demo_100H/Demo_CornerReview_Advanced.pds`。
 
-该命令只离线生成配置，不启动 EDA。生成顶层 `build/advanced/project_top.v` 从权威顶层自动派生，只改两个参数默认值，模块名和内部实例路径不变，避免破坏原 FDC 的 PLL、DDR PHY 层级约束。工程只引用本 worktree 的源码/IP，包含路径为本目录的 `rtl/include`；ROM 镜像及编译结果位于独立工程目录。修改顶层后应重新生成；不要手工维护派生顶层。生成器会把旧任务状态置为 INVALID，不把历史实现结果当作新版本结果。
-
-生成工程/FDC/顶层不提交 Git；提交源 RTL、脚本和本文后，下一位可重新生成。
+生成器从权威顶层派生配置，保留模块名、PLL／DDR 实例路径和相对源码引用；生成工程、ROM 镜像及工作目录不提交。修改权威顶层后重新运行生成器。生成步骤不启动综合或烧录。
 
 ## 第 1 项：上位机控制的动态旋转／仿射
 
@@ -156,13 +146,13 @@ python scripts/debug/advanced_control.py --port COM14 --reset          # 两者�
 
 状态文件只在板上 `applied_count` 增加 1 且 flags 与请求一致后才写入。换比特流或板上电后若 `--status` 的 flags 与文件不一致，工具会在 stderr 提示并按合并后的配置下发；此时先 `--reset` 对齐最稳妥。`--dry-run` 只打印合并结果，不打开串口也不写状态文件。
 
-（`--port COM14` 是当前板载 CP210x 的实际端口；旧文档里的 COM11 只是示例。）
+串口号按本机设备管理器显示的端口填写。
 
 角度正值表示显示图像顺时针转动（图像 y 向下）；若补偿相机 roll，应由控制端按实际坐标系选择相反角度。`--tx/--ty` 是输出图像平移像素数，`--scale` 是正的输出缩放比例。工具对中心位置取 `(639.5,359.5)`，自动生成逆矩阵，也支持 `--matrix` 直接六系数。使用实际串口需要 pyserial。
 
 工具先确认 A1/FFFB 状态页，再发送整组数据，并检查 applied_count 与错误计数，不将“串口写完”当作生效。视频/预览停止时没有帧边界，配置会等待；超时后不要盲目重发，应先启动视频或读取状态。只支持一个配置客户端，不能与串口助手同时占用端口。
 
-## 检查与后续验收
+## 验证入口
 
 ```powershell
 python scripts/build/prepare_advanced_project.py
@@ -172,12 +162,10 @@ python scripts/build/check_advanced_elaboration.py
 powershell -ExecutionPolicy Bypass -File scripts/system/run_advanced_checks.ps1 -IcarusBin <iverilog工具目录>
 ```
 
-`check_advanced_elaboration.py` 使用 pyslang 检查关闭/开启两种板级实例树，只有明确列出的 PLL/DDR/GTP 厂商 IP 黑盒，不等于 PDS 编译或综合通过。仓库原有类型/位宽等 warning 未在本任务大范围整改，日志保存在 build/advanced。
+`check_advanced_elaboration.py` 使用 pyslang 检查关闭/开启两种板级实例树，只有明确列出的 PLL/DDR/GTP 厂商 IP 黑盒，不等于 PDS 编译或综合通过。日志保存在 `build/advanced`。
 
 定向测试覆盖：恒等/负边界/90度/剪切/极端系数和坐标停顿；五条 Gamma LUT、逐帧锁定、背压、三帧迟滞和黑边排除；CRC、双时钟 mailbox、帧边界切换、第二遍、错误/背压和共同复位；实际 UART RX/TX、旧查询链路回归；小帧 DDR 仲裁、缓存、双线性/补黑与仿射+Gamma 数值参考；上位机固定数据包及状态解析。
 
 资源策略是共享现有重映射器、不增加第二套 cache/插值器、不增加通用乘法/浮点核，并关闭人工畸变演示逻辑。邮箱在 busy 期间禁止改写，直接复用 shadow 保存 payload；调度器直接复用 active 系数，不重复保存命令矩阵，两组寄存器合计减少 400 位。新增主要为系数/邮箱寄存器、48 位递推加法、亮度统计和少量 LUT ROM；Gamma ROM 逻辑容量 4,352 bit，若 R/B 两读口导致复制则为 5,632 bit，实际 BRAM/LUT 映射以综合报告为准。**不能仅凭 RTL 数量推断一定放得下**，尤其原工程布局资源已紧，新增寄存器也会占用簇。
 
-开启仿射要做两遍 DDR 处理并重复插值，较大旋转会降低缓存局部性。没有测过这一版硬件帧率，不能保证 720p30；若比赛最终需要动态仿射也达到 30 fps，必须根据报告再决定组合映射/带宽/时钟优化。只开 Gamma 不增加第二遍，但也需检查新增逻辑的时序。
-
-下一位在当前 main 上板验证结束后，再对独立提高版 PDS 做综合、布局布线，检查 LUT/FF/簇/BRAM、ROM 是否推断为块存储及 125 MHz 关键路径。通过后再验证动态角度连续更新、边角补黑、强/暗光、前后对比、长时间运行与停止重启，测实际新增帧率和端到端延迟；未完成前不要替换当前可用 bitstream。
+开启仿射要执行两遍 DDR 处理并重复插值，较大旋转会降低缓存局部性；只开 Gamma 不增加第二遍。性能测试应分别记录功能配置、每遍周期、完成帧数和失败／跳帧增量。资源检查包括 LUT、逻辑簇、DRM、ROM 推断及 125 MHz 关键路径，板上验证包括动态配置、边角补黑、强暗光、停止重启和持续运行。

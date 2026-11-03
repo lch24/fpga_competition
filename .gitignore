@@ -43,6 +43,24 @@ x86/
 *.idb
 *.ipch
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local assistant/editor sessions and scratch notes.
+/.codex/
+/.agents/
+/.claude/
+/.cursor/
+/.local/
+/.scratch/
+/.tmp/
+
+# Generated measurements and one-off experiment reports.
+/data/reports/
+/CALIBRATION_RESULT_*.md
+transcript
 
 # Reproducible test outputs and simulator work libraries
 /build/

@@ -1,20 +1,6 @@
 # 检测角点 → 红点查看 → 再次确认计算参数
 
-基线 `main@41bc59d`，在独立工作目录 `D:\camera_project\fpga_competition_review` 开发，现合入 main。提高部分独立保存在 `advance` 分支，本版没有混入提高逻辑。初版上板发现下述状态交接死锁；修复后用户已重新编译、Program，串口确认 UI 和算法均进入 `corner_review`、120 点收齐、显示开启且无显示错误、参数尚未求解。**尚未完成三图人工核对、第二次 KEY3 求解及随后视频的完整新版本验收，也没有据此宣称资源/时序签核。**
-
-## 2026-10-26 上板等待卡死修复
-
-首次上板串口实际读到：`algorithm_phase=corner_review`、`corner_count=120`，而 UI 为 `wait_frame_release`。检测已经完成，但红点没有显示。这不是检测慢或照片错误。
-
-原因是第三张照片的 lease 一直由算法持有到参数计算结束。原 UI 只在 `RESULT` 接收 `review_wait`，必须先收到第三次 release 才能进入该状态；算法又在等 UI 确认，形成相互等待。
-
-修复：UI 在第三张照片的 `LEASE` 状态直接接受 `review_wait`，进入排空显示、复制、画点、查看流程。保留第三张照片的占用及算法角点存储。第二次 KEY3 后仍通过原 `RESULT` 状态接收最终 release 和计算响应，没有提前释放照片、重新检测或增加图像缓存。
-
-之前的 UI 单模块测试把 `frame_release_valid` 常置为 1，掩盖了这个交接问题。已修正测试，并新增真实 `video_board_flow + vision_sequence + vision_clock_bridge + async_fifo + corner_review_dma` 联动测试。旧 RTL 在新测试中复现 `UI=6 / algorithm=17 / corners=120 / releases=2` 的同一死锁；修复后必须完成查看及再次确认，不能只看两个模块各自通过。
-
-联合测试覆盖真实异步时钟、点 FIFO 背压、第三帧占用、三图逐像素红点/底图对比、显示排空、第二次 KEY3 只计算不重检、检测失败/求解失败/重复任务，以及之后建表到视频状态的交接。另有实际 `realtime_remap + video_hmic_arbiter` 版本，使用与顶层相同的写通道选择方式，验证复制和红点写入共享客户 2、写掩码、延迟物理完成及原照片保护。数值检测/求解器和物理 DDR 使用协议模型；这不代替真实图像检测、DDR PHY 或上板验证。
-
-修复开发期间使用独立 review 工作目录；现将代码合入 main。编译此功能仍应生成并打开 `CornerReview.pds`，旧下载文件包含故障。只更新 Git 源码不会改变已 Program 的板上状态。
+启用角点查看后，检测与参数求解之间增加人工确认阶段；查看图复用原照片的副本，求解仍使用保存的亚像素坐标。
 
 ## 用户操作
 
@@ -27,9 +13,9 @@
 
 查看图加载期间 LED4 表示忙，重复按键不排队。第二次 KEY3 也需要独立的一次按下，长按同一次不会连续触发计算。查看时 KEY4 不启动建表；参数尚不存在。LED6 在后续校正成功后仍保留原来的“有校正结果”含义，因此要结合阶段解释。
 
-第一版显示的是**实际准备交给标定的最终有序 40 点**，不是全部 Harris/环形筛选前的候选点。检测失败仍报原错误，不亮就绪灯、不允许继续参数求解；失败候选点可视化不是本版功能。红点存在也不自动证明网格顺序正确，人工仍需结合棋盘观察。显示标记为 5×5 红色小方块，中心取最近整数像素；求解仍使用原始 FP32 坐标。
+显示的是**实际准备交给标定的最终有序 40 点**，不是全部 Harris/环形筛选前的候选点。检测失败仍报原错误，不亮就绪灯、不允许继续参数求解；失败候选点可视化不是本版功能。红点存在也不自动证明网格顺序正确，人工仍需结合棋盘观察。显示标记为 5×5 红色小方块，中心取最近整数像素；求解仍使用原始 FP32 坐标。
 
-若发现角点不对，可以停在查看阶段不确认。当前有效照片槽仍不支持单槽覆盖重拍，重采一组仍需重新 program/全局复位；本版未顺带修改照片生命周期。
+若发现角点不对，可以停在查看阶段不确认。当前有效照片槽仍不支持单槽覆盖重拍，重采一组仍需重新 program/全局复位；照片生命周期由板级流程统一管理。
 
 ## 资源与数据安全
 
@@ -54,15 +40,15 @@ KEY0/1/2 → 原照片 → 现有 remapper 恒等复制 → 输出槽 0 → 顺�
 
 ## 独立 PDS
 
-权威顶层增加 `ENABLE_CORNER_REVIEW=0`，默认保留旧单次 KEY3 行为。查看版支持普通实时配置：`REALTIME_VIDEO=1, ENABLE_DISTORT_DEMO=0, ENABLE_CORNER_REVIEW=1`。暂不与人工畸变演示扩展同时启用，不改变原 main 的编译默认值。棋盘固定为三张、5×8 内角点；其他配置会显式拒绝展开。
+权威顶层增加 `ENABLE_CORNER_REVIEW=0`，默认保留旧单次 KEY3 行为。查看版支持普通实时配置：`REALTIME_VIDEO=1, ENABLE_DISTORT_DEMO=0, ENABLE_CORNER_REVIEW=1`。暂不与人工畸变演示扩展同时启用，不改变基础工程的其他编译参数。棋盘固定为三张、5×8 内角点；其他配置会显式拒绝展开。
 
-在开发目录运行：
+在仓库根目录运行：
 
 ```powershell
 python scripts/build/prepare_corner_review.py
 ```
 
-然后打开 **本开发目录**下 `OV5640_DualView_100H/CornerReview.pds`。生成器离线派生 `build/review/project_top.v`，只替换两个参数默认值，保留原模块和 PLL/DDR 实例层级；include、源码/IP、ROM 均在这个 worktree 内。旧实现状态置 INVALID；不启动 EDA，不综合、不 program。修改顶层后需重新生成，勿手改派生顶层。生成工程和 ROM 镜像不入库，可重复生成。
+然后打开 **仓库**下 `OV5640_DualView_100H/CornerReview.pds`。生成器离线派生 `build/review/project_top.v`，只替换两个参数默认值，保留原模块和 PLL/DDR 实例层级；include、源码/IP、ROM 均在仓库内。旧实现状态置 INVALID；不启动 EDA，不综合、不 program。修改顶层后需重新生成，勿手改派生顶层。生成工程和 ROM 镜像不入库，可重复生成。
 
 ## 在计算前检查 k3 覆盖
 
@@ -100,7 +86,7 @@ python scripts/debug/inspect_calibration.py data/debug/review_corners.json
 
 已有 inspect 工具不传图片时只显示点阵；若要在电脑叠加原图，必须使用 DDR 中同一张保存帧的 1280×720 原始图，不能拿之后的实时帧或手机拍屏图冒充配准底图。本版的 HDMI 标记由同一保存照片副本制作，不存在这个配准歧义。
 
-## 已运行的定向检查
+## 定向检查
 
 ```powershell
 python scripts/build/check_rtl_layout.py
@@ -109,8 +95,6 @@ python scripts/build/check_corner_review_elaboration.py
 powershell -ExecutionPolicy Bypass -File scripts/system/run_corner_review_checks.ps1 -IcarusBin <工具目录>
 ```
 
-九个 RTL 测试和 UART 解码自检通过：原六项覆盖标记所有视图、5×5/四边裁剪、无效坐标、跨 beat 像素、字节掩码、背压、延后物理完成、错误与新任务失效；两次 KEY3、三图持续查看、显示排空、制作失败禁显/禁确认；暂停不求解/不重检、参数保留、旧视频流程和原跨域桥回归。新增三项为真实控制/CDC/标记联动、算法时钟快于核心时钟的反向比例、实际复制器与 DDR 仲裁联动；上述脚本一起执行九项，各项日志位于 `build/review/tb_corner_review_*.log`。
+测试覆盖标记所有视图、5×5 标记及边界裁剪、写掩码、背压、延后物理完成、错误与新任务失效；两次 KEY3、三图持续查看、显示排空和失败禁确认；控制／CDC／标记与实际复制器、DDR 仲裁联动。日志写入 `build/review`。
 
-pyslang 两种板级配置展开均无错误，仅明确列出的厂商 PLL/DDR/GTP IP 黑盒；原有类型/位宽 warning 保留，不等于 PDS 通过。联动仿真使用 128×48 小图逐像素检查，检测/求解为协议模型，并不证明 1280×720 板级吞吐或标定数值精度。此次唯一功能 RTL 修复为 `video_board_flow.v` 的 LEASE 状态分支，不增加 RAM、乘除法器或图像缓存；实际资源和时序仍以重新综合/布局报告为准。
-
-下一步：对这个独立 PDS 综合/布局，确认资源和时序后再 program 验证。当前 main 已测得标定/建表/视频成功，但本轮校正约 15.03 fps、直通约 29.97 fps；这个性能问题单独保留，本版不宣称已经解决。
+联动测试使用小图和检测／求解协议模型；数值算法由对应检测、标定测试验证，整板资源与时序由 PDS 报告检查。

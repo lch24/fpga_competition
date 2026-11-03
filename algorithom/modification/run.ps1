@@ -2,9 +2,11 @@ param(
     [string]$VsRoot = $env:VS_ROOT,
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
     [string]$Output = 'build/opencv_comparison/detection',
-    [string]$Manifest = ''
+    [string]$Manifest = '',
+    [switch]$CornerSet
 )
 $ErrorActionPreference = 'Stop'
+if ($CornerSet -and !$Manifest) { throw '-CornerSet requires -Manifest.' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$VsRoot) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -41,7 +43,8 @@ try {
     if (![IO.Path]::IsPathRooted($Output)) { $Output = Join-Path $repo $Output }
     if ($Manifest) {
         if (![IO.Path]::IsPathRooted($Manifest)) { $Manifest = Join-Path $repo $Manifest }
-        & (Join-Path $build 'modification.exe') --compare $Manifest $Output
+        $mode = if ($CornerSet) { '--compare-corners' } else { '--compare' }
+        & (Join-Path $build 'modification.exe') $mode $Manifest $Output
     } else {
         & (Join-Path $build 'modification.exe') (Join-Path $repo 'algorithom') $Output
     }

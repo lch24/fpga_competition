@@ -1,35 +1,24 @@
 # FPGA 相机标定与去畸变
 
-本分支为 `demo`：在 main 的[两次 KEY3、红点查看角点和计算前 k3 覆盖检查](docs/CORNER_REVIEW.md)基础上，合入 advance 的[提高部分 1（上位机动态旋转/仿射）和 3（自适应 Gamma）](docs/ADVANCED_DYNAMIC_GAMMA.md)。三个特性默认都关闭；演示版 profile 需要 `REALTIME_VIDEO=1, ENABLE_CORNER_REVIEW=1, ENABLE_ADVANCED=1, ENABLE_DISTORT_DEMO=0`，运行 `python scripts/build/prepare_demo_project.py` 后打开生成的 `OV5640_Demo_100H/Demo_CornerReview_Advanced.pds`。红点版与人工畸变演示仍互斥。
+在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。系统将标定与视频处理解耦：按需计算相机参数并建立映射表，后续帧复用映射与专用采样流水线。板级图像为 1280×720 RGB565，算法时钟 40 MHz，DDR／视频处理时钟 125 MHz。
 
-启用仿射/Gamma 后，**相机预览和实时视频的 before/after 都会应用这两项**；红点查看的复制帧保持原始（否则标记点会与图像错位），2 秒拍照回看是 DDR 直显，也不经过重映射。Gamma 除五条固定曲线和 `auto` 外，还提供 `equalize`（每帧 64 bin 直方图、对比度受限均衡）。
+操作见[板上操作](docs/BOARD_OPERATION.md)，作品介绍与性能评估见[设计文档](report/设计文档.md)。已有烧录文件保存在 [bitstreams](bitstreams/)，使用时按文件名区分配置和版本。
 
-本项目在 FPGA 上完成摄像头采集、棋盘角点检测、相机参数求解、图像校正和 HDMI 显示。默认板级 `REALTIME_VIDEO=1`：KEY0～KEY2 拍摄或查看三张标定照片，KEY3 标定，KEY4 一次建表后启动实时视频，再按 KEY4 排空并停止。规格目标是 **1280×720、RGB565、每秒 30 个新校正帧**，不是重复显示静态图片。2026-10-20 普通模式已实板测得约 30.01 个新校正帧/秒，资源已放下，但布局时序仍未收敛。详见[实时链路交接](docs/REALTIME_VIDEO.md)与[板上操作说明](docs/BOARD_OPERATION.md)。
+## 工程配置
 
-## 交接说明（2026-10-30 灰度 DMA 版，**尚未实板复测**）
+基础工程为 `OV5640_DualView_100H/DualView_OV5640.pds`。权威顶层当前默认 `REALTIME_VIDEO=1`、`ENABLE_DISTORT_DEMO=1`，角点查看和上位机增强默认关闭。关闭人工畸变可将 `ENABLE_DISTORT_DEMO` 设为 0。
 
-板子已转交下一位。本版在已实板验证的[按视图裁剪 LM](docs/TASK2_PIPELINE_ATTEMPT.md)之上只改检测的灰度转换，烧录文件和验证记录如下：
+演示工程同时启用[红点查看](docs/CORNER_REVIEW.md)与[动态仿射／亮度增强](docs/ADVANCED_DYNAMIC_GAMMA.md)，关闭人工畸变：
 
-- 比特流：[calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_graydma_720p_PG2L100H_20261030_1941.sbit](bitstreams/calibrated_view_top_demo_corner_advanced_equalize_grid4_cache128_validram_graydma_720p_PG2L100H_20261030_1941.sbit)，SHA256 `F68987D3DD51EC7CE478CBE3A5217DD8B9B69B0A262299E2350667AE2ED8EBBF`。
-- PDS：CLMA **11,593/11,675**，CLMS **4,945/4,975（仅余 30，后续加逻辑先看这里）**，LUT 63,431.5/66,600，DRM 114/155；125 MHz WNS **−0.459 ns**，40 MHz **+1.506 ns**。
-- 改动：[rgb565_gray_dma.v](rtl/memory/image/rgb565_gray_dma.v) 从“每像素一次 2 字节读 + 一次 1 字节写并等待完成”改为 64 像素一块的突发读写（每块读 128 B、写 64 B）。灰度公式 `(299r+587g+114b+500)/1000`、RGB 低位补零、字节序和 DDR 布局逐位不变。
-- 已验证：`tb_gray_dma` 通过（奇地址、跨块、填充、配置重叠、读写错误注入、协议违规）；`tb_detection_fixed` 通过，160×120 三视图 120 个角点与基线逐位一致（最大偏差 3.8147e-05 px）；160×120 灰度阶段 **283,477 → 39,317 周期（−86%）**，整段检测 38.65M → 37.29M。720p 每张图的灰度事务数从约 184 万降到 2.88 万，实板收益应明显大于小图。整链 `tb_vision_numeric` 未复跑，因为检测角点已逐位一致。
+```powershell
+python scripts/build/prepare_demo_project.py
+```
 
-**明天上板建议顺序**
+打开生成的 `OV5640_Demo_100H/Demo_CornerReview_Advanced.pds`。该配置为 `ENABLE_CORNER_REVIEW=1, ENABLE_ADVANCED=1, ENABLE_DISTORT_DEMO=0`，与人工畸变扩展互斥。派生工程和顶层由脚本生成，修改权威源码后重新生成即可。
 
-1. 烧录上面的 sbit；重新上电后旧标定参数会丢，必须重拍三张。
-2. 按[拍摄规范](docs/CALIBRATION_QUALITY.md)重拍：中左、右上（最上一行 `y≈150–175`）、右下；棋盘拿近，格距 45–60 px，三张都完整入画并留 20–40 px 边。
-3. 开串口记录：`python scripts/debug/uart_monitor.py COM14 --log build/debug/graydma_board.log`（端口按实际改）。
-4. 按 KEY3；成功应是 LED5 亮、`status=0`、每视图 40 点、`check_reason=none`，RMS 与照片有关（上一组为 0.7233）。
-5. 按 KEY4 建表并测视频：`python scripts/debug/uart_monitor.py COM14 --video-seconds 10`，预期 29.9–30.0 fps、失败 0、跳帧 0。
-6. 失败时：`status=2` 是检测（点集/覆盖问题，按上面摆法重拍）；`status=4` 且 `check_reason=not_converged` 是几何太弱（补顶部覆盖和倾角）。用 `--once status`、`--once progress` 看诊断，角点用 `--corners build/debug/corners.json` 导出。
-
-**预期（未实测）**：上一版 KEY3→参数发布 11.7 s，其中检测段约 4.8 s、LM/检查 4.28 s。灰度突发化后检测段预计降到约 2.5–3.5 s，KEY3→发布约 9–10.5 s；LM、RMS 和角点结果不应变化。细节见[任务 2 记录](docs/TASK2_PIPELINE_ATTEMPT.md)与[检测设计](docs/DETECTION_ENGINE.md)。
+启用仿射／Gamma 后，相机预览和视频前后对比都会应用这两项；红点查看图和拍照后的 2 秒静态回看保持原始图像。Gamma 支持固定曲线、自动曲线与直方图均衡。
 
 ## 从输入到输出
-
-2026-10-19：增加基于角点边缘覆盖的保守 k3 模型选择，并提供角点编号叠图与软件复算。
-2026-10-20 普通模式实板测得约 30.01 个新校正帧/秒，稳态无新增失败/跳帧，停止重启及前后切换正常；资源已放下，但 125 MHz setup WNS 仍为 −0.718 ns，不能把功能通过当作时序签核。修改、实测参数和后续任务见[标定质量与实板交接](docs/CALIBRATION_QUALITY.md)。
 
 摄像头就绪后自动进入拍照预览。KEY0～KEY2 拍摄空槽位，成功后回看 2 秒；已有照片也回看 2 秒，然后恢复预览。人工畸变模式下预览与照片都经过人工加畸变。KEY3 标定结束、KEY4 停止校正视频后也返回预览。
 
@@ -40,7 +29,7 @@
                                                   ↓ 收齐视图
                                            初值 → LM → 结果检查
                                                   ↓ 相机参数
-连续原图 DDR（3 槽）→ 源像素缓存 → 定点双线性插值 ← 64 位映射表（只建一次）
+连续原图 DDR（3 槽）→ 源像素缓存 → 定点双线性插值 ← 稀疏坐标映射表（只建一次）
                     ↓
              校正图写入 DDR（2 槽）→ 完整帧切换 → HDMI
 ```
@@ -85,7 +74,7 @@
 
 默认 3 张图、5×8 内角点，标定配置集中在 [calib_config.vh](rtl/include/calib_config.vh)。板级图像为 1280×720 RGB565，检测使用 Gray8；角点以原图像素坐标 FP32 表示，按行优先排列。`view` 区分同一任务的各张图，`job` 区分整次任务。
 
-标定内部主要使用 FP64，输出九个 FP32 参数：`fx, fy, cx, cy, k1, k2, k3, p1, p2`，stage 2 的 k3 已计入 LM 活动参数。各图 R/t 参与 LM，但不作为图像去畸变的输入。RTL 当前使用 DLT/Jacobi 初值和单阶段 LM；C++ 的单应初值已简化为 8 元求解，两者是数值对照关系，并非逐指令相同。
+标定内部主要使用 FP64，输出九个 FP32 参数：`fx, fy, cx, cy, k1, k2, k3, p1, p2`，stage 2 的 k3 已计入 LM 活动参数。各图 R/t 参与 LM，但不作为图像去畸变的输入。RTL 当前使用 DLT/Jacobi 初值和带条件预热的 LM；C++ 的单应初值已简化为 8 元求解，两者是数值对照关系，并非逐指令相同。
 
 请求/响应在 `valid && ready` 时交接，背压期间保持载荷。算法 DDR 接口使用字节地址；物理 DDR 总线宽度和突发由访存适配层处理。
 
@@ -105,8 +94,6 @@
 
 整幅 720p RGB565 图约 1.76 MiB，Gray8 图为 900 KiB，所以完整帧存放 DDR。DDR 的 1 GiB 是配置容量，不是算法实际用量。最终资源占用以当前版本整板综合和布局布线报告为准，局部优化估算不作为整板已放入的结论。
 
-2026-10-12 22:02 最新实时版：综合 60,310 LUT；布局后物理 LUT **66,024/66,600（99.14%）**，逻辑簇 **16,627/16,650（99.86%）**，FF 52,804，RAM 物理位置 105/155，APM 70/240。资源已放下但仅剩 23 个逻辑簇。125 MHz DDR/视频域 WNS **−0.949 ns**、113 个 setup 违例端点；40 MHz 算法域 +0.308 ns。资源通过不代表时序或 30 新帧/秒通过，下一位仍需上板验证。报告摘要和待办见[实时交接](docs/REALTIME_VIDEO.md#本次-pds-结果2026-10-12)。
-
 ## 当前 DDR 分区
 
 以下为默认 1280×720、两层灰度金字塔的**字节地址**。定义见板级顶层的 `RAW_BASE` 与算法顶层的地址参数。
@@ -118,15 +105,15 @@
 | RGB565 原图 3 | `0x00400000` | 1,843,200 字节 |
 | 视频原图 0/1/2 | `0x00800000` / `0x00A00000` / `0x00C00000` | 每份 1,843,200 字节 |
 | 视频校正图 0/1 | `0x01000000` / `0x01200000` | 每份 1,843,200 字节 |
-| 打包定点映射表 | `0x02000000` | 7,372,800 字节 |
+| 映射表保留区（全像素表容量上限） | `0x02000000` | 7,372,800 字节 |
 | Gray8 灰度金字塔 | `0x03000000` | 1,152,000 字节 |
 | 候选点工作区     | `0x03200000` | 262,144 字节   |
 
-有效数据合计 23,532,544 字节（约 22.44 MiB）；每个 RGB565 帧槽预留 2 MiB。`0x02800000` 在实时模式不使用；旧照片模式仍使用分离 FP32 X/Y 表。
+按全像素表上限计，有效数据合计 23,532,544 字节（约 22.44 MiB）；当前板级使用步长 4 的稀疏网格，实际映射数据更少，地址分区保留兼容容量。每个 RGB565 帧槽预留 2 MiB。`0x02800000` 在实时模式不使用；旧照片模式仍使用分离 FP32 X/Y 表。
 
 ## 使用入口
 
-可选的[人工畸变演示](docs/DISTORT_DEMO.md)默认不编入硬件。顶层 `ENABLE_DISTORT_DEMO=1` 时，长按 KEY3 可切换“先人工加畸变、再独立标定和校正”；两遍图像处理共享同一重映射器。换摄像头后恢复为 `0` 并重新生成比特流即可移除扩展。首次人工建表的坐标计算约需 40 秒，详见该文档的操作、验证和时间说明。
+可选的[人工畸变演示](docs/DISTORT_DEMO.md)由顶层 `ENABLE_DISTORT_DEMO` 控制。该参数为 1 时，长按 KEY3 可切换“先人工加畸变、再独立标定和校正”；两遍图像处理共享同一重映射器。换摄像头后恢复为 `0` 并重新生成比特流即可移除扩展。首次人工建表的坐标计算约需 40 秒，详见该文档的操作、验证和时间说明。
 
 工具路径通过 `MODELSIM_BIN`、`PDS_SHELL` 或 PATH 指定。以下命令从仓库根目录运行：
 
@@ -140,3 +127,14 @@ PDS 配置脚本同步相对源码路径、准备图像 ROM 并保存、重新�
 
 
 串口调试已接入板级顶层：115200 8N1，周期报告状态，可查询参数、角点和共享程序执行进度。使用方法见[板上操作](docs/BOARD_OPERATION.md#串口调试)。
+
+## 仓库维护
+
+`rtl` 保存硬件源码，`tb` 保存测试平台，`scripts` 保存生成、验证和调试入口，`data` 保存程序源、ROM、测试输入及参考值。运行日志、仿真工作库、对比结果和临时产物写入 `build`，不提交版本库；串口原始采集放在本地 `data/debug`，有回归价值的输入再归档到 `data/calibration`。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build/clean_generated.ps1 -WhatIf
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build/clean_generated.ps1
+```
+
+清理脚本保护已跟踪文件、比特流和工程直接引用的生成源文件，不清理 PDS 的实现数据库。设计说明和正式插图保存在 `report`。

@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 module tb_ddr_adapter;
+ reg finished=0;
  reg clk=0;always #5 clk=~clk;reg rst_n=0,ddr_ready=1;
  reg rd_valid=0,wr_valid=0,w_valid=0;wire rd_ready,wr_ready,w_ready;
  reg [31:0] rd_addr,rd_len,wr_addr,wr_len,w_data;reg [15:0] rd_tag,wr_tag;
@@ -13,13 +14,17 @@ module tb_ddr_adapter;
  reg [3:0] axi_rid=0,axi_wusero_id=0;
  hmic_ddr_adapter dut(.*);
  reg [7:0] mem[0:255];
- integer ar_delay=-1,aw_delay=-1,done_delay=-1,block_addr,i,n,k;
+ integer ar_delay=-1,aw_delay=-1,done_delay=-1,block_addr,i,n,k,test_address,test_length;
  reg [255:0] saved_data;reg [31:0] saved_mask;
  reg [15:0] lfsr=16'hcafe;
+ integer clock_count=0;
  always @(posedge clk)if(rst_n)begin
+  clock_count<=clock_count+1;
   lfsr<={lfsr[14:0],lfsr[15]^lfsr[13]^lfsr[12]^lfsr[10]};
   axi_arready<=lfsr[0]&&ar_delay<0;axi_awready<=lfsr[1]&&aw_delay<0;
   axi_rvalid<=0;axi_wready<=0;axi_wusero_last<=0;
+  // Shared DDR data may change on cycles with no return for this adapter.
+  axi_rdata<={8{32'hbad00000|{16'b0,lfsr}}};
   if(axi_arvalid&&axi_arready)begin block_addr=axi_araddr*4;ar_delay<=3;end
   if(ar_delay>0)ar_delay<=ar_delay-1;
   if(ar_delay==0)begin
@@ -70,7 +75,12 @@ module tb_ddr_adapter;
   read_bytes(29,11);write_bytes(31,9);read_bytes(28,16);
   if(mem[30]!=30||mem[40]!=40)$fatal(1,"padding/outside bytes overwritten");
   write_bytes(63,2);read_bytes(62,5);
-  $display("PASS DDR adapter: arbitrary byte offset, cross-block, multiword, keep, backpressure, write barrier");$finish;
+  // Exercise every partial-word/split combination around a physical boundary.
+  for(test_address=28;test_address<=33;test_address=test_address+1)
+   for(test_length=1;test_length<=8;test_length=test_length+1)begin
+    write_bytes(test_address,test_length);read_bytes(test_address,test_length);
+   end
+  finished=1;$display("PASS DDR adapter: arbitrary byte offset, cross-block, multiword, keep, backpressure, write barrier");$finish;
  end
- initial begin #100000;$fatal(1,"adapter timeout");end
+ initial begin #500000;$fatal(1,"adapter timeout");end
 endmodule

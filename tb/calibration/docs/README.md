@@ -17,4 +17,4 @@
 
 角点存储按 view 和点号保存，成功提交一张图后才作为标定输入。读取是同步 RAM 接口，检测状态与点流分别检查；失败图不通过补点伪装成成功。
 
-旧完整算法的实拍对照归档在 [data/reports](../../../data/reports/README.md)，不作为当前代码刚刚完成端到端验证的记录。整体架构见[系统设计](../../../docs/SYSTEM_ARCHITECTURE.md)。
+实拍回归输入和数值基准见[数据目录](../../../data/README.md)，整体架构见[系统设计](../../../docs/SYSTEM_ARCHITECTURE.md)。仿真输出写入 build，由对应脚本重新生成。

@@ -8,6 +8,8 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     output wire [15:0] ext_cmd_width,
     output wire [15:0] ext_cmd_height,
     output wire [`PAR_STATE_W-1:0] ext_cmd_state,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_first,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_last,
     input wire  ext_point_rd_en,
     input wire [`PAR_VIEW_BITS-1:0] ext_point_rd_view_id,
     input wire [`PAR_POINT_BITS-1:0] ext_point_rd_index,
@@ -66,7 +68,8 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     `include "calib_workspace_layout.vh"
     localparam IDLE=0,INITIALIZE=1,INPUT_STATE=2,START=3,RUN=4,
       META_REQ=5,META_WAIT=6,STATE_REQ=7,STATE_WAIT=8,RES_CMD=9,RES_WAIT=10,
-      STORE_STATUS=11,STORE_COST=12,RESUME=13,OUT_REQ=14,OUT_WAIT=15,RESPONSE=16;
+      STORE_STATUS=11,STORE_COST=12,RESUME=13,OUT_REQ=14,OUT_WAIT=15,RESPONSE=16,
+      META_FIRST_REQ=17,META_FIRST_WAIT=18,META_LAST_REQ=19,META_LAST_WAIT=20;
     reg [4:0] state;
     reg child_clear;
     wire local_rst_n=rst_n && !child_clear;
@@ -79,6 +82,8 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     reg [63:0] cost_q,service_cost;
     reg [7:0] service_status,accepted_q,outer_q;
     reg converged_q,stream_error;
+    reg [`PAR_RES_BITS-1:0] first_q,last_q;
+    wire [`PAR_RES_BITS-1:0] expected_residuals=last_q-first_q+1'b1;
     wire engine_ready,engine_valid,svc_valid;
     wire [7:0] engine_status,svc_id;
     wire host_ready,host_valid,host_error;
@@ -147,8 +152,10 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
         INITIALIZE:begin host_en=1;host_write=1;host_addr=index;host_data=initial_data;end
         INPUT_STATE:begin host_en=1;host_write=1;host_addr=CURRENT+index;host_data=payload[63:0];end
         META_REQ:begin host_en=1;host_addr=`LM_SVC_DST;end
+        META_FIRST_REQ:begin host_en=1;host_addr=`LM_SVC_FIRST;end
+        META_LAST_REQ:begin host_en=1;host_addr=`LM_SVC_LAST;end
         STATE_REQ:begin host_en=1;host_addr=TRIAL+index;end
-        RES_WAIT:begin host_en=re_data_valid && received<`PAR_RESIDUALS;host_write=1;
+        RES_WAIT:begin host_en=re_data_valid && received<expected_residuals;host_write=1;
           host_addr=destination+received;host_data=re_value;end
         STORE_STATUS:begin host_en=1;host_write=1;host_addr=`LM_SVC_STATUS;host_data={56'd0,service_status};end
         STORE_COST:begin host_en=1;host_write=1;host_addr=`LM_SVC_COST;host_data=service_cost;end
@@ -195,9 +202,9 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
     assign shared_req_valid[8:5]=0;assign shared_req_op[44:25]=0;
     assign shared_req_a[575:320]=0;assign shared_req_b[575:320]=0;
     assign shared_active[8:5]=0;assign shared_rsp_ready[8:5]=0;
-    residual_endpoint #(.FP_SHARED(FP_SHARED),.EXTERNAL(SHARE_RESIDUAL)) residual_service(.ext_rst_n(ext_rst_n),.ext_cmd_valid(ext_cmd_valid),.ext_cmd_ready(ext_cmd_ready),.ext_cmd_width(ext_cmd_width),.ext_cmd_height(ext_cmd_height),.ext_cmd_state(ext_cmd_state),.ext_point_rd_en(ext_point_rd_en),.ext_point_rd_view_id(ext_point_rd_view_id),.ext_point_rd_index(ext_point_rd_index),.ext_point_rd_valid(ext_point_rd_valid),.ext_point_rd_x_fp32(ext_point_rd_x_fp32),.ext_point_rd_y_fp32(ext_point_rd_y_fp32),.ext_data_valid(ext_data_valid),.ext_data_ready(ext_data_ready),.ext_data_index(ext_data_index),.ext_data_fp64(ext_data_fp64),.ext_data_last(ext_data_last),.ext_rsp_valid(ext_rsp_valid),.ext_rsp_ready(ext_rsp_ready),.ext_rsp_status(ext_rsp_status),.ext_rsp_cost_fp64(ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[1 +: 4]),.shared_req_ready(shared_req_ready[1 +: 4]),.shared_req_op(shared_req_op[5 +: 20]),.shared_req_a(shared_req_a[64 +: 256]),.shared_req_b(shared_req_b[64 +: 256]),.shared_active(shared_active[1 +: 4]),.shared_rsp_valid(shared_rsp_valid[1 +: 4]),.shared_rsp_ready(shared_rsp_ready[1 +: 4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(local_rst_n),
+    residual_endpoint #(.FP_SHARED(FP_SHARED),.EXTERNAL(SHARE_RESIDUAL)) residual_service(.ext_rst_n(ext_rst_n),.ext_cmd_valid(ext_cmd_valid),.ext_cmd_ready(ext_cmd_ready),.ext_cmd_width(ext_cmd_width),.ext_cmd_height(ext_cmd_height),.ext_cmd_state(ext_cmd_state),.ext_cmd_first(ext_cmd_first),.ext_cmd_last(ext_cmd_last),.ext_point_rd_en(ext_point_rd_en),.ext_point_rd_view_id(ext_point_rd_view_id),.ext_point_rd_index(ext_point_rd_index),.ext_point_rd_valid(ext_point_rd_valid),.ext_point_rd_x_fp32(ext_point_rd_x_fp32),.ext_point_rd_y_fp32(ext_point_rd_y_fp32),.ext_data_valid(ext_data_valid),.ext_data_ready(ext_data_ready),.ext_data_index(ext_data_index),.ext_data_fp64(ext_data_fp64),.ext_data_last(ext_data_last),.ext_rsp_valid(ext_rsp_valid),.ext_rsp_ready(ext_rsp_ready),.ext_rsp_status(ext_rsp_status),.ext_rsp_cost_fp64(ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[1 +: 4]),.shared_req_ready(shared_req_ready[1 +: 4]),.shared_req_op(shared_req_op[5 +: 20]),.shared_req_a(shared_req_a[64 +: 256]),.shared_req_b(shared_req_b[64 +: 256]),.shared_active(shared_active[1 +: 4]),.shared_rsp_valid(shared_rsp_valid[1 +: 4]),.shared_rsp_ready(shared_rsp_ready[1 +: 4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(local_rst_n),
       .cmd_valid(rst_n && state==RES_CMD),.cmd_ready(re_ready),.cmd_width(width),.cmd_height(height),
-      .cmd_state(payload),
+      .cmd_state(payload),.cmd_first(first_q),.cmd_last(last_q),
       .point_rd_en(point_rd_en),.point_rd_view_id(point_rd_view_id),.point_rd_index(point_rd_index),
       .point_rd_valid(point_rd_valid),.point_rd_x_fp32(point_rd_x_fp32),.point_rd_y_fp32(point_rd_y_fp32),
       .data_valid(re_data_valid),.data_ready(re_data_ready),.data_index(re_index),.data_fp64(re_value),.data_last(re_last),
@@ -213,6 +220,7 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
         state<=IDLE;index<=0;destination<=0;received<=0;width<=0;height<=0;stage<=0;
         payload<=0;cost_q<=64'h7ff0000000000000;service_cost<=0;service_status<=0;
         rsp_status<=0;accepted_q<=0;outer_q<=0;converged_q<=0;stream_error<=0;
+        first_q<=0;last_q<=`PAR_RESIDUALS-1;
       end else case(state)
         IDLE:if(cmd_valid)begin
           payload<=cmd_state;width<=cmd_width;height<=cmd_height;stage<=cmd_stage;index<=0;
@@ -238,7 +246,11 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
           end
         end
         META_REQ:if(host_ready)state<=META_WAIT;
-        META_WAIT:if(host_valid)begin destination<=host_result[31:0];index<=0;state<=STATE_REQ;end
+        META_WAIT:if(host_valid)begin destination<=host_result[31:0];state<=META_FIRST_REQ;end
+        META_FIRST_REQ:if(host_ready)state<=META_FIRST_WAIT;
+        META_FIRST_WAIT:if(host_valid)begin first_q<=host_result[`PAR_RES_BITS-1:0];state<=META_LAST_REQ;end
+        META_LAST_REQ:if(host_ready)state<=META_LAST_WAIT;
+        META_LAST_WAIT:if(host_valid)begin last_q<=host_result[`PAR_RES_BITS-1:0];index<=0;state<=STATE_REQ;end
         STATE_REQ:if(host_ready)state<=STATE_WAIT;
         STATE_WAIT:if(host_valid)begin
           payload<={host_result,payload[`PAR_STATE_W-1:64]};
@@ -247,13 +259,14 @@ module lm_controller #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=0)
         RES_CMD:if(re_ready)begin received<=0;stream_error<=0;state<=RES_WAIT;end
         RES_WAIT:begin
           if(re_data_valid && re_data_ready)begin
-            if(received>=`PAR_RESIDUALS || re_index!=received || re_last!=(received==`PAR_RESIDUALS-1) || re_value[62:52]==2047)stream_error<=1;
-            if(received<`PAR_RESIDUALS)received<=received+1;
+            if(received>=expected_residuals || re_index!=(first_q+received) ||
+               re_last!=(received==expected_residuals-1) || re_value[62:52]==2047)stream_error<=1;
+            if(received<expected_residuals)received<=received+1;
           end
           if(re_valid)begin
             service_cost<=re_cost;service_status<=re_status;
             if(re_status==0)begin
-              if(stream_error || received!=`PAR_RESIDUALS || re_data_valid)service_status<=`PAR_BAD_CONFIG;
+              if(stream_error || received!=expected_residuals || re_data_valid)service_status<=`PAR_BAD_CONFIG;
               else if(re_cost[62:52]==2047)service_status<=`PAR_CALIB_INVALID;
               else if(re_cost[63] && |re_cost[62:0])service_status<=`PAR_BAD_CONFIG;
             end

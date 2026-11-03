@@ -8,6 +8,8 @@ module residual_endpoint #(parameter FP_SHARED=0, EXTERNAL=0) (
     output wire [15:0] ext_cmd_width,
     output wire [15:0] ext_cmd_height,
     output wire [`PAR_STATE_W-1:0] ext_cmd_state,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_first,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_last,
     input wire  ext_point_rd_en,
     input wire [`PAR_VIEW_BITS-1:0] ext_point_rd_view_id,
     input wire [`PAR_POINT_BITS-1:0] ext_point_rd_index,
@@ -42,6 +44,8 @@ module residual_endpoint #(parameter FP_SHARED=0, EXTERNAL=0) (
     input wire [15:0] cmd_width, // 图像宽度，>=2
     input wire [15:0] cmd_height, // 图像高度，>=2
     input wire [`PAR_STATE_W-1:0] cmd_state, // PAR_STATE_N 项 FP64 状态快照，命令握手时锁存
+    input wire [`PAR_RES_BITS-1:0] cmd_first, // 本命令输出的全局残差下标窗口
+    input wire [`PAR_RES_BITS-1:0] cmd_last,
     output wire point_rd_en, // 固定1拍角点读使能，无ready，发起前预留接收空间
     output wire [`PAR_VIEW_BITS-1:0] point_rd_view_id, // 0..PAR_VIEWS-1
     output wire [`PAR_POINT_BITS-1:0] point_rd_index, // 图内角点0..PAR_POINTS-1
@@ -52,7 +56,7 @@ module residual_endpoint #(parameter FP_SHARED=0, EXTERNAL=0) (
     input wire data_ready, // 下游可接收
     output wire [`PAR_RES_BITS-1:0] data_index, // 0..239
     output wire [63:0] data_fp64, // 预测减观测
-    output wire data_last, // 仅239为1
+    output wire data_last, // 本命令窗口末残差为1；默认全程时即PAR_RESIDUALS-1
     output wire rsp_valid, // 完成响应有效
     input wire rsp_ready, // 接收完成响应
     output wire [7:0] rsp_status, // PAR_* 状态码；非零时结果载荷无效
@@ -65,6 +69,8 @@ module residual_endpoint #(parameter FP_SHARED=0, EXTERNAL=0) (
  assign ext_cmd_width=cmd_width;
  assign ext_cmd_height=cmd_height;
  assign ext_cmd_state=cmd_state;
+ assign ext_cmd_first=cmd_first;
+ assign ext_cmd_last=cmd_last;
  assign point_rd_en=ext_point_rd_en;
  assign point_rd_view_id=ext_point_rd_view_id;
  assign point_rd_index=ext_point_rd_index;
@@ -92,11 +98,13 @@ module residual_endpoint #(parameter FP_SHARED=0, EXTERNAL=0) (
  assign ext_cmd_width=0;
  assign ext_cmd_height=0;
  assign ext_cmd_state=0;
+ assign ext_cmd_first=cmd_first;
+ assign ext_cmd_last=cmd_last;
  assign ext_point_rd_valid=0;
  assign ext_point_rd_x_fp32=0;
  assign ext_point_rd_y_fp32=0;
  assign ext_data_ready=0;
  assign ext_rsp_ready=0;
- residual_engine #(.FP_SHARED(FP_SHARED)) core(.shared_req_valid(shared_req_valid),.shared_req_ready(shared_req_ready),.shared_req_op(shared_req_op),.shared_req_a(shared_req_a),.shared_req_b(shared_req_b),.shared_active(shared_active),.shared_rsp_valid(shared_rsp_valid),.shared_rsp_ready(shared_rsp_ready),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),.cmd_width(cmd_width),.cmd_height(cmd_height),.cmd_state(cmd_state),.point_rd_en(point_rd_en),.point_rd_view_id(point_rd_view_id),.point_rd_index(point_rd_index),.point_rd_valid(point_rd_valid),.point_rd_x_fp32(point_rd_x_fp32),.point_rd_y_fp32(point_rd_y_fp32),.data_valid(data_valid),.data_ready(data_ready),.data_index(data_index),.data_fp64(data_fp64),.data_last(data_last),.rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.rsp_cost_fp64(rsp_cost_fp64));
+ residual_engine #(.FP_SHARED(FP_SHARED)) core(.shared_req_valid(shared_req_valid),.shared_req_ready(shared_req_ready),.shared_req_op(shared_req_op),.shared_req_a(shared_req_a),.shared_req_b(shared_req_b),.shared_active(shared_active),.shared_rsp_valid(shared_rsp_valid),.shared_rsp_ready(shared_rsp_ready),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(rst_n),.cmd_valid(cmd_valid),.cmd_ready(cmd_ready),.cmd_width(cmd_width),.cmd_height(cmd_height),.cmd_state(cmd_state),.cmd_first(cmd_first),.cmd_last(cmd_last),.point_rd_en(point_rd_en),.point_rd_view_id(point_rd_view_id),.point_rd_index(point_rd_index),.point_rd_valid(point_rd_valid),.point_rd_x_fp32(point_rd_x_fp32),.point_rd_y_fp32(point_rd_y_fp32),.data_valid(data_valid),.data_ready(data_ready),.data_index(data_index),.data_fp64(data_fp64),.data_last(data_last),.rsp_valid(rsp_valid),.rsp_ready(rsp_ready),.rsp_status(rsp_status),.rsp_cost_fp64(rsp_cost_fp64));
  end endgenerate
 endmodule

@@ -89,9 +89,9 @@ def main():
         print('BOARD', json.dumps(report['board']), flush=True)
     for name, distortion in [('full', [4,5,6,7,8]), ('fixed_k3', [4,5,6,7])]:
         active = [0,1,2,3] + list(range(9, model.STATE_N)) + distortion
-        ranges = [(0, len(observed)*2) if i < 9 else
-                  ((i-9)//6*count*2, ((i-9)//6+1)*count*2) for i in active]
-        result, accepted, converged = model.optimize(initial, observed, active, ranges)
+        warm0 = [0,1,2,3] + list(range(9, model.STATE_N))
+        warm1 = warm0 + [4]
+        result, accepted, converged = model.optimize_sequence(initial, observed, [warm0, warm1, active])
         _, cost = model.residual(result, observed)
         k = camera(result, args.width, args.height)
         report[name] = dict(camera=k, rms=math.sqrt(cost/len(observed)),

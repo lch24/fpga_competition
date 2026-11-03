@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 module tb_hdmi_bridge;
+ reg finished=0;
  reg clk=0,pclk=0;always #5 clk=~clk;always #7 pclk=~pclk;reg rst_n=0;
  reg in_valid=0,in_first=0,in_last=0,de=0,vsync=0,clear_error=0;
  reg [15:0] in_pixel;wire in_ready;wire [7:0] r,g,b;wire underflow;
@@ -24,7 +25,7 @@ module tb_hdmi_bridge;
   repeat(8)@(negedge pclk);sample(0);de=0; // no restart mid-frame
   sync_frame();sample(24'hf8fcf8);sample(24'hf80000);sample(0);de=0;
   clear_error=1;@(negedge pclk);clear_error=0;if(underflow)$fatal(1,"clear flag");
-  $display("PASS HDMI bridge: underflow black, discard old tail, SOF/VSYNC resynchronization");$finish;
+  finished=1;$display("PASS HDMI bridge: underflow black, discard old tail, SOF/VSYNC resynchronization");$finish;
  end
  initial begin #100000;$fatal(1,"bridge timeout");end
 endmodule

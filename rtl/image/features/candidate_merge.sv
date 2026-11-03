@@ -37,6 +37,11 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
     input  wire                    clk,
     input  wire                    rst_n,
     input  wire                    start,          // IDLE 时启动
+    // 1: points[] is in raster order, so once a fed point is at least `radius`
+    // rows below the anchor, no later point can merge and the inner scan may
+    // stop early. This is exact for the first (radius-5) merge; the second
+    // merge reads averaged clusters whose y is not monotonic and keeps 0.
+    input  wire                    ordered_scan,
     output reg                     busy,
     output reg                     done,
     input  wire [15:0]             n_in,           // 本次输入点数（start 时锁存）
@@ -90,6 +95,7 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
     reg                accx_busy, accy_busy;
     reg [31:0]         divx_out, divy_out;
     reg [31:0]         n_f;
+    reg                stop_seen;
 
     // 子模块互连与控制信号（先声明，避免隐式 net 与重复声明）
     wire subx_rdy, suby_rdy, subx_v, suby_v;
@@ -104,7 +110,7 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
     wire [31:0] div_r;
     wire nf_rdy, nf_valid;
     wire feed_fire, cfifo_pop, addx_fire, addy_fire, nf_fire, div_fire;
-    wire dist_scanning, lt_dist, dist_hit, acc_block;
+    wire dist_scanning, lt_dist, dist_hit, acc_block, dy_far;
     wire [N_ADDR_W-1:0] cfifo_jj;
     wire [31:0] cfifo_px, cfifo_py, div_a;
 
@@ -264,7 +270,7 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
 
     // 内循环喂 sub：S_IN_FEED（数据拍）且 sub 与 coord FIFO 均就绪
     // （读口 rd_en=0 时 rd_x/rd_y 保持，背压期间数据稳定）
-    assign feed_fire = (state == S_IN_FEED) &&
+    assign feed_fire = (state == S_IN_FEED) && !(ordered_scan && stop_seen) &&
                        subx_rdy && suby_rdy && cfifo_in_ready;
 
     assign addx_fire = dist_hit && cfifo_pop;
@@ -279,6 +285,11 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
     assign cfifo_jj = cfifo_out[77:64];
     assign cfifo_px = cfifo_out[63:32];
     assign cfifo_py = cfifo_out[31:0];
+
+    // |y_anchor-y_point| >= radius ends the monotonic inner scan. Both values
+    // are non-negative floats, so their bit patterns compare as unsigned order.
+    assign dy_far = suby_v && ordered_scan && dist_scanning &&
+                    ({1'b0,suby_r[30:0]} >= radius_reg);
 
     //--------------------------------------------------------------------
     // 块 A：主状态机（state/busy/done/i/j_cur/读口/buf/锚点/输出）
@@ -349,7 +360,9 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
                     state    <= S_IN_REQ;
                 end
                 S_IN_REQ: begin
-                    if (j_cur >= n_reg) begin
+                    if (ordered_scan && stop_seen) begin
+                        state <= S_IN_DRAIN;
+                    end else if (j_cur >= n_reg) begin
                         state <= S_OUT_N;          // 内循环为空（单点锚）
                     end else begin
                         rd_en <= 1'b1;
@@ -359,10 +372,13 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
                 end
                 S_IN_LATCH: begin
                     // 本拍 RAM 采样地址；下一拍（S_IN_FEED）数据有效
-                    state <= S_IN_FEED;
+                    state <= (ordered_scan && stop_seen) ? S_IN_DRAIN : S_IN_FEED;
                 end
                 S_IN_FEED: begin
-                    if (feed_fire) begin
+                    if (ordered_scan && stop_seen) begin
+                        // y 已超过 merge 半径：后面的点更远，直接结束本锚点。
+                        state <= S_IN_DRAIN;
+                    end else if (feed_fire) begin
                         if (j_cur + 16'd1 < n_reg) begin
                             j_cur <= j_cur + 16'd1;
                             state <= S_IN_REQ;
@@ -489,6 +505,17 @@ module candidate_merge #(parameter SHARED_ADD=0, parameter USE_CE=0, parameter S
         else if (cfifo_pop)
             in_flight <= in_flight - 16'd1;
     end // synchronous clock enable
+    end
+
+    // 块 D.1：有序输入的内循环提前结束标志。锚点装载时清零；
+    // 一旦某个已喂入点的 |Δy| 达到半径，本锚点后续点不可能命中。
+    always @(posedge clk) begin
+        if (!rst_n)
+            stop_seen <= 1'b0;
+        else if(!USE_CE || ce) begin
+            if (start || state == S_ANCHOR_FEED) stop_seen <= 1'b0;
+            else if (dy_far) stop_seen <= 1'b1;
+        end
     end
 
     //--------------------------------------------------------------------

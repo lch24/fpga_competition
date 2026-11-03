@@ -18,7 +18,8 @@ NAMES = '''n nr ns maxiter maxtries desc current trial baseline plus minus colum
  fp_points fp_total init_raw init_px init_py init_bx init_by init_seed
  check_reason check_warnings candidate_valid
  coverage_left coverage_right coverage_top coverage_bottom
- coverage_xlo coverage_xhi coverage_ylo coverage_yhi fit_k3'''.split()
+ coverage_xlo coverage_xhi coverage_ylo coverage_yhi fit_k3
+ nfull n_stage_min phase nlast svc_first svc_last lastm1 len bptr jptr'''.split()
 M = {name: i for i, name in enumerate(NAMES)}
 M.update({f'q{i}':128+i for i in range(34)})
 M.update({f'rot{i}':256+i for i in range(32)})
@@ -28,7 +29,7 @@ CONSTANTS = dict(zero=0x0000000000000000, one=0x3ff0000000000000,
  difference_step=0x3eb0c6f7a0b5ed8d, scale_floor=0x3d719799812dea11,
  cost_stop=0x3c9cd2b297d889bc, gradient_stop=0x3e45798ee2308c3a,
  lambda_down=0x3fd3333333333333, lambda_up=0x4024000000000000,
- reduction_stop=0x3da5fd7fe1796495, step_stop=0x3e112e0be826d695,
+ reduction_stop=0x3eb0c6f7a0b5ed8d, step_stop=0x3e112e0be826d695,
  relaxed_gradient=0x3ee4f8b588e368f1, infinity=0x7ff0000000000000,
  half=0x3fe0000000000000,three=0x4008000000000000,six=0x4018000000000000,
  twenty_four=0x4038000000000000,thirty_two=0x4040000000000000,
@@ -36,7 +37,7 @@ CONSTANTS = dict(zero=0x0000000000000000, one=0x3ff0000000000000,
  normal_min=0x3f847ae147ae147b,normal_weak=0x3fc5c28f5c28f5c3,
  jacobian_min=0x3f1a36e2eb1c432d, sqrt_two=0x3ff6a09e667f3bcd,
  eigen_tiny=0x39b4484bfeebc2a0,eigen_tolerance=0x3d06849b86a12b9b,
- eigen_separation=0x3ddb7cdfd9d7bdbb)
+ eigen_separation=0x3ddb7cdfd9d7bdbb,stage_cost=0x4090e00000000000)
 C = {name: 192+i for i, name in enumerate(CONSTANTS)}
 
 class Program:
@@ -82,7 +83,15 @@ class Program:
         self.il(1,'desc'); self.emit('IADD A0,A0,A1')
         for offset,name in enumerate(which):
             self.emit(f'LDI32 A1,A0,{offset}'); self.ist(name,1)
-    def service(self,dest):
+    def service(self,dest,scoped=False):
+        # scoped: emit only the current descriptor's [first,last) residual window.
+        if scoped:
+            self.icopy('svc_first','first')
+            self.addi('lastm1','last',-1)
+            self.icopy('svc_last','lastm1')
+        else:
+            self.seti('svc_first',0)
+            self.icopy('svc_last','nlast')
         self.icopy('svc_dst',dest); self.emit('HOST 0')
     def check_service(self,numeric):
         self.ib('svc_status',1,4,numeric)
@@ -94,11 +103,25 @@ def program():
     e('# Generated LM assembly. All mutable scalars live in workspace RAM.',
       'MOVI A7,0','GUARD numeric_stop')
     for name in ('accepted','outer','attempt','converged','status'): p.seti(name,0)
+    p.icopy('nfull','n')
+    p.addi('n_stage_min','ns',-1)
+    p.addi('nlast','nr',-1)
     p.fcopy('cost','infinity'); p.fcopy('damping','initial_lambda')
     p.copy('trial','current','ns'); p.service('baseline'); p.check_service('numeric_stop')
     p.fcopy('cost','svc_cost')
+    # Default: one phase with the requested column count. A stage 2/3 request
+    # (requested count >= state width - 1, i.e. distortion columns included)
+    # whose pinhole initial fit is still far from the measured corners runs two
+    # warm-up phases first: 22 columns (intrinsics + poses), 23 (+k1), then the
+    # requested count. A good initial fit (near-pinhole lens) or a stage 0/1
+    # request skips the warm-ups, because they only add iterations.
+    p.seti('phase',2); p.icopy('n','nfull')
+    p.ib('nfull',3,'n_stage_min','phase_ready')
+    p.fb('cost',3,'stage_cost','phase_ready')
+    p.addi('n','ns',-5); p.seti('phase',0)
+    L('phase_ready')
     L('outer_loop'); e('GUARD numeric_stop')
-    p.fb('cost',3,'cost_stop','converged'); p.ib('outer',6,'maxiter','numeric_stop')
+    p.fb('cost',3,'cost_stop','phase_done'); p.ib('outer',6,'maxiter','numeric_stop')
     p.addi('outer','outer',1); p.seti('k',0)
     L('column_loop')
     p.desc('k',('i','first','last','ja'))
@@ -106,12 +129,15 @@ def program():
     p.fbin('tmp','FADD','one','tmp'); p.fbin('h','FMUL','difference_step','tmp')
     p.fbin('perturb','FADD','original','h')
     p.copy('trial','current','ns'); p.write('trial','perturb','i')
-    p.service('plus'); p.check_service('numeric_stop')
-    p.fbin('twice','FMUL','two','h')
-    # Deliberately preserve old (p+h)-2h rounding, not p-h.
-    p.fbin('perturb','FSUB','perturb','twice'); p.write('trial','perturb','i')
-    p.service('minus'); p.check_service('numeric_stop')
-    p.il(0,'plus'); p.il(1,'minus'); p.il(2,'column'); p.il(3,'nr'); p.ld(3,'twice'); p.ld(4,'zero')
+    p.service('plus', scoped=True); p.check_service('numeric_stop')
+    # Forward difference against the stored baseline residual, restricted to the
+    # column's owned residual window [first,last). The service returns that
+    # window only, so only the views whose projection actually changes are
+    # evaluated. Values outside the window are never read by J'J or the gradient.
+    p.ibin('len','ISUB','last','first')
+    p.ibin('bptr','IADD','baseline','first')
+    p.ibin('jptr','IADD','ja','first')
+    p.il(0,'plus'); p.il(1,'bptr'); p.il(2,'column'); p.il(3,'len'); p.ld(3,'h'); p.ld(4,'zero')
     L('difference_loop'); e('LD F0,A0,0','LD F1,A1,0','FSUB F0,F0,F1',
       'FDIV F0,F0,F3','ST F0,A2,0','FMUL F1,F0,F0','FADD F4,F4,F1',
       'ADDI A0,A0,1','ADDI A1,A1,1','ADDI A2,A2,1','DBNZ A3,difference_loop',
@@ -119,11 +145,9 @@ def program():
     p.ld(1,'scale_floor'); e('FCMP F4,F1','BR.6 norm_ready','FMOV F4,F1')
     L('norm_ready'); p.ld(0,'one'); e('FDIV F3,F0,F4'); p.st('scale',3)
     p.write('scales','scale','k')
-    p.il(0,'column'); p.il(1,'ja'); p.il(2,'nr'); p.il(3,'first'); p.il(4,'last'); e('MOVI A5,0')
-    L('scale_loop'); e('LD F0,A0,0','FMUL F0,F0,F3','ICMP A5,A3','BR.3 outside_column',
-      'ICMP A5,A4','BR.6 outside_column','ST F0,A1,0','BR scale_next')
-    L('outside_column'); p.ld(1,'zero'); e('FCMP F0,F1','BR.2 bad_config')
-    L('scale_next'); e('ADDI A0,A0,1','ADDI A1,A1,1','ADDI A5,A5,1','DBNZ A2,scale_loop')
+    p.il(0,'column'); p.il(1,'jptr'); p.il(2,'len')
+    L('scale_loop'); e('LD F0,A0,0','FMUL F0,F0,F3','ST F0,A1,0',
+      'ADDI A0,A0,1','ADDI A1,A1,1','DBNZ A2,scale_loop')
     p.addi('k','k',1); p.ib('k',3,'n','column_loop')
 
     # Lower triangle, each dot accumulated in increasing residual order.
@@ -151,7 +175,7 @@ def program():
     L('gradient_max_ready'); p.ibin('rowbase','IADD','rowbase','n'); p.addi('a','a',1)
     p.ib('a',3,'n','normal_row')
     p.unary('threshold','FSQRT','cost'); p.fbin('threshold','FADD','one','threshold')
-    p.fbin('tmp','FMUL','gradient_stop','threshold'); p.fb('gmax',3,'tmp','converged')
+    p.fbin('tmp','FMUL','gradient_stop','threshold'); p.fb('gmax',3,'tmp','phase_done')
     p.seti('attempt',0)
     L('try_step'); e('GUARD retry')
     p.il(0,'normal'); p.il(1,'augmented'); p.il(2,'gradient'); p.il(3,'n'); p.il(4,'n')
@@ -177,14 +201,32 @@ def program():
     p.fcopy('cost','newcost'); p.addi('accepted','accepted',1)
     p.fbin('damping','FMUL','damping','lambda_down'); p.copy('baseline','minus','nr')
     p.fb('damping',6,'scale_floor','lambda_floor_ready'); p.fcopy('damping','scale_floor')
-    L('lambda_floor_ready'); p.fbin('tmp','FADD','one','cost'); p.fbin('tmp','FMUL','reduction_stop','tmp')
-    p.fb('stepnorm',3,'step_stop','converged'); p.fb('reduction',3,'tmp','converged'); e('BR outer_loop')
+    # Relative reduction test: further steps that lower the cost by less than
+    # 1e-6 of the current cost are polishing, not progress. The old 1e-11 test
+    # cost several extra iterations on clean data and up to six on noisy data.
+    L('lambda_floor_ready'); p.fbin('tmp','FMUL','reduction_stop','cost')
+    p.fb('stepnorm',3,'step_stop','phase_done'); p.fb('reduction',3,'tmp','phase_done'); e('BR outer_loop')
     L('retry'); e('MOVI A7,0','GUARD numeric_stop')
     p.fbin('damping','FMUL','damping','lambda_up'); p.addi('attempt','attempt',1)
     p.ib('attempt',3,'maxtries','try_step')
-    p.fbin('tmp','FMUL','relaxed_gradient','threshold'); p.fb('gmax',3,'tmp','converged'); e('BR done')
+    p.fbin('tmp','FMUL','relaxed_gradient','threshold'); p.fb('gmax',3,'tmp','phase_done'); e('BR done')
     L('numeric_stop'); e('MOVI A7,0','BR done')
     L('bad_config'); p.seti('status',1); e('BR done')
+    # One phase converged. Warm-up phases advance to the next column set from
+    # the current state; only the last phase publishes convergence.
+    L('phase_done')
+    p.ib('phase',6,2,'converged')
+    p.addi('phase','phase',1)
+    p.ib('phase',1,1,'advance_one')
+    p.icopy('n','nfull'); e('BR advance_commit')
+    L('advance_one'); p.addi('n','ns',-4)
+    L('advance_commit')
+    p.fcopy('damping','initial_lambda'); p.seti('outer',0)
+    p.copy('trial','current','ns')
+    e('GUARD numeric_stop')
+    p.service('baseline'); p.check_service('numeric_stop')
+    p.fcopy('cost','svc_cost')
+    e('BR outer_loop')
     L('converged'); p.seti('converged',1)
     L('done'); e('END 0')
     solve=(ROOT/'data/programs/calibration/solve.asm').read_text(encoding='utf-8')

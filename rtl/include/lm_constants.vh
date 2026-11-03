@@ -10,7 +10,7 @@
 199: initial_data=64'h3e45798ee2308c3a;
 200: initial_data=64'h3fd3333333333333;
 201: initial_data=64'h4024000000000000;
-202: initial_data=64'h3da5fd7fe1796495;
+202: initial_data=64'h3eb0c6f7a0b5ed8d;
 203: initial_data=64'h3e112e0be826d695;
 204: initial_data=64'h3ee4f8b588e368f1;
 205: initial_data=64'h7ff0000000000000;
@@ -28,6 +28,7 @@
 217: initial_data=64'h39b4484bfeebc2a0;
 218: initial_data=64'h3d06849b86a12b9b;
 219: initial_data=64'h3ddb7cdfd9d7bdbb;
+220: initial_data=64'h4090e00000000000;
 280: initial_data=64'h39b4484bfeebc2a0;
 281: initial_data=64'h3d06849b86a12b9b;
 282: initial_data=0;

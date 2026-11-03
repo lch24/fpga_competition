@@ -265,6 +265,13 @@ module vision_ddr_top #(
  endfunction
  generate if(PACKED_MAP)begin : g_packed
  assign c_rd_valid[2]=0;assign c_rd_addr[64+:32]=0;assign c_rd_len[64+:32]=0;assign c_rd_tag[32+:16]=0;assign c_r_ready[2]=1;
+ // Control-point map every four destination pixels, with one extra row and
+ // column for the last interpolation cell.  Rows are padded to 64 points so
+ // every map burst stays 512 B aligned.
+ localparam MAP_STEP=4;
+ localparam GRID_W=(WIDTH+MAP_STEP-1)/MAP_STEP;
+ localparam GRID_H=(HEIGHT+MAP_STEP-1)/MAP_STEP;
+ localparam GRID_STRIDE=((GRID_W+1+63)/64)*64;
  localparam [31:0] DEMO_F=demo_float(WIDTH*4/5);
  localparam [31:0] DEMO_CX=demo_float(WIDTH-1)-32'h00800000;
  localparam [31:0] DEMO_CY=demo_float(HEIGHT-1)-32'h00800000;
@@ -273,9 +280,10 @@ module vision_ddr_top #(
  wire demo_command=ENABLE_DISTORT_DEMO && opcode==3;
  wire [287:0] builder_params=demo_command ?
   {32'hbac49ba6,32'h3b03126f,32'hbba3d70a,32'h3d23d70a,32'hbe3851ec,DEMO_CY,DEMO_CX,DEMO_F,DEMO_F}:result_params;
- packed_map_builder #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO)) correction(
+ packed_map_builder #(.ENABLE_DISTORT_DEMO(ENABLE_DISTORT_DEMO),.GRID_MAP(1),.MAP_STEP(MAP_STEP),
+  .GRID_STRIDE(GRID_STRIDE),.IMAGE_WIDTH(WIDTH),.IMAGE_HEIGHT(HEIGHT)) correction(
   .clk(clk),.rst_n(rst_n),.cmd_valid(uv),.cmd_ready(ur),.cmd_opcode(opcode),.cmd_params(builder_params),
-  .cmd_width(16'(WIDTH)),.cmd_height(16'(HEIGHT)),.cmd_map_base(demo_command?32'h03800000:MAP_X_BASE),
+  .cmd_width(16'(GRID_W+1)),.cmd_height(16'(GRID_H+1)),.cmd_map_base(demo_command?32'h03800000:MAP_X_BASE),
   .rsp_valid(udone),.rsp_ready(uack),.rsp_status(us),
   .wr_valid(c_wr_valid[2]),
   .wr_ready(c_wr_ready[2]),

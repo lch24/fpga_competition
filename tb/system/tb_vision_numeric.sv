@@ -7,6 +7,9 @@ module tb_vision_numeric #(parameter DETECT_ONLY=0, FIXED_INTERPOLATION=1, FIXED
  reg start_valid=0,frame_valid=0,frame_release_ready=1,rsp_ready=0;
  wire start_ready,frame_ready,frame_release_valid,rsp_valid,busy;
  reg [63:0] square_size_fp64=64'h3ff0000000000000;
+ reg start_remap=0,debug_rst_n=1,review_continue=0,review_point_ready=1;
+ reg [31:0] remap_base=0;reg [15:0] debug_argument=0;
+ wire [511:0] debug_snapshot;wire review_wait,review_point_valid;wire [71:0] review_point;
  reg [31:0] frame_base=32,frame_stride=328,frame_capacity=39360;
  reg [7:0] frame_status=0;wire [7:0] rsp_status,debug_view;
  wire [31:0] debug_job,result_base,result_stride;wire [15:0] result_width,result_height;

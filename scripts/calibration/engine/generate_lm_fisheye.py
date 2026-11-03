@@ -29,9 +29,11 @@ DIFFERENCE_STEP = _f64(0x3eb0c6f7a0b5ed8d)
 SCALE_FLOOR = _f64(0x3d719799812dea11)
 COST_STOP = _f64(0x3c9cd2b297d889bc)
 GRADIENT_STOP = _f64(0x3e45798ee2308c3a)
-REDUCTION_STOP = _f64(0x3da5fd7fe1796495)
+REDUCTION_STOP = _f64(0x3eb0c6f7a0b5ed8d)
 STEP_STOP = _f64(0x3e112e0be826d695)
 RELAXED_GRADIENT = _f64(0x3ee4f8b588e368f1)
+# Initial pinhole fit cost above which the staged warm-ups are worth running.
+STAGE_COST = _f64(0x4090e00000000000)
 
 # fisheye-scale radial terms; k3 is the term the solver used to leave at zero
 FISHEYE = dict(fx=430.0, fy=436.0, cx=0.5, cy=0.5, k1=-0.33, k2=0.19, k3=-0.11,
@@ -124,20 +126,18 @@ def solve_normal(a, b):
     return x
 
 
-def jacobian_columns(state, observed, active, ranges):
-    """Scaled finite-difference columns; raises when a column is not range local."""
+def jacobian_columns(state, observed, active, ranges, base):
+    """Scaled forward-difference columns; raises when a column is not range local."""
     columns, scales = [], []
     for position, index in enumerate(active):
         first, last = ranges[position]
         step = DIFFERENCE_STEP * (1.0 + abs(state[index]))
-        plus, minus = state[:], state[:]
+        plus = state[:]
         plus[index] += step
-        minus[index] = plus[index] - 2.0 * step
         rp, _ = residual(plus, observed)
-        rm, _ = residual(minus, observed)
         values = [0.0] * len(rp)
         for r in range(first, last):
-            values[r] = (rp[r] - rm[r]) / (2.0 * step)
+            values[r] = (rp[r] - base[r]) / step
         for r in list(range(0, first)) + list(range(last, len(rp))):
             if values[r] != 0.0:
                 raise ValueError(f'column {index} is not range local')
@@ -155,11 +155,11 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
              max_tries=16, relaxed_gradient=RELAXED_GRADIENT):
     """Damped Gauss-Newton in scaled columns; result state and accepted steps.
 
-    The policy follows the documented LM program: central differences with a
-    relative step, columns normalised to unit norm (floored), Marquardt damping
-    on the unit diagonal, fixed accept/reject schedule and the documented
-    termination tests. The arithmetic and the whole projection model are new
-    code, which is what makes agreement with the RTL informative.
+    The policy follows the documented LM program: forward differences with a
+    relative step against the stored baseline, columns normalised to unit norm
+    (floored), Marquardt damping on the unit diagonal, fixed accept/reject
+    schedule and the documented termination tests. The arithmetic and the whole
+    projection model are new code, which is what makes agreement informative.
     """
     state = state[:]
     residual_vector, cost = residual(state, observed)
@@ -171,7 +171,7 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
     for _ in range(iterations):
         if cost < tolerance:
             break
-        jacobian, scales = jacobian_columns(state, observed, active, ranges)
+        jacobian, scales = jacobian_columns(state, observed, active, ranges, residual_vector)
         n = len(active)
         normal = [[sum(jacobian[i][r] * jacobian[j][r] for r in range(len(residual_vector)))
                    for j in range(n)] for i in range(n)]
@@ -203,7 +203,7 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
                 damping = max(damping * 0.3, SCALE_FLOOR)
                 accepted += 1
                 stepnorm = max(abs(step[j]) / (1.0 + abs(state[active[j]] - step[j])) for j in range(n))
-                if stepnorm < step_stop or reduction < reduction_stop * (1.0 + cost):
+                if stepnorm < step_stop or reduction < reduction_stop * cost:
                     return state, accepted, True
                 break
             attempt += 1
@@ -214,6 +214,35 @@ def optimize(state, observed, active, ranges=None, iterations=150, tolerance=COS
                     return state, accepted, True
                 return state, accepted, False
     return state, accepted, cost < tolerance
+
+
+def ranges_for(active):
+    full = (0, VIEWS * POINTS * 2)
+    return [full if index < 9 else ((index - 9) // 6 * POINTS * 2, ((index - 9) // 6 + 1) * POINTS * 2)
+            for index in active]
+
+
+def optimize_sequence(state, observed, sequences, **kwargs):
+    """Mirror the documented staged policy for stage 2/3 requests.
+
+    A good pinhole initial fit (cost below STAGE_COST) runs one phase with the
+    requested columns. A large initial cost means strong distortion, so two
+    warm-up phases (22 and 23 columns) run first. Each phase starts from the
+    previous state with damping reset; accepted steps accumulate and only the
+    final phase publishes convergence.
+    """
+    _, cost = residual(state, observed)
+    if len(sequences) == 1 or len(sequences[-1]) < STATE_N - 1 or cost < STAGE_COST:
+        active = sequences[-1]
+        return optimize(state, observed, active, ranges_for(active), **kwargs)
+    accepted_total = 0
+    converged = True
+    for active in sequences:
+        state, accepted, converged = optimize(state, observed, active, ranges_for(active), **kwargs)
+        accepted_total += accepted
+        if not converged:
+            break
+    return state, accepted_total, converged
 
 
 def pack_state(state):
@@ -246,12 +275,14 @@ def build():
         initial[12 + 6 * view] += 0.2
         initial[13 + 6 * view] -= 0.15
         initial[14 + 6 * view] += 0.25
-    active = list(range(STATE_N))
-    result, accepted, converged = optimize(initial, observed, active)
+    staged = [[0, 1, 2, 3] + list(range(9, STATE_N)),
+              [0, 1, 2, 3] + list(range(9, STATE_N)) + [4],
+              [0, 1, 2, 3] + list(range(9, STATE_N)) + [4, 5, 6, 7, 8]]
+    result, accepted, converged = optimize_sequence(initial, observed, staged)
     _, cost = residual(result, observed)
     # The same fit with k3 left out must be visibly worse, otherwise the fixture
     # would not discriminate the term this change enables.
-    blind, _, _ = optimize(initial, observed, [j for j in active if j != 8], iterations=300)
+    blind, _, _ = optimize(initial, observed, [j for j in staged[-1] if j != 8], iterations=300)
     _, cost_without_k3 = residual(blind, observed)
     deviation = max(abs(result[i] - truth[i]) / (1.0 + abs(truth[i])) for i in range(STATE_N))
     radii = max(math.hypot((u - WIDTH / 2) / FISHEYE['fx'], (v - HEIGHT / 2) / FISHEYE['fy'])

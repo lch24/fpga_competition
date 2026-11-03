@@ -3,12 +3,14 @@
 // op=53 status/results (FFFF), op=44 progress (FFFE), op=43 corner (lo/hi).
 // Response: A5 5A 01 op seqLE16 lengthLE16(120), payload, CRC16-CCITT LE.
 // CRC covers version through payload, initial FFFF. No functional backpressure.
-module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO=0)(
+module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO=0,ENABLE_ADVANCED=0)(
  input wire clk,rx,output wire tx,output wire debug_rst_n,
  input wire camera_clk,camera_vsync,
  input wire core_clk,algorithm_clk,input wire [255:0] core_data,
  input wire [511:0] algorithm_data,output wire [15:0] algorithm_argument,core_argument,
- input wire [7:0] health
+ input wire [7:0] health,
+ output reg advanced_write_valid,output reg [7:0] advanced_write_op,output reg [15:0] advanced_write_data,
+ input wire [31:0] advanced_errors
 );
  reg [7:0] por=0;
  always @(posedge clk)if(!(&por))por<=por+1'b1;
@@ -21,6 +23,9 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO
  else if(tick)begin divider<=0;uptime<=uptime+1'b1;end else divider<=divider+1'b1;
  wire [255:0] core_snapshot;wire [511:0] alg_snapshot;
  wire cu,au;wire [15:0] atag,ctag;
+ // Error count belongs to this clock domain; never sample an unsynchronized bus.
+ wire [255:0] report_core=ENABLE_ADVANCED&&ctag==16'hfffb ?
+  {core_snapshot[255:224],advanced_errors,core_snapshot[191:0]}:core_snapshot;
  reg [15:0] argument;
  wire camera_rst_n;
  reset_sync camera_reset(.clk(camera_clk),.arst_n(rst_n),.rst_n(camera_rst_n));
@@ -82,9 +87,11 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO
  end
  always @(posedge clk)begin
   if(!rst_n)begin parser<=0;op<=0;lo<=0;hi<=0;rx_errors<=0;rejected<=0;parser_age<=0;
+   advanced_write_valid<=0;advanced_write_op<=0;advanced_write_data<=0;
    argument<=16'hffff;pending<=1;pending_op<=8'h53;packet_op<=0;packet_number<=0;packet_seq<=0;
    sending<=0;pos<=0;crc<=16'hffff;packet<=0;heartbeat<=0;wait_ms<=0;previous_events<=0;end
   else begin
+   advanced_write_valid<=0;
    if(tick)begin
     if(parser_age<255)parser_age<=parser_age+1'b1;
     if(parser!=0&&parser_age==20)begin parser<=0;rx_errors<=rx_errors+1'b1;end
@@ -94,7 +101,7 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO
     if(pending&&wait_ms<255)wait_ms<=wait_ms+1'b1;
    end
    // Coalesce change reports. Event counter exposes intermediate transitions.
-   if(ctag!=16'hfffd&&(!ENABLE_DISTORT_DEMO||ctag!=16'hfffc)&&core_snapshot[63:32]!=previous_events)begin
+   if(ctag!=16'hfffd&&(!ENABLE_DISTORT_DEMO||ctag!=16'hfffc)&&(!ENABLE_ADVANCED||ctag!=16'hfffb)&&core_snapshot[63:32]!=previous_events)begin
     previous_events<=core_snapshot[63:32];
     if(!pending)begin pending<=1;pending_op<=8'h53;argument<=16'hffff;wait_ms<=0;end
    end
@@ -109,16 +116,21 @@ module board_debug #(parameter CLOCK_HZ=27000000,BAUD=115200,ENABLE_DISTORT_DEMO
      4:begin hi<=rdata;parser<=5;end
      5:begin
       parser<=0;
-      if(rdata!=(op^lo^hi)||(op!=8'h53&&op!=8'h43&&op!=8'h44&&op!=8'h56&&(!ENABLE_DISTORT_DEMO||op!=8'h45)))rx_errors<=rx_errors+1'b1;
+      if(rdata!=(op^lo^hi))rx_errors<=rx_errors+1'b1;
+      // Mailbox writes are independent of diagnostic snapshot/TX occupancy.
+      else if(ENABLE_ADVANCED&&op>=8'h60&&op<=8'h6d)begin
+       advanced_write_valid<=1;advanced_write_op<=op;advanced_write_data<={hi,lo};
+      end
+      else if(op!=8'h53&&op!=8'h43&&op!=8'h44&&op!=8'h56&&(!ENABLE_DISTORT_DEMO||op!=8'h45)&&(!ENABLE_ADVANCED||op!=8'h47))rx_errors<=rx_errors+1'b1;
       else if(pending)rejected<=rejected+1'b1;
-      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:op==8'h56 ?16'hfffd:ENABLE_DISTORT_DEMO&&op==8'h45 ?16'hfffc:{hi,lo};wait_ms<=0;end
+      else begin pending<=1;pending_op<=op;argument<=op==8'h53 ?16'hffff:op==8'h44 ?16'hfffe:op==8'h56 ?16'hfffd:ENABLE_DISTORT_DEMO&&op==8'h45 ?16'hfffc:ENABLE_ADVANCED&&op==8'h47 ?16'hfffb:{hi,lo};wait_ms<=0;end
      end
      default:parser<=0;
     endcase
    end
    // Bounded wait: a stopped domain must never prevent a UART response.
    if(!sending&&pending&&wait_ms>=4&&((atag==argument&&ctag==argument&&alg_age<100&&core_age<100)||wait_ms>=20))begin
-    packet<={alg_snapshot,core_snapshot,rejected,rx_errors,alg_age,core_age,
+    packet<={alg_snapshot,report_core,rejected,rx_errors,alg_age,core_age,
      camera_snapshot,hs2,4'b0,(atag==argument&&ctag==argument),alg_seen,core_seen,1'b0,
      2'b0,camera_seen,(camera_age>=100),(alg_age>=100),(core_age>=100),2'b0,uptime};
     packet_seq<=packet_number;packet_number<=packet_number+1'b1;packet_op<=pending_op;

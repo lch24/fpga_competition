@@ -12,6 +12,7 @@ bak/
 *.bak
 *.wf
 impl.tcl
+rdfile_*
 multiseed_summary.csv
 ipcore/*/pnr/
 ipcore/*/example_design/

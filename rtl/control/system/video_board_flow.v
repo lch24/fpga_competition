@@ -14,7 +14,7 @@ module video_board_flow #(
  parameter REVIEW_CYCLES=250000000, // 2 seconds at the board's 125 MHz clock
  parameter ENABLE_CORNER_REVIEW=0
 )(
- input wire preview_enable,output wire preview_active,
+ input wire preview_enable,output wire preview_active,output wire review_copy,
  input wire clk,rst_n,camera_ready,input wire [4:0] pressed,input wire display_idle,display_frame_start,
  output wire start_valid,input wire start_ready,output reg start_remap,output wire [31:0] start_base,
  input wire frame_ready,output wire frame_valid,output wire [7:0] frame_status,output wire [31:0] frame_base,
@@ -39,6 +39,7 @@ module video_board_flow #(
  reg [4:0] state;reg [2:0] action;reg [1:0] target,view_index;
  reg resume_review;
  wire review_context=ENABLE_CORNER_REVIEW&&(state>=REV_DRAIN);
+ assign review_copy=review_context;
  assign review_ready=state==REVIEW&&status==0;
  assign review_continue=state==RESUME;
  assign mark_valid=state==REV_MARK;assign mark_rsp_ready=state==REV_MARK_WAIT;

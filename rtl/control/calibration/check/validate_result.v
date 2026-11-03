@@ -9,6 +9,8 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
     output wire [15:0] ext_cmd_width,
     output wire [15:0] ext_cmd_height,
     output wire [`PAR_STATE_W-1:0] ext_cmd_state,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_first,
+    output wire [`PAR_RES_BITS-1:0] ext_cmd_last,
     input wire  ext_point_rd_en,
     input wire [`PAR_VIEW_BITS-1:0] ext_point_rd_view_id,
     input wire [`PAR_POINT_BITS-1:0] ext_point_rd_index,
@@ -207,8 +209,8 @@ module validate_result #(parameter FP_SHARED=0, SHARE_RESIDUAL=0, ENGINE_SHARED=
     assign shared_req_valid[1]=0;assign shared_req_op[9:5]=0;
     assign shared_req_a[127:64]=0;assign shared_req_b[127:64]=0;
     assign shared_active[1]=0;assign shared_rsp_ready[1]=0;
-    residual_endpoint #(.FP_SHARED(FP_SHARED),.EXTERNAL(SHARE_RESIDUAL)) residual_service(.ext_rst_n(ext_rst_n),.ext_cmd_valid(ext_cmd_valid),.ext_cmd_ready(ext_cmd_ready),.ext_cmd_width(ext_cmd_width),.ext_cmd_height(ext_cmd_height),.ext_cmd_state(ext_cmd_state),.ext_point_rd_en(ext_point_rd_en),.ext_point_rd_view_id(ext_point_rd_view_id),.ext_point_rd_index(ext_point_rd_index),.ext_point_rd_valid(ext_point_rd_valid),.ext_point_rd_x_fp32(ext_point_rd_x_fp32),.ext_point_rd_y_fp32(ext_point_rd_y_fp32),.ext_data_valid(ext_data_valid),.ext_data_ready(ext_data_ready),.ext_data_index(ext_data_index),.ext_data_fp64(ext_data_fp64),.ext_data_last(ext_data_last),.ext_rsp_valid(ext_rsp_valid),.ext_rsp_ready(ext_rsp_ready),.ext_rsp_status(ext_rsp_status),.ext_rsp_cost_fp64(ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[2 +: 4]),.shared_req_ready(shared_req_ready[2 +: 4]),.shared_req_op(shared_req_op[10 +: 20]),.shared_req_a(shared_req_a[128 +: 256]),.shared_req_b(shared_req_b[128 +: 256]),.shared_active(shared_active[2 +: 4]),.shared_rsp_valid(shared_rsp_valid[2 +: 4]),.shared_rsp_ready(shared_rsp_ready[2 +: 4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(local_rst_n),.cmd_valid(rst_n && state==RES_CMD),.cmd_ready(re_ready),
-      .cmd_width(width),.cmd_height(height),.cmd_state(payload),
+    residual_endpoint #(.FP_SHARED(FP_SHARED),.EXTERNAL(SHARE_RESIDUAL)) residual_service(.ext_rst_n(ext_rst_n),.ext_cmd_valid(ext_cmd_valid),.ext_cmd_ready(ext_cmd_ready),.ext_cmd_width(ext_cmd_width),.ext_cmd_height(ext_cmd_height),.ext_cmd_state(ext_cmd_state),.ext_cmd_first(ext_cmd_first),.ext_cmd_last(ext_cmd_last),.ext_point_rd_en(ext_point_rd_en),.ext_point_rd_view_id(ext_point_rd_view_id),.ext_point_rd_index(ext_point_rd_index),.ext_point_rd_valid(ext_point_rd_valid),.ext_point_rd_x_fp32(ext_point_rd_x_fp32),.ext_point_rd_y_fp32(ext_point_rd_y_fp32),.ext_data_valid(ext_data_valid),.ext_data_ready(ext_data_ready),.ext_data_index(ext_data_index),.ext_data_fp64(ext_data_fp64),.ext_data_last(ext_data_last),.ext_rsp_valid(ext_rsp_valid),.ext_rsp_ready(ext_rsp_ready),.ext_rsp_status(ext_rsp_status),.ext_rsp_cost_fp64(ext_rsp_cost_fp64),.shared_req_valid(shared_req_valid[2 +: 4]),.shared_req_ready(shared_req_ready[2 +: 4]),.shared_req_op(shared_req_op[10 +: 20]),.shared_req_a(shared_req_a[128 +: 256]),.shared_req_b(shared_req_b[128 +: 256]),.shared_active(shared_active[2 +: 4]),.shared_rsp_valid(shared_rsp_valid[2 +: 4]),.shared_rsp_ready(shared_rsp_ready[2 +: 4]),.shared_rsp_result(shared_rsp_result),.shared_rsp_flags(shared_rsp_flags),.clk(clk),.rst_n(local_rst_n),.cmd_valid(rst_n && state==RES_CMD),.cmd_ready(re_ready),
+      .cmd_width(width),.cmd_height(height),.cmd_state(payload),.cmd_first(0),.cmd_last(`PAR_RESIDUALS-1),
       .point_rd_en(point_rd_en),.point_rd_view_id(point_rd_view_id),.point_rd_index(point_rd_index),
       .point_rd_valid(point_rd_valid),.point_rd_x_fp32(point_rd_x_fp32),.point_rd_y_fp32(point_rd_y_fp32),
       .data_valid(re_data_valid),.data_ready(re_data_ready),.data_index(re_index),.data_fp64(re_value),.data_last(re_last),
